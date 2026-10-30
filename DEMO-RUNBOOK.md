@@ -6,8 +6,8 @@
 2. Run `npm install`, `npm run fixture:generate`, and the validation commands in `VALIDATION.md`.
 3. Start with `npm run start:built`.
 4. Select **Prepare local models** while network access is still available.
-5. Confirm all three model cards show **READY** and the Developer Trace reports no embedded web
-   service URL.
+5. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary
+   validated**, and the Developer Trace reports no embedded web service URL.
 6. Confirm `fixtures/ode-lesson.wav` exists for the stage fallback.
 7. Leave the app reset, the consent box unchecked, and live captions enabled.
 
@@ -24,7 +24,7 @@ Point to the three cards:
 > writes the authoritative final transcript after Stop, and Qwen summarizes only that final
 > version.
 
-Point to **No cloud endpoint** and say:
+Point to **In-process boundary validated** and say:
 
 > Inference uses Foundry Local's in-process SDK. Model preparation may download missing assets; the
 > app does not call an external inference endpoint or start Foundry's embedded web service.
@@ -56,9 +56,11 @@ While speaking:
 Select **Stop**.
 
 1. Nemotron finalizes for evidence only.
-2. The same complete PCM capture runs through Whisper.
-3. Point to **Final transcript — Whisper**, its version, and stop-to-final timing.
-4. Explain that the temporary WAV is application-owned and already deleted.
+2. If Nemotron finalization fails, the warning remains visible but cannot block Whisper.
+3. The same exact bounded PCM capture runs through Whisper.
+4. Point to **Final transcript — Whisper**, its version, and stop-to-final timing.
+5. Explain that Whisper's returned string is preserved exactly, including whitespace, and that the
+   application-owned temporary WAV is already deleted.
 
 ### 7:30-9:00 — Correction and invalidation
 
@@ -95,7 +97,8 @@ Show that the live terminal was explicitly discarded before Whisper finalization
 
 ### 12:00-13:30 — Stage fallback
 
-Select **Delete / reset**, then **Open stage fallback WAV** and choose
+Optionally start a short recording and select **Cancel / reset** to show that cancellation discards
+audio without Whisper or Qwen. Then select **Open stage fallback WAV** and choose
 `fixtures/ode-lesson.wav`.
 
 The fixture is Windows-synthesized original text. It goes through the same validated PCM and
@@ -122,4 +125,4 @@ Generate the summary again if time permits.
 | Whisper fails | Do not summarize the Nemotron terminal. Reset, confirm Whisper readiness, then retry or use the fixture. |
 | Summary fails/truncates | Keep the final transcript visible. Retry only after confirming Qwen readiness; never show canned summary text. |
 | Renderer reloads or window closes | Main-process ownership cancels the stream. Reopen, prepare if needed, and start a fresh recording. |
-| Locked temporary file found at startup | Reset or restart; orphan recovery retries only owned `capture-*.wav` files. |
+| Locked temporary file found at startup | The status/trace shows only the retained count and app-owned path policy. Close the process holding the file, then use **Delete / reset** or restart to retry cleanup. |

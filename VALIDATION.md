@@ -1,6 +1,6 @@
 # Validation record
 
-Date: 2026-10-29 (Windows 11 x64)
+Date: 2026-10-30 (Windows 11 x64)
 
 ## Validated identities
 
@@ -24,19 +24,34 @@ Runtime log evidence:
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 43 files checked |
+| `npm run lint` | Pass; 44 files checked |
 | `npm run typecheck` | Pass |
-| `npm test -- --reporter=dot` | Pass; 9 files, 54 tests |
+| `npm test -- --reporter=dot` | Pass; 10 files, 72 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
-| `npm audit --omit=dev --json` | Pass; 0 production vulnerabilities |
+| `npm audit --offline --audit-level=high` | Pass from local advisory cache; 0 vulnerabilities |
+
+The configured Microsoft package-feed audit endpoint returned HTTP 429 on three backoff retries,
+and direct `registry.npmjs.org` audit failed the environment TLS handshake. The successful offline
+result is recorded as cache-based evidence, not a live advisory-service result.
 
 Unit coverage includes:
 
 - replaceable partial versus final transcript semantics;
 - transcript versioning and summary invalidation;
 - exact Whisper-only summary input;
+- exact newlines, repeated spaces, Unicode, and punctuation preserved through runtime, controller,
+  durable snapshot, submitted snapshot, and Qwen prompt construction;
 - audio format, byte, duration, queue, and sequence bounds;
+- exact 30-second accumulation, one-frame overflow trimming, multi-chunk boundary crossing, and
+  automatic/manual Stop race;
+- sticky live IPC/pump failure continuing to Whisper with track/stream cleanup and no unhandled
+  rejection;
+- cancellation/reset making zero finish, transcribe, or summary calls;
+- endpoint guard first-fail/second-retry disposal and inference blocking for active URL/service
+  state;
+- in-flight Whisper/Qwen cancellation and settlement before session/model/manager/temp teardown;
 - temporary WAV creation, recovery, and failure cleanup;
+- EACCES/EBUSY/EPERM startup retention warnings with hidden paths and retry guidance;
 - model-slot replacement failure preserving a working model;
 - exact override validation;
 - microphone permission gating;
@@ -58,13 +73,16 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,334 ms |
-| Stop to Whisper final | 467 ms |
-| Transcript final to summary | 2,947 ms |
-| Qwen generation | 2,945 ms |
-| Qwen prompt/completion tokens | 177 / 43 |
+| First live caption | 1,347 ms |
+| Stop to Whisper final | 561 ms |
+| Transcript final to summary | 3,134 ms |
+| Qwen generation | 3,131 ms |
+| Qwen prompt/completion tokens | 177 / 69 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
+| In-process mode validated | true |
+| External inference endpoint used | false |
+| Embedded web service running / URLs | false / 0 |
 
 Nemotron terminal:
 
@@ -74,12 +92,13 @@ Nemotron terminal:
 
 Whisper authoritative final:
 
-> an ordinary differential equation relates a function to its derivatives. For the first order
+>  an ordinary differential equation relates a function to its derivatives. For the first order
 > equation y prime equals negative 2y, separate the variables. The solution is y of t equals c times
 > e to the negative 2t. The initial value determines the constant c.
 
-The integration asserted that the summary input equals the Whisper string and differs from both the
-last live partial and Nemotron terminal.
+The leading space in that Whisper result is intentional evidence: the integration asserted that the
+summary input equals the returned Whisper string exactly and differs from both the last live partial
+and Nemotron terminal.
 
 ### Whisper
 
@@ -89,7 +108,7 @@ Result: `WHISPER_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 20,270 ms synthetic fixture;
-- 605 ms transcription;
+- 355 ms transcription;
 - 6/6 expected ODE words matched;
 - terminal `whisper_file_final`;
 - no owned temporary WAV residue;
@@ -103,8 +122,8 @@ Result: `NEMOTRON_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 92 partials;
-- first partial 1,361 ms;
-- terminal finalization 151 ms;
+- first partial 1,283 ms;
+- terminal finalization 171 ms;
 - 6/6 expected ODE words matched;
 - terminal `live_stream_final`.
 
@@ -116,9 +135,9 @@ Result: `SUMMARY_INTEGRATION_OK`
 
 | Prompt | Latency | Prompt tokens | Completion tokens |
 |---|---:|---:|---:|
-| ODE solution | 4,095 ms | 162 | 73 |
-| Euler comparison | 3,135 ms | 148 | 27 |
-| Solution procedure | 4,493 ms | 146 | 45 |
+| ODE solution | 3,181 ms | 162 | 73 |
+| Euler comparison | 3,820 ms | 148 | 27 |
+| Solution procedure | 3,133 ms | 146 | 45 |
 
 All three runs returned nonempty bounded output with `finishReason: "stop"`. Qwen thinking was
 disabled via `chat_template_kwargs` after an initial validation run showed the default reasoning
@@ -145,7 +164,8 @@ directory.
 Evidence:
 
 1. Runtime uses `AudioSession` and `ChatSession` directly.
-2. `RuntimeReadiness` requires `embeddedWebServiceRunning: false` and an empty URL list.
+2. `RuntimeReadiness.inProcessModeValidated` becomes true only after observing
+   `embeddedWebServiceRunning: false` and an empty URL list.
 3. The application never calls `FoundryLocalManager.startWebService()`.
 4. Static tests reject cloud inference endpoint strings and renderer/main `fetch(...)`.
 5. Integration results report `externalEndpointUsed: false`.
@@ -165,6 +185,8 @@ still initialize.
 - [ ] Generate the Qwen summary.
 - [ ] Reset and repeat with `fixtures\ode-lesson.wav`.
 - [ ] Confirm no owned temporary WAV remains.
+- [ ] Re-run a live online dependency audit when the configured advisory endpoint is below its rate
+  limit.
 
 Until that checklist is completed, describe the prototype as **local cached inference with no app
 cloud endpoint**, not as a completed physically offline rehearsal.

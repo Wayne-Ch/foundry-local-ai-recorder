@@ -19,16 +19,18 @@ preparation fails. There are no canned transcript or summary fallbacks.
 | Summary | `qwen3-0.6b-generic-gpu:2` / `WebGPUExecutionProvider` |
 | Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded eight-chunk renderer/native queues |
 | Whisper input | Application-owned validated temporary WAV passed through `Item.audioFromUri(...)` |
-| Summary input | Exact transcript version captured by `TranscriptStore.submitForSummary()` |
+| Summary input | Exact, untrimmed Whisper string/version captured by `TranscriptStore.submitForSummary()` |
 
 Nemotron uses `Item.audioDescriptor("pcm", 16000, 1)`, a borrowed `ItemQueue`,
 `Item.bytes(...)`, `markFinished()`, and `AudioSession.processStreamingRequest()`. Its replaceable
 partials and terminal aggregate are display/evidence only. The controller does not write either to
 durable transcript state.
 
-Whisper receives the same PCM capture after Stop. The application writes an owner-tracked WAV with
-mode `0600`, creates an `AudioSession`, adds `Item.audioFromUri(...)`, requires a terminal
-`SpeechResult`, and removes the WAV in `finally`.
+Whisper receives the same bounded PCM capture after Stop. The application caps accumulation at
+exactly 960,000 PCM bytes/30,000 ms, writes an owner-tracked WAV with mode `0600`, creates an
+`AudioSession`, adds `Item.audioFromUri(...)`, requires a nonblank terminal `SpeechResult`, preserves
+that returned string without trimming or whitespace normalization, and removes the WAV in
+`finally`.
 
 Qwen uses `ChatSession`, system/user messages, `preflightRequest()`, and `processRequest()`.
 Thinking is disabled through `chat_template_kwargs` so the small model spends its bounded output
@@ -69,6 +71,7 @@ npm run test:whisper-integration
 npm run test:nemotron-integration
 npm run test:summary-integration
 npm run test:chain-integration
+npm audit --offline --audit-level=high
 ```
 
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
@@ -79,12 +82,17 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
 - Recording requires an explicit consent checkbox and transient user-gesture microphone grant.
 - Live captions are optional. A failed Nemotron preparation leaves loaded Whisper and Qwen models
   intact and reports the Whisper-only fallback.
-- Stop finalizes Nemotron for timing/evidence, then sends the complete capture to Whisper.
+- Stop disables microphone input and releases tracks first, snapshots the exact bounded PCM
+  independently, then finalizes or cancels optional Nemotron best-effort. Pump, IPC, or backpressure
+  failures remain visible but cannot block Whisper.
+- The timer and byte/frame limit share the authoritative capture boundary. Automatic and manual
+  Stop races have one winner, and the final PCM cannot exceed exactly 30 seconds.
 - The final transcript is editable. A correction increments its version and invalidates a prior
   summary.
 - **Generate summary** submits only the current final transcript version.
-- **Delete / reset** cancels active work, removes owned temporary audio, and clears transcript,
-  summary, timing, and trace state.
+- **Delete / reset** cancels and discards an active recording without calling Nemotron finish,
+  Whisper, or Qwen; it then removes owned temporary audio and clears transcript, summary, timing,
+  and trace state.
 - Transcript and summary state are memory-only. There is intentionally no automatic retention,
   export, account sync, or background upload in this prototype.
 - A local PCM16LE/16 kHz/mono WAV can be opened as a stage fallback and follows the same temporary
@@ -102,7 +110,11 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
 - main-process stream leases bound to webContents, process, frame tree node, and frame token
 - cancellation on reload, navigation, render loss, webContents destruction, and window close
 - deterministic queue, session, model, manager, and temporary-file cleanup
-- startup orphan recovery removes only owned `capture-*.wav` files
+- bounded cancellation/settlement of active Nemotron, Whisper, and Qwen native work before model or
+  manager disposal and before temporary-file deletion
+- fail-closed in-process endpoint validation on every Prepare retry and before new inference
+- startup orphan recovery removes only owned `capture-*.wav` files; locked retained files produce a
+  UI/Developer Trace warning with count, hidden-path policy, and retry guidance
 
 ## Configuration overrides
 

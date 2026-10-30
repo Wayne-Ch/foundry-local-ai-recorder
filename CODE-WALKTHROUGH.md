@@ -9,8 +9,9 @@ Show `applyLivePartial`, `setWhisperFinal`, `editFinal`, and `submitForSummary`.
 Message:
 
 > Live captions are replaceable display state. Only `setWhisperFinal` creates a durable version.
-> Summary submission captures an exact text/version pair, and a correction invalidates the prior
-> summary.
+> Whisper's nonblank returned string is retained exactly; newlines, repeated spaces, Unicode, and
+> punctuation are not normalized. Summary submission captures that exact text/version pair, and a
+> correction invalidates the prior summary.
 
 ## 1:00-2:15 — Secure Electron boundary
 
@@ -48,14 +49,16 @@ Show:
 
 - `LivePcmCapture` and its `AudioWorklet`;
 - `StreamingPcm16Resampler`;
+- `BoundedPcmCapture`;
 - the eight-chunk `BoundedAudioChunkPump`;
-- the renderer's copied chunk array used later for Whisper.
+- `finalizeCapturedAudio` and `cancelRecordingAndReset`.
 
 Message:
 
-> The renderer resamples once to PCM16LE/16 kHz/mono. Chunks stream to Nemotron while exact copies
-> remain in the bounded application capture. Stop drains both, then the whole capture goes to
-> Whisper.
+> The renderer resamples once to PCM16LE/16 kHz/mono. `BoundedPcmCapture` trims at the exact
+> 960,000-byte contract. Stop releases tracks first and snapshots this capture independently;
+> Nemotron flush/finalization is optional, so sticky pump or backpressure errors cannot block
+> Whisper. Reset uses the cancellation path and never calls finish, transcription, or summary.
 
 ## 5:00-6:30 — Nemotron native streaming contract
 
@@ -78,7 +81,8 @@ Message:
 
 > The request borrows the queue. The app owns queue completion/disposal, enforces sequence and byte
 > bounds, and treats streaming segments as replaceable hypotheses. The terminal `SpeechResult` is
-> evidence, not the final product transcript.
+> evidence, not the final product transcript. A rejected finish cancels the native stream before
+> renderer ownership is released.
 
 ## 6:30-8:00 — Whisper authoritative final
 
@@ -97,7 +101,8 @@ request
 Message:
 
 > The original file path is never submitted directly. PCM is validated, written to an owned WAV,
-> passed to `AudioSession`, required to return `SpeechResult`, and deleted in `finally`.
+> passed to `AudioSession`, required to return a nonblank `SpeechResult`, retained exactly without
+> `.trim()`, and deleted only after the request/session settles.
 
 ## 8:00-9:30 — Summary preflight and exact input
 
@@ -141,15 +146,17 @@ Message:
 > A stream belongs to one exact renderer frame token. Stale partials fail `canRoute` and never reach
 > a replacement renderer.
 
-## 12:15-13:15 — Deterministic cleanup
+## 12:15-13:15 — Deterministic cleanup and fail-closed mode
 
 Show:
 
-- queue/session disposal;
+- endpoint validation before manager acceptance and every Prepare retry;
+- tracked Nemotron, Whisper, and Qwen cancellation/settlement;
+- queue/session disposal only after settlement;
 - model unload order;
 - manager shutdown/disposal;
-- reset clearing derived state;
-- startup `capture-*.wav` orphan recovery.
+- reset clearing derived state without processing captured audio;
+- startup `capture-*.wav` orphan recovery and locked-file warning.
 
 ## 13:15-15:00 — Evidence, not claims
 
