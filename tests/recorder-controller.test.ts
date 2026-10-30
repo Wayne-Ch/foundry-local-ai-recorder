@@ -47,7 +47,10 @@ class FakeRuntime implements RecorderRuntime {
   };
   summaryInput = "";
 
-  constructor(readonly finalTranscript = "Whisper authoritative final transcript.") {}
+  constructor(
+    readonly finalTranscript = "Whisper authoritative final transcript.",
+    readonly transcriptionError: Error | null = null,
+  ) {}
 
   async prepare(): Promise<PrepareRuntimeResult> {
     return {
@@ -94,6 +97,9 @@ class FakeRuntime implements RecorderRuntime {
   async cancelLiveStream(): Promise<void> {}
 
   async transcribeCapture(_capture: ValidatedAudioCapture): Promise<AudioTranscriptionResult> {
+    if (this.transcriptionError !== null) {
+      throw this.transcriptionError;
+    }
     return transcription(this.finalTranscript, WHISPER_AUDIO_MODEL_ID, "whisper_file", "whisper_file_final");
   }
 
@@ -190,6 +196,63 @@ describe("RecorderController", () => {
     expect(final.snapshot.transcript.finalText).toBe(exact);
     expect(runtime.summaryInput).toBe(exact);
     expect(summary.summaryInput).toBe(exact);
+  });
+
+  it("retains a warning trace when Whisper succeeds after live captions fail", async () => {
+    const runtime = new FakeRuntime();
+    const controller = new RecorderController(runtime);
+
+    const final = await controller.transcribeCapture({
+      format: AUDIO_FORMAT,
+      sampleRate: AUDIO_SAMPLE_RATE,
+      channels: AUDIO_CHANNELS,
+      durationMs: 1_000,
+      data: new ArrayBuffer(32_000),
+      liveCaptionFailure: "chunk IPC failed",
+    });
+
+    expect(final.snapshot.transcript.finalText).toBe("Whisper authoritative final transcript.");
+    expect(final.snapshot.trace).toContainEqual(
+      expect.objectContaining({
+        phase: "live-caption-warning",
+        severity: "warning",
+        detail: "Whisper final succeeded; live captions failed: chunk IPC failed",
+      }),
+    );
+
+    const reset = await controller.reset();
+    expect(reset.trace.some((entry) => entry.phase === "live-caption-warning")).toBe(false);
+  });
+
+  it("retains both live-caption and Whisper failures in the developer trace", async () => {
+    const runtime = new FakeRuntime("unused", new Error("Whisper native process failed"));
+    const controller = new RecorderController(runtime);
+
+    await expect(
+      controller.transcribeCapture({
+        format: AUDIO_FORMAT,
+        sampleRate: AUDIO_SAMPLE_RATE,
+        channels: AUDIO_CHANNELS,
+        durationMs: 1_000,
+        data: new ArrayBuffer(32_000),
+        liveCaptionFailure: "chunk IPC failed",
+      }),
+    ).rejects.toThrow("Whisper native process failed");
+
+    expect(controller.bootstrap().trace).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "live-caption-warning",
+          severity: "warning",
+          detail: "Whisper final failed after live captions failed: chunk IPC failed",
+        }),
+        expect.objectContaining({
+          phase: "whisper-final",
+          severity: "error",
+          detail: "Whisper native process failed",
+        }),
+      ]),
+    );
   });
 });
 

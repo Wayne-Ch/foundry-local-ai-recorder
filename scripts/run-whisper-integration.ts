@@ -27,6 +27,7 @@ try {
     channels: AUDIO_CHANNELS,
     durationMs: audioDurationMsFromPcmBytes(pcm.byteLength),
     pcmBytes: pcm,
+    liveCaptionFailure: null,
   });
   const recall = keywordRecall(result.transcript);
   assert.ok(recall.recall >= 0.66, `Whisper keyword recall ${recall.recall}: ${result.transcript}`);

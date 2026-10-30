@@ -176,11 +176,31 @@ export async function withTemporaryWav<T>(
   operation: (filePath: string) => Promise<T>,
 ): Promise<T> {
   const filePath = await store.createWav(pcmBytes);
+  let outcome: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
   try {
-    return await operation(filePath);
-  } finally {
-    await store.remove(filePath);
+    outcome = { ok: true, value: await operation(filePath) };
+  } catch (error) {
+    outcome = { ok: false, error };
   }
+  let cleanupError: unknown | null = null;
+  try {
+    await store.remove(filePath);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (!outcome.ok) {
+    if (cleanupError !== null) {
+      throw new AggregateError(
+        [outcome.error, cleanupError],
+        "Temporary audio processing failed and file cleanup also failed.",
+      );
+    }
+    throw outcome.error;
+  }
+  if (cleanupError !== null) {
+    throw cleanupError;
+  }
+  return outcome.value;
 }
 
 function isFileSystemError(error: unknown, code: string): boolean {

@@ -158,9 +158,36 @@ interface StoppablePcmCapture {
   stop(): Promise<Uint8Array[]>;
 }
 
+export class LiveCaptionFailureState {
+  #error: unknown | null = null;
+
+  get error(): unknown | null {
+    return this.#error;
+  }
+
+  record(error: unknown): void {
+    const recordedError =
+      error === null || error === undefined
+        ? new Error("Live captions failed without an error detail.")
+        : error;
+    this.#error =
+      this.#error === null
+        ? recordedError
+        : new AggregateError(
+            [this.#error, recordedError],
+            "Live captions encountered multiple failures during this recording.",
+          );
+  }
+
+  clear(): void {
+    this.#error = null;
+  }
+}
+
 interface LiveCaptionFinalizer {
   readonly pump: BoundedAudioChunkPump | null;
   readonly streamId: string | null;
+  readonly failure?: unknown | null;
   finish(lastSequence: number, audioDurationMs: number): Promise<void>;
   cancel(streamId: string): Promise<void>;
 }
@@ -184,22 +211,23 @@ export async function finalizeCapturedAudio(
 ): Promise<FinalizedCapturedAudio> {
   const releaseStream = options.releaseStream ?? releaseMediaStream;
   releaseStream(options.mediaStream);
+  let liveCaptionError: unknown | null = options.live.failure ?? null;
   let finalChunks: Uint8Array[];
   try {
     finalChunks = await options.capture.stop();
   } catch (captureError) {
     options.live.pump?.cancel();
     const cancelError = await cancelLiveCaption(options.live);
-    if (cancelError !== null) {
+    const cleanupErrors = [liveCaptionError, cancelError].filter((error) => error !== null);
+    if (cleanupErrors.length > 0) {
       throw new AggregateError(
-        [captureError, cancelError],
+        [captureError, ...cleanupErrors],
         "Audio capture failed and live-caption cleanup also failed.",
       );
     }
     throw captureError;
   }
 
-  let liveCaptionError: unknown | null = null;
   let pcmBytes: Uint8Array;
   let durationMs: number;
   try {
@@ -220,9 +248,10 @@ export async function finalizeCapturedAudio(
   } catch (captureError) {
     options.live.pump?.cancel();
     const cancelError = await cancelLiveCaption(options.live);
-    if (cancelError !== null) {
+    const cleanupErrors = [liveCaptionError, cancelError].filter((error) => error !== null);
+    if (cleanupErrors.length > 0) {
       throw new AggregateError(
-        [captureError, cancelError],
+        [captureError, ...cleanupErrors],
         "Audio snapshot failed and live-caption cleanup also failed.",
       );
     }

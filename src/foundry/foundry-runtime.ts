@@ -64,6 +64,11 @@ interface ManagerHandle {
   dispose(): void;
 }
 
+interface ManagerContext {
+  readonly handle: ManagerHandle;
+  readonly epoch: number;
+}
+
 interface ChatSessionHandle {
   readonly turnCount: number;
   preflightRequest(request: Request): Promise<RequestPreflightResult>;
@@ -154,7 +159,8 @@ export class FoundryRecorderRuntime {
     nemotron: new ModelSlot<IModel>(),
     summary: new ModelSlot<IModel>(),
   };
-  #manager: ManagerHandle | null = null;
+  #manager: ManagerContext | null = null;
+  #managerEpoch = 0;
   #tempAudioStore: TempAudioStore | null;
   #initializePromise: Promise<void> | null = null;
   #preparePromise: Promise<PrepareRuntimeResult> | null = null;
@@ -164,6 +170,7 @@ export class FoundryRecorderRuntime {
   #shutdownPromise: Promise<void> | null = null;
   #generation = 0;
   #shuttingDown = false;
+  #invalidatingManager = false;
   #readiness: RuntimeReadiness;
 
   constructor(options: FoundryRecorderRuntimeOptions = {}) {
@@ -225,7 +232,7 @@ export class FoundryRecorderRuntime {
     onPartial: (event: AudioPartialTranscriptEvent) => void,
   ): Promise<AudioStreamStartResponse> {
     this.#assertAvailable();
-    this.#requireValidatedManager();
+    await this.#ensureValidatedManager();
     if (this.#activeStream !== null) {
       throw new Error("A live audio stream is already active.");
     }
@@ -276,13 +283,19 @@ export class FoundryRecorderRuntime {
         mode: "nemotron_streaming",
       };
     } catch (error) {
-      try {
-        request?.cancel();
-        queue?.dispose();
-      } finally {
-        session?.dispose();
-      }
-      throw new Error(`Failed to start Nemotron live captions: ${errorMessage(error)}`, { cause: error });
+      const cleanupErrors = await collectCleanupErrors([
+        () => request?.cancel(),
+        () => queue?.dispose(),
+        () => session?.dispose(),
+      ]);
+      const failure = combineErrors(
+        error,
+        cleanupErrors,
+        `Failed to start Nemotron live captions: ${errorMessage(error)} Cleanup also failed.`,
+      );
+      throw new Error(`Failed to start Nemotron live captions: ${errorMessage(failure)}`, {
+        cause: failure,
+      });
     }
   }
 
@@ -404,7 +417,7 @@ export class FoundryRecorderRuntime {
 
   async transcribeCapture(capture: ValidatedAudioCapture): Promise<AudioTranscriptionResult> {
     this.#assertAvailable();
-    this.#requireValidatedManager();
+    await this.#ensureValidatedManager();
     const model = this.#requireModel("whisper");
     const store = this.#requireTempStore();
     const generation = this.#generation;
@@ -416,21 +429,22 @@ export class FoundryRecorderRuntime {
           const session = this.#createAudioSession(model);
           const request = new Request();
           operation.setCancel(() => request.cancel());
-          try {
-            request
-              .addItem(Item.audioFromUri(filePath))
-              .setOptions({ search: { temperature: 0 }, additionalOptions: { language: AUDIO_LANGUAGE } });
-            const response = await session.processRequest(request);
-            operation.assertCurrent();
-            const speechResult = response.output.find((item) => item.type === "speechResult");
-            if (speechResult?.type !== "speechResult" || !speechResult.text.trim()) {
-              throw new Error("Whisper returned no final speech transcript.");
-            }
-            return speechResult.text;
-          } finally {
-            request.cancel();
-            session.dispose();
-          }
+          return await runWithCleanup(
+            async () => {
+              request
+                .addItem(Item.audioFromUri(filePath))
+                .setOptions({ search: { temperature: 0 }, additionalOptions: { language: AUDIO_LANGUAGE } });
+              const response = await session.processRequest(request);
+              operation.assertCurrent();
+              const speechResult = response.output.find((item) => item.type === "speechResult");
+              if (speechResult?.type !== "speechResult" || !speechResult.text.trim()) {
+                throw new Error("Whisper returned no final speech transcript.");
+              }
+              return speechResult.text;
+            },
+            [() => request.cancel(), () => session.dispose()],
+            "Whisper native request",
+          );
         });
         const durationMs = Math.round(performance.now() - startedAt);
         return {
@@ -452,7 +466,7 @@ export class FoundryRecorderRuntime {
 
   async summarize(transcript: string): Promise<SummaryGenerationResult> {
     this.#assertAvailable();
-    this.#requireValidatedManager();
+    await this.#ensureValidatedManager();
     const model = this.#requireModel("summary");
     const generation = this.#generation;
     return this.#runTrackedOperation("summary", generation, async (operation) => {
@@ -474,37 +488,38 @@ export class FoundryRecorderRuntime {
         });
       operation.setCancel(() => request.cancel());
       const startedAt = performance.now();
-      try {
-        const preflight = await session.preflightRequest(request);
-        operation.assertCurrent();
-        if (!preflight.fits) {
-          throw new Error(
-            `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
-          );
-        }
-        const response = await session.processRequest(request);
-        operation.assertCurrent();
-        if (response.finishReason !== "stop") {
-          throw new Error(`Summary generation ended with ${response.finishReason}.`);
-        }
-        const text = extractDefaultText(response);
-        if (!text) {
-          throw new Error("The local summary model returned no text.");
-        }
-        if (text.length > 2_500) {
-          throw new Error("The local summary exceeded the prototype output bound.");
-        }
-        return {
-          text,
-          durationMs: Math.round(performance.now() - startedAt),
-          model: modelIdentity("summary", model),
-          preflight,
-          response,
-        };
-      } finally {
-        request.cancel();
-        session.dispose();
-      }
+      return await runWithCleanup(
+        async () => {
+          const preflight = await session.preflightRequest(request);
+          operation.assertCurrent();
+          if (!preflight.fits) {
+            throw new Error(
+              `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
+            );
+          }
+          const response = await session.processRequest(request);
+          operation.assertCurrent();
+          if (response.finishReason !== "stop") {
+            throw new Error(`Summary generation ended with ${response.finishReason}.`);
+          }
+          const text = extractDefaultText(response);
+          if (!text) {
+            throw new Error("The local summary model returned no text.");
+          }
+          if (text.length > 2_500) {
+            throw new Error("The local summary exceeded the prototype output bound.");
+          }
+          return {
+            text,
+            durationMs: Math.round(performance.now() - startedAt),
+            model: modelIdentity("summary", model),
+            preflight,
+            response,
+          };
+        },
+        [() => request.cancel(), () => session.dispose()],
+        "Qwen native request",
+      );
     });
   }
 
@@ -584,47 +599,72 @@ export class FoundryRecorderRuntime {
         retained: recovery.retained,
       },
     };
-    const manager = this.#createManager({
-      appName: "FoundryLocalSmartAIRecorder",
-      appDataDir: paths.appDataDir,
-      modelCacheDir: paths.modelCacheDir,
-      logsDir: paths.logsDir,
-      logLevel: "info",
-      disableNonessentialTelemetry: true,
-    });
+    const manager: ManagerContext = {
+      handle: this.#createManager({
+        appName: "FoundryLocalSmartAIRecorder",
+        appDataDir: paths.appDataDir,
+        modelCacheDir: paths.modelCacheDir,
+        logsDir: paths.logsDir,
+        logLevel: "info",
+        disableNonessentialTelemetry: true,
+      }),
+      epoch: this.#managerEpoch + 1,
+    };
+    this.#managerEpoch = manager.epoch;
     try {
       this.#assertAvailable();
-      this.#validateInProcessBoundary(manager);
+      this.#validateInProcessBoundary(manager.handle);
       this.#manager = manager;
     } catch (error) {
-      const cleanupErrors = this.#disposeManager(manager);
-      throw combineErrors(error, cleanupErrors, "Endpoint guard cleanup failed.");
+      await this.#invalidateManager(manager, error);
     }
   }
 
-  async #revalidateExistingManager(manager: ManagerHandle): Promise<void> {
+  async #revalidateExistingManager(manager: ManagerContext): Promise<void> {
     try {
-      this.#validateInProcessBoundary(manager);
+      this.#validateInProcessBoundary(manager.handle);
     } catch (error) {
-      this.#generation += 1;
-      const cleanupErrors: unknown[] = [];
+      await this.#invalidateManager(manager, error);
+    }
+  }
+
+  async #ensureValidatedManager(): Promise<ManagerContext> {
+    const manager = this.#requireManager();
+    try {
+      this.#validateInProcessBoundary(manager.handle);
+      return manager;
+    } catch (error) {
+      return await this.#invalidateManager(manager, error);
+    }
+  }
+
+  async #invalidateManager(manager: ManagerContext, primaryError: unknown): Promise<never> {
+    this.#invalidatingManager = true;
+    this.#generation += 1;
+    if (this.#manager === manager) {
+      this.#manager = null;
+    }
+    for (const role of ["whisper", "nemotron", "summary"] as const) {
+      this.#setReadiness(
+        role,
+        null,
+        "error",
+        "Inference is blocked because the in-process endpoint guard failed.",
+      );
+    }
+    const cleanupErrors: unknown[] = [];
+    try {
       if (this.#activeStream !== null) {
         try {
           await this.#terminateStream(this.#activeStream);
-        } catch (cleanupError) {
-          if (cleanupError instanceof NativeSettlementTimeoutError) {
-            throw combineErrors(error, [cleanupError], "Endpoint guard cleanup timed out.");
-          }
-          cleanupErrors.push(cleanupError);
+        } catch (error) {
+          cleanupErrors.push(error);
         }
       }
       try {
         await this.#cancelAndSettleOperations();
-      } catch (cleanupError) {
-        if (cleanupError instanceof NativeSettlementTimeoutError) {
-          throw combineErrors(error, [cleanupError], "Endpoint guard cleanup timed out.");
-        }
-        cleanupErrors.push(cleanupError);
+      } catch (error) {
+        cleanupErrors.push(error);
       }
       const slotOutcomes = await Promise.allSettled([
         this.#slots.nemotron.clear(),
@@ -636,20 +676,11 @@ export class FoundryRecorderRuntime {
           cleanupErrors.push(outcome.reason);
         }
       }
-      for (const role of ["whisper", "nemotron", "summary"] as const) {
-        this.#setReadiness(
-          role,
-          this.#slots[role].active,
-          "error",
-          "Inference is blocked because the in-process endpoint guard failed.",
-        );
-      }
-      if (this.#manager === manager) {
-        this.#manager = null;
-      }
-      cleanupErrors.push(...this.#disposeManager(manager));
-      throw combineErrors(error, cleanupErrors, "Endpoint guard cleanup failed.");
+      cleanupErrors.push(...this.#disposeManager(manager.handle));
+    } finally {
+      this.#invalidatingManager = false;
     }
+    throw combineErrors(primaryError, cleanupErrors, "Endpoint guard cleanup failed.");
   }
 
   async #prepare(
@@ -670,9 +701,10 @@ export class FoundryRecorderRuntime {
       }
     }
     this.#assertCurrent(generation);
+    const manager = this.#requireManager();
     return {
       readiness: this.#readiness,
-      liveCaptionsAvailable: this.#slots.nemotron.active !== null,
+      liveCaptionsAvailable: this.#slots.nemotron.activeFor(manager) !== null,
       liveCaptionsFailure,
     };
   }
@@ -684,22 +716,22 @@ export class FoundryRecorderRuntime {
   ): Promise<IModel> {
     const target = this.#targets[role];
     const manager = this.#requireManager();
-    const current = this.#slots[role].active;
-    if (
-      current !== null &&
-      current.id === target.modelId &&
-      executionProvider(current) === target.executionProvider &&
-      (await current.isLoaded())
-    ) {
-      this.#assertCurrent(generation);
-      this.#setReadiness(role, current, "ready", `${current.id} is loaded and ready.`);
-      return current;
-    }
-
-    this.#setReadiness(role, null, "checking", `Resolving exact ${role} model ${target.modelId}.`);
+    const current = this.#slots[role].activeFor(manager);
     let candidate: IModel | null = null;
     try {
-      candidate = await this.#resolveModel(target);
+      if (
+        current !== null &&
+        current.id === target.modelId &&
+        executionProvider(current) === target.executionProvider &&
+        (await current.isLoaded())
+      ) {
+        this.#assertCurrent(generation);
+        this.#setReadiness(role, current, "ready", `${current.id} is loaded and ready.`);
+        return current;
+      }
+
+      this.#setReadiness(role, null, "checking", `Resolving exact ${role} model ${target.modelId}.`);
+      candidate = await this.#resolveModel(target, manager);
       this.#assertCurrent(generation);
       this.#assertModel(role, candidate, target);
       this.#setReadiness(
@@ -721,42 +753,51 @@ export class FoundryRecorderRuntime {
           throw new Error(`Model download completed without caching ${candidate.id}.`);
         }
       }
-      await this.#ensureProvider(target, manager, onProgress);
+      await this.#ensureProvider(target, manager.handle, onProgress);
       this.#assertCurrent(generation);
       onProgress?.({ phase: `${role}:load`, detail: `Loading ${candidate.id} in-process.` });
-      await this.#slots[role].activate(candidate);
+      await this.#slots[role].activate(candidate, manager);
       this.#assertCurrent(generation);
       this.#setReadiness(role, candidate, "ready", `${candidate.id} is ready for local inference.`);
       return candidate;
     } catch (error) {
+      const cleanupErrors: unknown[] = [];
       if (candidate !== null && candidate !== current) {
         try {
-          if (await candidate.isLoaded()) {
+          if (this.#slots[role].active === candidate) {
+            await this.#slots[role].clear();
+          } else if (await candidate.isLoaded()) {
             await candidate.unload();
           }
-        } catch {
-          // Preserve the preparation error; a later shutdown retries cleanup.
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
         }
       }
       const currentLoaded = current !== null && (await isModelLoaded(current));
+      const failure = combineErrors(
+        error,
+        cleanupErrors,
+        `Failed to clean up ${role} after model preparation failed.`,
+      );
       this.#setReadiness(
         role,
         current,
         currentLoaded ? "ready" : "error",
         currentLoaded
-          ? `Keeping working model ${current.id}; replacement preparation failed: ${errorMessage(error)}`
-          : errorMessage(error),
+          ? `Keeping working model ${current.id}; replacement preparation failed: ${errorMessage(failure)}`
+          : errorMessage(failure),
       );
-      throw new Error(`Failed to prepare ${role}: ${errorMessage(error)}`, { cause: error });
+      throw new Error(`Failed to prepare ${role}: ${errorMessage(failure)}`, { cause: failure });
     }
   }
 
-  async #resolveModel(target: RuntimeTarget): Promise<IModel> {
-    const manager = this.#requireManager();
+  async #resolveModel(target: RuntimeTarget, manager: ManagerContext): Promise<IModel> {
     try {
-      return await manager.catalog.getModelVariant(target.modelId);
+      return await manager.handle.catalog.getModelVariant(target.modelId);
     } catch (catalogError) {
-      const cached = (await manager.catalog.getCachedModels()).find((model) => model.id === target.modelId);
+      const cached = (await manager.handle.catalog.getCachedModels()).find(
+        (model) => model.id === target.modelId,
+      );
       if (cached !== undefined) {
         return cached;
       }
@@ -877,10 +918,14 @@ export class FoundryRecorderRuntime {
     } catch (error) {
       errors.push(error);
     }
-    await this.#awaitBoundedSettlement(
-      Promise.allSettled([active.consumePromise, active.responsePromise]).then(() => undefined),
-      "Nemotron live stream",
-    );
+    try {
+      await this.#awaitBoundedSettlement(
+        Promise.allSettled([active.consumePromise, active.responsePromise]).then(() => undefined),
+        "Nemotron live stream",
+      );
+    } catch (error) {
+      errors.push(error);
+    }
     try {
       await this.#cleanupStream(active);
     } catch (error) {
@@ -958,13 +1003,20 @@ export class FoundryRecorderRuntime {
     if (active.length === 0) {
       return;
     }
-    await this.#awaitBoundedSettlement(
-      Promise.all(active.map(async (operation) => operation.settled)).then(() => undefined),
-      "Whisper/Qwen native requests",
-    );
-    const errors = active.flatMap((operation) =>
-      operation.cancelError === null ? [] : [operation.cancelError],
-    );
+    const errors: unknown[] = [];
+    try {
+      await this.#awaitBoundedSettlement(
+        Promise.all(active.map(async (operation) => operation.settled)).then(() => undefined),
+        "Whisper/Qwen native requests",
+      );
+    } catch (error) {
+      errors.push(error);
+    }
+    for (const operation of active) {
+      if (operation.cancelError !== null) {
+        errors.push(operation.cancelError);
+      }
+    }
     throwCollectedErrors(errors, "Failed to cancel one or more native inference requests.");
   }
 
@@ -982,25 +1034,25 @@ export class FoundryRecorderRuntime {
 
   async #performShutdown(): Promise<void> {
     const errors: unknown[] = [];
+    const manager = this.#manager;
+    this.#manager = null;
     if (this.#activeStream !== null) {
       try {
         await this.#terminateStream(this.#activeStream);
       } catch (error) {
-        if (error instanceof NativeSettlementTimeoutError) {
-          throw error;
-        }
         errors.push(error);
       }
     }
     try {
       await this.#cancelAndSettleOperations();
     } catch (error) {
-      if (error instanceof NativeSettlementTimeoutError) {
-        throw error;
-      }
       errors.push(error);
     }
-    await this.#awaitPendingPreparation();
+    try {
+      await this.#awaitPendingPreparation();
+    } catch (error) {
+      errors.push(error);
+    }
     try {
       await this.#tempAudioStore?.cleanupAll();
     } catch (error) {
@@ -1016,10 +1068,11 @@ export class FoundryRecorderRuntime {
         errors.push(outcome.reason);
       }
     }
-    const manager = this.#manager;
-    this.#manager = null;
     if (manager !== null) {
-      errors.push(...this.#disposeManager(manager));
+      errors.push(...this.#disposeManager(manager.handle));
+    }
+    for (const role of ["whisper", "nemotron", "summary"] as const) {
+      this.#setReadiness(role, null, "not_initialized", `${this.#targets[role].modelId} is unloaded.`);
     }
     this.#readiness = {
       ...this.#readiness,
@@ -1084,12 +1137,6 @@ export class FoundryRecorderRuntime {
     }
   }
 
-  #requireValidatedManager(): ManagerHandle {
-    const manager = this.#requireManager();
-    this.#validateInProcessBoundary(manager);
-    return manager;
-  }
-
   #disposeManager(manager: ManagerHandle): unknown[] {
     const errors: unknown[] = [];
     try {
@@ -1111,20 +1158,22 @@ export class FoundryRecorderRuntime {
     status: ModelReadiness["status"],
     detail: string,
   ): void {
+    const clearModel = model === null && (status === "error" || status === "not_initialized");
     this.#readiness = {
       ...this.#readiness,
       [role]: {
         target: this.#targets[role],
-        model: model === null ? this.#readiness[role].model : modelIdentity(role, model),
+        model:
+          model === null ? (clearModel ? null : this.#readiness[role].model) : modelIdentity(role, model),
         status,
         detail,
-        cached: model?.isCached ?? this.#readiness[role].cached,
+        cached: model?.isCached ?? (clearModel ? false : this.#readiness[role].cached),
         loaded: status === "ready",
       },
     };
   }
 
-  #requireManager(): ManagerHandle {
+  #requireManager(): ManagerContext {
     if (this.#manager === null) {
       throw new Error("Foundry Local manager is not initialized.");
     }
@@ -1139,7 +1188,7 @@ export class FoundryRecorderRuntime {
   }
 
   #requireModel(role: ModelRole): IModel {
-    const model = this.#slots[role].active;
+    const model = this.#slots[role].activeFor(this.#requireManager());
     if (model === null) {
       throw new Error(`The ${role} model is not ready.`);
     }
@@ -1163,6 +1212,9 @@ export class FoundryRecorderRuntime {
   #assertAvailable(): void {
     if (this.#shuttingDown) {
       throw new Error("The Foundry Local runtime is shutting down.");
+    }
+    if (this.#invalidatingManager) {
+      throw new Error("The Foundry Local runtime is recovering from an endpoint guard failure.");
     }
   }
 }
@@ -1253,6 +1305,43 @@ function throwCollectedErrors(errors: readonly unknown[], message: string): void
 
 function combineErrors(primary: unknown, additional: readonly unknown[], message: string): unknown {
   return additional.length === 0 ? primary : new AggregateError([primary, ...additional], message);
+}
+
+async function runWithCleanup<T>(
+  operation: () => Promise<T>,
+  cleanupActions: readonly (() => void | Promise<void>)[],
+  label: string,
+): Promise<T> {
+  let outcome: { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
+  try {
+    outcome = { ok: true, value: await operation() };
+  } catch (error) {
+    outcome = { ok: false, error };
+  }
+  const cleanupErrors = await collectCleanupErrors(cleanupActions);
+  if (!outcome.ok) {
+    throw combineErrors(
+      outcome.error,
+      cleanupErrors,
+      `${label} failed: ${errorMessage(outcome.error)} Cleanup also failed.`,
+    );
+  }
+  throwCollectedErrors(cleanupErrors, `${label} cleanup failed.`);
+  return outcome.value;
+}
+
+async function collectCleanupErrors(
+  cleanupActions: readonly (() => void | Promise<void>)[],
+): Promise<unknown[]> {
+  const errors: unknown[] = [];
+  for (const cleanup of cleanupActions) {
+    try {
+      await cleanup();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
 }
 
 async function isModelLoaded(model: IModel): Promise<boolean> {

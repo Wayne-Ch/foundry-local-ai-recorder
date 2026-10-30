@@ -64,6 +64,7 @@ export interface AudioCapturePayload {
   readonly channels: typeof AUDIO_CHANNELS;
   readonly durationMs: number;
   readonly data: ArrayBuffer;
+  readonly liveCaptionFailure?: string | null;
 }
 
 export interface ValidatedAudioCapture {
@@ -72,6 +73,7 @@ export interface ValidatedAudioCapture {
   readonly channels: typeof AUDIO_CHANNELS;
   readonly durationMs: number;
   readonly pcmBytes: Uint8Array;
+  readonly liveCaptionFailure: string | null;
 }
 
 export interface AudioTranscriptionResult {
@@ -149,7 +151,8 @@ export type AudioCaptureValidationErrorCode =
   | "DURATION_OUT_OF_RANGE"
   | "PAYLOAD_TOO_LARGE"
   | "INVALID_PCM_LENGTH"
-  | "DURATION_SIZE_MISMATCH";
+  | "DURATION_SIZE_MISMATCH"
+  | "INVALID_LIVE_CAPTION_FAILURE";
 
 export interface AudioCaptureValidationError {
   readonly code: AudioCaptureValidationErrorCode;

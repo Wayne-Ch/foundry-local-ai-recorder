@@ -71,7 +71,7 @@ npm run test:whisper-integration
 npm run test:nemotron-integration
 npm run test:summary-integration
 npm run test:chain-integration
-npm audit --offline --audit-level=high
+npm audit --audit-level=low
 ```
 
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
@@ -84,7 +84,7 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
   intact and reports the Whisper-only fallback.
 - Stop disables microphone input and releases tracks first, snapshots the exact bounded PCM
   independently, then finalizes or cancels optional Nemotron best-effort. Pump, IPC, or backpressure
-  failures remain visible but cannot block Whisper.
+  failures remain visible through Stop and in the Developer Trace but cannot block Whisper.
 - The timer and byte/frame limit share the authoritative capture boundary. Automatic and manual
   Stop races have one winner, and the final PCM cannot exceed exactly 30 seconds.
 - The final transcript is editable. A correction increments its version and invalidates a prior
@@ -110,9 +110,13 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
 - main-process stream leases bound to webContents, process, frame tree node, and frame token
 - cancellation on reload, navigation, render loss, webContents destruction, and window close
 - deterministic queue, session, model, manager, and temporary-file cleanup
+- request cancellation, session disposal, operation settlement, and temporary-file deletion are
+  attempted independently so one cleanup failure cannot skip the rest
 - bounded cancellation/settlement of active Nemotron, Whisper, and Qwen native work before model or
   manager disposal and before temporary-file deletion
-- fail-closed in-process endpoint validation on every Prepare retry and before new inference
+- manager-epoch-bound model slots that detach before fallible unload/probe cleanup
+- fail-closed in-process endpoint validation on every Prepare retry and before new inference; guard
+  failure invalidates all prior manager/model state before a retry
 - startup orphan recovery removes only owned `capture-*.wav` files; locked retained files produce a
   UI/Developer Trace warning with count, hidden-path policy, and retry guidance
 

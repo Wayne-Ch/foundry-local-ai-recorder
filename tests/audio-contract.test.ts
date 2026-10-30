@@ -45,6 +45,7 @@ import {
   cleanupRecorderOperation,
   clipPcm16ToMaxBytes,
   finalizeCapturedAudio,
+  LiveCaptionFailureState,
   recordingLimitDelay,
   releaseMediaStream,
   resampleChannelsToPcm16,
@@ -102,7 +103,29 @@ describe("audio IPC validation", () => {
     if (result.ok) {
       expect(result.value.pcmBytes.byteLength).toBe(32_000);
       expect(result.value.durationMs).toBe(1000);
+      expect(result.value.liveCaptionFailure).toBeNull();
     }
+  });
+
+  it("validates bounded live-caption failure metadata for the developer trace", () => {
+    expect(
+      validateAudioCapturePayload({
+        ...validPayload(),
+        liveCaptionFailure: "chunk IPC failed",
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: { liveCaptionFailure: "chunk IPC failed" },
+    });
+    expect(
+      validateAudioCapturePayload({
+        ...validPayload(),
+        liveCaptionFailure: " ".repeat(2),
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_LIVE_CAPTION_FAILURE" },
+    });
   });
 
   it.each([
@@ -406,6 +429,82 @@ describe("live transcript and backpressure", () => {
     expect(finish).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledWith(STREAM_ID);
   });
+
+  it("preserves a callback failure after the pump is detached and cancellation succeeds", async () => {
+    const failureState = new LiveCaptionFailureState();
+    const callbackFailure = new Error("async live callback failed");
+    failureState.record(callbackFailure);
+    const pcm = new BoundedPcmCapture();
+    pcm.append(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
+    const cancel = vi.fn(async () => {});
+
+    const result = await finalizeCapturedAudio({
+      capture: { stop: async () => [new Uint8Array(AUDIO_STREAM_CHUNK_BYTES)] },
+      mediaStream: { getTracks: () => [] } as unknown as MediaStream,
+      pcm,
+      live: {
+        pump: null,
+        streamId: STREAM_ID,
+        failure: failureState.error,
+        finish: async () => {},
+        cancel,
+      },
+    });
+
+    expect(result.liveCaptionError).toBe(callbackFailure);
+    expect(result.pcmBytes.byteLength).toBe(AUDIO_STREAM_CHUNK_BYTES * 2);
+    expect(cancel).toHaveBeenCalledWith(STREAM_ID);
+    failureState.clear();
+    expect(failureState.error).toBeNull();
+  });
+
+  it("aggregates a detached callback failure with live-stream cancellation failure", async () => {
+    const failureState = new LiveCaptionFailureState();
+    const callbackFailure = new Error("async live callback failed");
+    const cancelFailure = new Error("live cancellation failed");
+    failureState.record(callbackFailure);
+
+    const result = await finalizeCapturedAudio({
+      capture: { stop: async () => [new Uint8Array(AUDIO_STREAM_CHUNK_BYTES)] },
+      mediaStream: { getTracks: () => [] } as unknown as MediaStream,
+      pcm: new BoundedPcmCapture(),
+      live: {
+        pump: null,
+        streamId: STREAM_ID,
+        failure: failureState.error,
+        finish: async () => {},
+        cancel: async () => {
+          throw cancelFailure;
+        },
+      },
+    });
+
+    expect(result.liveCaptionError).toBeInstanceOf(AggregateError);
+    expect((result.liveCaptionError as AggregateError).errors).toEqual([callbackFailure, cancelFailure]);
+  });
+
+  it("contains an asynchronous pump rejection after recording the callback failure", async () => {
+    const failureState = new LiveCaptionFailureState();
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const pump = new BoundedAudioChunkPump(
+        async () => {
+          throw new Error("background pump failed");
+        },
+        (error) => failureState.record(error),
+      );
+
+      pump.enqueue(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
+      await vi.waitFor(() => expect(failureState.error).toBeInstanceOf(Error));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(unhandled).not.toHaveBeenCalled();
+      expect((failureState.error as Error).message).toBe("background pump failed");
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
 });
 
 describe("audio recorder state and draft behavior", () => {
@@ -469,6 +568,8 @@ describe("audio recorder state and draft behavior", () => {
     expect(renderer).toContain("locked temporary audio");
     expect(renderer).toContain("Cancel / reset");
     expect(renderer).toContain("transcriptEditorDirty");
+    expect(renderer).toContain("LiveCaptionFailureState");
+    expect(renderer).toContain("Whisper final succeeded; live captions failed");
     expect(renderer).not.toContain("finalTranscript.value.trim()");
   });
 

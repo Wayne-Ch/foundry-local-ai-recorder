@@ -13,6 +13,7 @@ import {
   beginRecordingStop,
   cancelRecordingAndReset,
   finalizeCapturedAudio,
+  LiveCaptionFailureState,
   LivePcmCapture,
   recordingLimitDelay,
   releaseMediaStream,
@@ -23,6 +24,7 @@ interface RecordingOperation {
   readonly mediaStream: MediaStream;
   readonly capture: LivePcmCapture;
   pump: BoundedAudioChunkPump | null;
+  readonly liveCaptionFailure: LiveCaptionFailureState;
   readonly streamId: string | null;
   readonly startedAt: number;
   readonly pcm: BoundedPcmCapture;
@@ -282,6 +284,7 @@ window.addEventListener("beforeunload", () => {
     window.clearInterval(active.timerId);
     window.clearTimeout(active.limitId);
     active.pump?.cancel();
+    active.liveCaptionFailure.clear();
     active.pcm.clear();
     releaseMediaStream(active.mediaStream);
     void active.capture.stop().catch(() => undefined);
@@ -342,6 +345,7 @@ async function startRecording(): Promise<void> {
   let liveCapture: LivePcmCapture | null = null;
   let streamId: string | null = null;
   let pump: BoundedAudioChunkPump | null = null;
+  const liveCaptionFailure = new LiveCaptionFailureState();
   const pcm = new BoundedPcmCapture();
   try {
     await api.authorizeMicrophone();
@@ -367,6 +371,7 @@ async function startRecording(): Promise<void> {
         pump = new BoundedAudioChunkPump(
           (sequence, data) => api.appendLiveChunk({ streamId: stream.streamId, sequence, data }),
           (error) => {
+            liveCaptionFailure.record(error);
             pump?.cancel();
             pump = null;
             if (recording?.generation === generation) {
@@ -396,6 +401,7 @@ async function startRecording(): Promise<void> {
             pump?.enqueue(accepted);
           }
         } catch (error) {
+          liveCaptionFailure.record(error);
           pump?.cancel();
           pump = null;
           if (recording?.generation === generation) {
@@ -414,6 +420,7 @@ async function startRecording(): Promise<void> {
       mediaStream,
       capture: liveCapture,
       pump,
+      liveCaptionFailure,
       streamId,
       startedAt: liveCapture.startedAt,
       pcm,
@@ -445,6 +452,7 @@ async function startRecording(): Promise<void> {
     if (liveCapture !== null) {
       await liveCapture.stop().catch(() => undefined);
     }
+    liveCaptionFailure.clear();
     setStatus(microphoneError(error), "error");
   } finally {
     busy = false;
@@ -476,6 +484,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       live: {
         pump: active.pump,
         streamId: active.streamId,
+        failure: active.liveCaptionFailure.error,
         finish: async (lastSequence, audioDurationMs) => {
           if (active.streamId === null) {
             return;
@@ -502,6 +511,8 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
         finalized.pcmBytes.byteOffset,
         finalized.pcmBytes.byteOffset + finalized.pcmBytes.byteLength,
       ) as ArrayBuffer,
+      liveCaptionFailure:
+        finalized.liveCaptionError === null ? null : errorMessage(finalized.liveCaptionError),
     };
     const response = await api.transcribeCapture(payload);
     snapshot = response.snapshot;
@@ -510,13 +521,12 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       setStatus("Whisper final transcript is ready for review.", "success");
     } else {
       setStatus(
-        `Whisper final transcript is ready. Live captions ended early: ${errorMessage(
-          finalized.liveCaptionError,
-        )}`,
+        `Whisper final succeeded; live captions failed: ${errorMessage(finalized.liveCaptionError)}`,
         "warning",
       );
     }
   } catch (error) {
+    snapshot = await api.getBootstrap().catch(() => snapshot);
     setStatus(errorMessage(error), "error");
   } finally {
     recording = null;
@@ -644,6 +654,7 @@ async function resetRecorder(): Promise<void> {
   } catch (error) {
     setStatus(errorMessage(error), "error");
   } finally {
+    active?.liveCaptionFailure.clear();
     resetting = false;
     busy = false;
     render(snapshot);
@@ -660,6 +671,7 @@ async function failActiveRecording(error: unknown): Promise<void> {
   window.clearInterval(active.timerId);
   window.clearTimeout(active.limitId);
   active.pump?.cancel();
+  active.liveCaptionFailure.clear();
   active.pcm.clear();
   releaseMediaStream(active.mediaStream);
   await active.capture.stop().catch(() => undefined);

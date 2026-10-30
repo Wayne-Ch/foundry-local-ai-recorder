@@ -26,13 +26,9 @@ Runtime log evidence:
 |---|---|
 | `npm run lint` | Pass; 44 files checked |
 | `npm run typecheck` | Pass |
-| `npm test -- --reporter=dot` | Pass; 10 files, 72 tests |
+| `npm test -- --reporter=dot` | Pass; 10 files, 90 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
-| `npm audit --offline --audit-level=high` | Pass from local advisory cache; 0 vulnerabilities |
-
-The configured Microsoft package-feed audit endpoint returned HTTP 429 on three backoff retries,
-and direct `registry.npmjs.org` audit failed the environment TLS handshake. The successful offline
-result is recorded as cache-based evidence, not a live advisory-service result.
+| `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
 
 Unit coverage includes:
 
@@ -46,10 +42,17 @@ Unit coverage includes:
   automatic/manual Stop race;
 - sticky live IPC/pump failure continuing to Whisper with track/stream cleanup and no unhandled
   rejection;
+- callback-time live-caption failure retained after the pump reference is detached, including
+  cancellation success/failure, Whisper success/failure, warning UI/trace, and Reset clearing;
 - cancellation/reset making zero finish, transcribe, or summary calls;
-- endpoint guard first-fail/second-retry disposal and inference blocking for active URL/service
-  state;
-- in-flight Whisper/Qwen cancellation and settlement before session/model/manager/temp teardown;
+- manager-epoch model ownership, detach-before-cleanup, and fail-closed guard recovery when
+  `isLoaded`, model unload, manager shutdown/disposal, or multiple cleanup actions fail;
+- endpoint guard first-fail/retry disposal, stale-model rejection, and inference blocking for
+  active URL/service state;
+- request-cancel failure never skipping Whisper/Qwen/Nemotron session disposal, tracked-operation
+  settlement, or temporary-file deletion;
+- in-flight Whisper/Qwen cancellation and settlement before session/model/manager/temp teardown,
+  including Reset and shutdown races;
 - temporary WAV creation, recovery, and failure cleanup;
 - EACCES/EBUSY/EPERM startup retention warnings with hidden paths and retry guidance;
 - model-slot replacement failure preserving a working model;
@@ -73,10 +76,10 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,347 ms |
-| Stop to Whisper final | 561 ms |
-| Transcript final to summary | 3,134 ms |
-| Qwen generation | 3,131 ms |
+| First live caption | 1,268 ms |
+| Stop to Whisper final | 410 ms |
+| Transcript final to summary | 3,096 ms |
+| Qwen generation | 3,094 ms |
 | Qwen prompt/completion tokens | 177 / 69 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
@@ -108,7 +111,7 @@ Result: `WHISPER_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 20,270 ms synthetic fixture;
-- 355 ms transcription;
+- 328 ms transcription;
 - 6/6 expected ODE words matched;
 - terminal `whisper_file_final`;
 - no owned temporary WAV residue;
@@ -122,8 +125,8 @@ Result: `NEMOTRON_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 92 partials;
-- first partial 1,283 ms;
-- terminal finalization 171 ms;
+- first partial 1,299 ms;
+- terminal finalization 126 ms;
 - 6/6 expected ODE words matched;
 - terminal `live_stream_final`.
 
@@ -135,9 +138,9 @@ Result: `SUMMARY_INTEGRATION_OK`
 
 | Prompt | Latency | Prompt tokens | Completion tokens |
 |---|---:|---:|---:|
-| ODE solution | 3,181 ms | 162 | 73 |
-| Euler comparison | 3,820 ms | 148 | 27 |
-| Solution procedure | 3,133 ms | 146 | 45 |
+| ODE solution | 6,882 ms | 162 | 73 |
+| Euler comparison | 2,973 ms | 148 | 27 |
+| Solution procedure | 4,826 ms | 146 | 45 |
 
 All three runs returned nonempty bounded output with `finishReason: "stop"`. Qwen thinking was
 disabled via `chat_template_kwargs` after an initial validation run showed the default reasoning
@@ -147,10 +150,10 @@ mode exhausting the 260-token output budget.
 
 | Command | Result |
 |---|---|
-| `npm run smoke:electron` | `ELECTRON_SMOKE_OK` |
-| `npm run probe:microphone-permission` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
-| `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
-| `npm run capture:ui` | `UI_CAPTURE_OK` |
+| `node scripts/smoke-electron.mjs` | `ELECTRON_SMOKE_OK` |
+| `node scripts/probe-electron-microphone.mjs` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
+| `node scripts/probe-electron-stream-owner.mjs` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
+| `node scripts/capture-ui.mjs` | `UI_CAPTURE_OK`; captured stage inspected successfully |
 
 Stage screenshot:
 
@@ -185,8 +188,6 @@ still initialize.
 - [ ] Generate the Qwen summary.
 - [ ] Reset and repeat with `fixtures\ode-lesson.wav`.
 - [ ] Confirm no owned temporary WAV remains.
-- [ ] Re-run a live online dependency audit when the configured advisory endpoint is below its rate
-  limit.
 
 Until that checklist is completed, describe the prototype as **local cached inference with no app
 cloud endpoint**, not as a completed physically offline rehearsal.

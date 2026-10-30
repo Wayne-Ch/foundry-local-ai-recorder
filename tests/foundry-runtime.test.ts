@@ -125,6 +125,103 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
+  it("detaches stale models and reports every endpoint-guard cleanup failure before retrying", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const rejected = new FakeManager(models);
+    const accepted = new FakeManager(models);
+    const runtime = createRuntime(root, [rejected, accepted]);
+    const whisper = models.get(WHISPER_AUDIO_MODEL_ID);
+    const summary = models.get(SUMMARY_MODEL_ID);
+    if (whisper === undefined || summary === undefined) {
+      throw new Error("Expected fake models.");
+    }
+    const whisperLoad = vi.spyOn(whisper, "load");
+    await runtime.prepare(false);
+
+    rejected.urls = ["http://127.0.0.1:5272"];
+    vi.spyOn(whisper, "isLoaded").mockRejectedValueOnce(new Error("isLoaded cleanup failed"));
+    vi.spyOn(whisper, "unload").mockRejectedValueOnce(new Error("stale refresh unload failed"));
+    vi.spyOn(summary, "unload").mockRejectedValueOnce(new Error("summary unload failed"));
+    vi.mocked(rejected.dispose).mockImplementationOnce(() => {
+      throw new Error("manager dispose failed");
+    });
+
+    const cleanupFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(cleanupFailure)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("endpoint guard"),
+        "isLoaded cleanup failed",
+        "summary unload failed",
+        "manager dispose failed",
+      ]),
+    );
+    expect(runtime.readiness.whisper).toMatchObject({
+      model: null,
+      status: "error",
+      loaded: false,
+    });
+    expect(runtime.readiness.summary).toMatchObject({
+      model: null,
+      status: "error",
+      loaded: false,
+    });
+
+    const staleRetryFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(staleRetryFailure)).toContain("stale refresh unload failed");
+    expect(runtime.readiness.whisper).toMatchObject({
+      model: null,
+      status: "error",
+      loaded: false,
+    });
+    expect(accepted.catalog.getModelVariant).toHaveBeenCalledWith(WHISPER_AUDIO_MODEL_ID);
+
+    const prepared = await runtime.prepare(false);
+    expect(prepared.readiness.whisper.status).toBe("ready");
+    expect(prepared.readiness.summary.status).toBe("ready");
+    expect(whisperLoad).toHaveBeenCalledTimes(2);
+    await runtime.shutdown();
+  });
+
+  it("reports fail-closed readiness while endpoint-guard cleanup is still settling", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const rejected = new FakeManager(models);
+    const accepted = new FakeManager(models);
+    const runtime = createRuntime(root, [rejected, accepted]);
+    await runtime.prepare(false);
+
+    const whisper = models.get(WHISPER_AUDIO_MODEL_ID);
+    if (whisper === undefined) {
+      throw new Error("Expected fake Whisper model.");
+    }
+    const loadedProbe = deferred<boolean>();
+    const isLoaded = vi.spyOn(whisper, "isLoaded").mockImplementationOnce(() => loadedProbe.promise);
+    rejected.urls = ["http://127.0.0.1:5272"];
+
+    const guardFailure = runtime.prepare(false);
+    await vi.waitFor(() => expect(isLoaded).toHaveBeenCalled());
+
+    expect(runtime.readiness.whisper).toMatchObject({
+      model: null,
+      status: "error",
+      loaded: false,
+    });
+    await expect(runtime.transcribeCapture(validatedCapture())).rejects.toThrow(
+      "recovering from an endpoint guard failure",
+    );
+
+    loadedProbe.resolve(true);
+    await expect(guardFailure).rejects.toThrow("endpoint guard");
+    await expect(runtime.prepare(false)).resolves.toMatchObject({
+      readiness: {
+        whisper: { status: "ready" },
+        summary: { status: "ready" },
+      },
+    });
+    await runtime.shutdown();
+  });
+
   it("surfaces locked startup audio retention without exposing the root path", async () => {
     const secretRoot = "C:\\Users\\someone\\private\\recorder-audio";
     let removeCalls = 0;
@@ -220,6 +317,217 @@ describe("FoundryRecorderRuntime", () => {
       runtime.appendLiveChunk(started.streamId, 3, new Uint8Array(AUDIO_STREAM_CHUNK_BYTES)),
     ).toThrow("no longer active");
     await runtime.shutdown();
+  });
+
+  it("disposes a partially created Nemotron session when request cancellation throws", async () => {
+    const root = await createTempRoot();
+    const manager = new FakeManager(createModels());
+    const dispose = vi.fn();
+    const runtime = createRuntime(root, [manager], {
+      createAudioSession: (model) =>
+        model.id === NEMOTRON_AUDIO_MODEL_ID
+          ? fakeAudioSession({
+              processStreamingRequest: (request) => {
+                vi.spyOn(request, "cancel").mockImplementation(() => {
+                  throw new Error("Nemotron start cancel failed");
+                });
+                throw new Error("Nemotron stream creation failed");
+              },
+              dispose,
+            })
+          : fakeAudioSession(),
+    });
+    await runtime.prepare(true);
+
+    const failure = await captureFailure(runtime.startLiveStream(() => {}));
+
+    expect(errorMessages(failure)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Nemotron stream creation failed"),
+        "Nemotron start cancel failed",
+      ]),
+    );
+    expect(dispose).toHaveBeenCalledOnce();
+    await runtime.shutdown();
+  });
+
+  it("disposes the Nemotron session when terminal request cancellation throws", async () => {
+    const root = await createTempRoot();
+    const manager = new FakeManager(createModels());
+    const dispose = vi.fn();
+    const runtime = createRuntime(root, [manager], {
+      createAudioSession: (model) =>
+        model.id === NEMOTRON_AUDIO_MODEL_ID
+          ? fakeAudioSession({
+              processStreamingRequest: (request) => {
+                vi.spyOn(request, "cancel").mockImplementation(() => {
+                  throw new Error("Nemotron terminal cancel failed");
+                });
+                return completedAudioStream("Nemotron terminal");
+              },
+              dispose,
+            })
+          : fakeAudioSession(),
+    });
+    await runtime.prepare(true);
+    const started = await runtime.startLiveStream(() => {});
+    for (let sequence = 0; sequence < 3; sequence += 1) {
+      runtime.appendLiveChunk(started.streamId, sequence, new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
+    }
+
+    await expect(
+      runtime.finishLiveStream({
+        streamId: started.streamId,
+        lastSequence: 2,
+        audioDurationMs: 300,
+      }),
+    ).rejects.toThrow("Nemotron terminal cancel failed");
+
+    expect(dispose).toHaveBeenCalledOnce();
+    await expect(runtime.cancelLiveStream(started.streamId)).resolves.toBeUndefined();
+    await runtime.shutdown();
+  });
+
+  it("preserves Whisper process and cleanup failures while still deleting temporary audio", async () => {
+    const root = await createTempRoot();
+    const manager = new FakeManager(createModels());
+    const dispose = vi.fn(() => {
+      throw new Error("Whisper session dispose failed");
+    });
+    const runtime = createRuntime(root, [manager], {
+      createAudioSession: () =>
+        fakeAudioSession({
+          processRequest: async (request) => {
+            vi.spyOn(request, "cancel").mockImplementation(() => {
+              throw new Error("Whisper request cancel failed");
+            });
+            throw new Error("Whisper native process failed");
+          },
+          dispose,
+        }),
+    });
+    await runtime.prepare(false);
+
+    const failure = await captureFailure(runtime.transcribeCapture(validatedCapture()));
+
+    expect(errorMessages(failure)).toEqual(
+      expect.arrayContaining([
+        "Whisper native process failed",
+        "Whisper request cancel failed",
+        "Whisper session dispose failed",
+      ]),
+    );
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(await ownedTempFiles(root)).toEqual([]);
+    await runtime.shutdown();
+  });
+
+  it("preserves Qwen process and cleanup failures while settling the tracked operation", async () => {
+    const root = await createTempRoot();
+    const manager = new FakeManager(createModels());
+    const dispose = vi.fn(() => {
+      throw new Error("Qwen session dispose failed");
+    });
+    const runtime = createRuntime(root, [manager], {
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async (request) => {
+            vi.spyOn(request, "cancel").mockImplementation(() => {
+              throw new Error("Qwen request cancel failed");
+            });
+            throw new Error("Qwen native process failed");
+          },
+          dispose,
+        }),
+    });
+    await runtime.prepare(false);
+
+    const failure = await captureFailure(runtime.summarize("Exact transcript"));
+
+    expect(errorMessages(failure)).toEqual(
+      expect.arrayContaining([
+        "Qwen native process failed",
+        "Qwen request cancel failed",
+        "Qwen session dispose failed",
+      ]),
+    );
+    expect(dispose).toHaveBeenCalledOnce();
+    await runtime.shutdown();
+  });
+
+  it("continues Whisper reset teardown when request cancellation throws", async () => {
+    const root = await createTempRoot();
+    const responseDeferred = deferred<Response>();
+    const requestReady = deferred<void>();
+    const dispose = vi.fn();
+    const manager = new FakeManager(createModels());
+    const runtime = createRuntime(root, [manager], {
+      settlementTimeoutMs: 1_000,
+      createAudioSession: () =>
+        fakeAudioSession({
+          processRequest: async (request) => {
+            vi.spyOn(request, "cancel").mockImplementation(() => {
+              throw new Error("Whisper reset cancel failed");
+            });
+            requestReady.resolve();
+            return responseDeferred.promise;
+          },
+          dispose,
+        }),
+    });
+    await runtime.prepare(false);
+
+    const transcription = runtime.transcribeCapture(validatedCapture());
+    await requestReady.promise;
+    const reset = runtime.reset();
+    responseDeferred.resolve(speechResponse("stale result"));
+
+    await expect(transcription).rejects.toThrow("cancelled");
+    await expect(reset).rejects.toThrow("Whisper reset cancel failed");
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(await ownedTempFiles(root)).toEqual([]);
+    await runtime.shutdown();
+  });
+
+  it("continues Qwen shutdown teardown when request cancellation throws", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const responseDeferred = deferred<Response>();
+    const requestReady = deferred<void>();
+    const dispose = vi.fn(() => {
+      order.push("summary-session-dispose");
+    });
+    const runtime = createRuntime(root, [manager], {
+      models,
+      settlementTimeoutMs: 1_000,
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async (request) => {
+            vi.spyOn(request, "cancel").mockImplementation(() => {
+              throw new Error("Qwen shutdown cancel failed");
+            });
+            requestReady.resolve();
+            return responseDeferred.promise;
+          },
+          dispose,
+        }),
+    });
+    await runtime.prepare(false);
+
+    const summary = runtime.summarize("Exact transcript");
+    await requestReady.promise;
+    const shutdown = runtime.shutdown();
+    responseDeferred.resolve(textResponse("stale summary"));
+
+    await expect(summary).rejects.toThrow("cancelled");
+    await expect(shutdown).rejects.toThrow("Qwen shutdown cancel failed");
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(order.indexOf("summary-session-dispose")).toBeLessThan(
+      order.findIndex((entry) => entry.startsWith("model-unload:")),
+    );
+    expect(manager.dispose).toHaveBeenCalledOnce();
   });
 
   it("cancels and settles in-flight Whisper work before session disposal and temp deletion", async () => {
@@ -611,6 +919,17 @@ function textResponse(text: string): Response {
   };
 }
 
+function completedAudioStream(text: string): StreamingResponse {
+  return {
+    response: Promise.resolve(speechResponse(text)),
+    [Symbol.asyncIterator]() {
+      return {
+        next: async () => ({ done: true, value: undefined }),
+      };
+    },
+  };
+}
+
 function capturePayload() {
   return {
     format: AUDIO_FORMAT,
@@ -628,6 +947,7 @@ function validatedCapture(): ValidatedAudioCapture {
     channels: AUDIO_CHANNELS,
     durationMs: 1_000,
     pcmBytes: new Uint8Array(32_000),
+    liveCaptionFailure: null,
   };
 }
 
@@ -655,6 +975,31 @@ async function ownedTempFiles(root: string): Promise<readonly string[]> {
     }
     throw error;
   }
+}
+
+async function captureFailure(operation: Promise<unknown>): Promise<unknown> {
+  try {
+    await operation;
+  } catch (error) {
+    return error;
+  }
+  throw new Error("Expected operation to fail.");
+}
+
+function errorMessages(error: unknown): string[] {
+  if (!(error instanceof Error)) {
+    return [String(error)];
+  }
+  const messages = [error.message];
+  if (error instanceof AggregateError) {
+    for (const nested of error.errors) {
+      messages.push(...errorMessages(nested));
+    }
+  }
+  if (error.cause !== undefined) {
+    messages.push(...errorMessages(error.cause));
+  }
+  return messages;
 }
 
 function deferred<T>(): {

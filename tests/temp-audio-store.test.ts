@@ -68,6 +68,33 @@ describe("temporary audio cleanup", () => {
     expect(store.activeCount).toBe(0);
   });
 
+  it("preserves the processing error when temporary file deletion also fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "new-home-audio-test-"));
+    tempRoots.push(root);
+    const store = new TempAudioStore(root, {
+      createId: () => "combined-failure",
+      remove: async () => {
+        throw new Error("temp delete failed");
+      },
+    });
+
+    let failure: unknown;
+    try {
+      await withTemporaryWav(store, new Uint8Array([0, 0]), async () => {
+        throw new Error("native process failed");
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([
+      expect.objectContaining({ message: "native process failed" }),
+      expect.objectContaining({ message: "temp delete failed" }),
+    ]);
+    expect(store.activeCount).toBe(1);
+  });
+
   it("removes all tracked captures during reset cleanup", async () => {
     const store = await createStore();
     const first = await store.createWav(new Uint8Array([0, 0]));

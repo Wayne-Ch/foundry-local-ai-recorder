@@ -9,6 +9,7 @@ import {
   AUDIO_STREAM_CHUNK_BYTES,
   AUDIO_STREAM_MAX_CHUNKS,
   type AudioCapturePayload,
+  type AudioCaptureValidationErrorCode,
   type AudioCaptureValidationResult,
   type AudioPartialTranscriptEvent,
   type AudioRecorderEvent,
@@ -23,6 +24,7 @@ import {
 } from "./audio-types";
 
 const PCM_DURATION_TOLERANCE_BYTES = 64;
+const MAX_LIVE_CAPTION_FAILURE_LENGTH = 1_000;
 
 export function validateAudioCapturePayload(input: unknown): AudioCaptureValidationResult {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -68,6 +70,18 @@ export function validateAudioCapturePayload(input: unknown): AudioCaptureValidat
       `PCM byte length ${candidate.data.byteLength} does not match ${candidate.durationMs} ms.`,
     );
   }
+  if (
+    candidate.liveCaptionFailure !== undefined &&
+    candidate.liveCaptionFailure !== null &&
+    (typeof candidate.liveCaptionFailure !== "string" ||
+      candidate.liveCaptionFailure.trim().length === 0 ||
+      candidate.liveCaptionFailure.length > MAX_LIVE_CAPTION_FAILURE_LENGTH)
+  ) {
+    return failure(
+      "INVALID_LIVE_CAPTION_FAILURE",
+      `Live-caption failure details must be 1-${MAX_LIVE_CAPTION_FAILURE_LENGTH} characters.`,
+    );
+  }
 
   return {
     ok: true,
@@ -77,6 +91,7 @@ export function validateAudioCapturePayload(input: unknown): AudioCaptureValidat
       channels: AUDIO_CHANNELS,
       durationMs: candidate.durationMs ?? 0,
       pcmBytes: new Uint8Array(candidate.data),
+      liveCaptionFailure: candidate.liveCaptionFailure ?? null,
     },
   };
 }
@@ -360,18 +375,7 @@ function failure(code: Parameters<typeof createFailure>[0], message: string): Au
   return createFailure(code, message);
 }
 
-function createFailure(
-  code:
-    | "INVALID_PAYLOAD"
-    | "UNSUPPORTED_FORMAT"
-    | "UNSUPPORTED_SAMPLE_RATE"
-    | "UNSUPPORTED_CHANNEL_COUNT"
-    | "DURATION_OUT_OF_RANGE"
-    | "PAYLOAD_TOO_LARGE"
-    | "INVALID_PCM_LENGTH"
-    | "DURATION_SIZE_MISMATCH",
-  message: string,
-): AudioCaptureValidationResult {
+function createFailure(code: AudioCaptureValidationErrorCode, message: string): AudioCaptureValidationResult {
   return { ok: false, error: { code, message } };
 }
 

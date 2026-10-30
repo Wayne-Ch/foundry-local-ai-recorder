@@ -228,8 +228,24 @@ export class RecorderController {
         "info",
         result.transcriptionMs,
       );
+      if (validation.value.liveCaptionFailure !== null) {
+        this.#traceEvent(
+          "Application",
+          "live-caption-warning",
+          `Whisper final succeeded; live captions failed: ${validation.value.liveCaptionFailure}`,
+          "warning",
+        );
+      }
       return { result, snapshot: this.#snapshot() };
     } catch (error) {
+      if (validation.value.liveCaptionFailure !== null) {
+        this.#traceEvent(
+          "Application",
+          "live-caption-warning",
+          `Whisper final failed after live captions failed: ${validation.value.liveCaptionFailure}`,
+          "warning",
+        );
+      }
       this.#traceErrorIfCurrent(generation, "whisper-final", error);
       throw error;
     }
