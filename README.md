@@ -83,8 +83,9 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
 - Live captions are optional. A failed Nemotron preparation leaves loaded Whisper and Qwen models
   intact and reports the Whisper-only fallback.
 - Stop disables microphone input and releases tracks first, snapshots the exact bounded PCM
-  independently, then finalizes or cancels optional Nemotron best-effort. Pump, IPC, or backpressure
-  failures remain visible through Stop and in the Developer Trace but cannot block Whisper.
+  independently, then finalizes or initiates cancellation of optional Nemotron best-effort. A
+  timed-out or still-pending cancel is observed separately and quarantines only the live-caption
+  slot; valid PCM proceeds immediately to Whisper, and Qwen remains available after the final.
 - The timer and byte/frame limit share the authoritative capture boundary. Automatic and manual
   Stop races have one winner, and the final PCM cannot exceed exactly 30 seconds.
 - The final transcript is editable. A correction increments its version and invalidates a prior
@@ -112,16 +113,22 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
 - deterministic queue, session, model, manager, and temporary-file cleanup
 - request cancellation, session disposal, operation settlement, and temporary-file deletion are
   attempted independently so one cleanup failure cannot skip the rest
-- cancellation timeouts enter an explicit draining state, reject new work, and expose a completion
-  promise/status while native Nemotron, Whisper, or Qwen work continues settling
-- temporary-file deletion, model unload, and manager shutdown/disposal remain behind that drain
-  barrier and run only after native sessions settle; timeout never authorizes early teardown
-- manager-epoch-bound model slots that detach before fallible unload/probe cleanup
+- optional Nemotron cancellation has a scoped single-flight drain: it rejects another live stream
+  but does not enter the global inference barrier for already-loaded Whisper or Qwen
+- Reset and shutdown share one durable cleanup generation. A caller-facing timeout does not clear
+  that generation or enqueue duplicate temporary cleanup, model unload, manager shutdown, or
+  manager disposal
+- temporary-file deletion, model unload, and manager shutdown/disposal remain behind the global
+  drain barrier and run only after every native session settles; timeout never authorizes early
+  teardown
+- manager-epoch-bound model slots retain ownership after a failed loaded-state probe or unload, so
+  manager shutdown/disposal is deferred until a later retry confirms every model slot is clear
 - fail-closed in-process endpoint validation on every Prepare retry and before new inference; guard
   failure quarantines the rejected manager until both shutdown and disposal are confirmed, and a
   retry cannot create a replacement manager while cleanup remains unsafe
-- live-caption failure diagnostics are redacted and bounded to 1,000 UTF-8 bytes before audio
-  validation, so diagnostic size cannot block valid PCM or the authoritative Whisper fallback
+- preload/native failures become canonical `{ code, name, safeSummary, truncated }` diagnostics.
+  Raw messages, paths, usernames, credentials, and arbitrary suffixes are never rendered in status
+  or Developer Trace, so diagnostic content cannot block valid PCM or leak local identity
 - startup orphan recovery removes only owned `capture-*.wav` files; locked retained files produce a
   UI/Developer Trace warning with count, hidden-path policy, and retry guidance
 

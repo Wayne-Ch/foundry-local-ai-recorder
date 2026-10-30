@@ -23,32 +23,33 @@ import {
   type SummaryResponse,
   type TranscriptionResponse,
 } from "../shared/contracts";
+import { type SafeDiagnosticCode, toSafeDiagnostic } from "../shared/safe-diagnostic";
 
 const api: RecorderApi = {
-  getBootstrap: () => ipcRenderer.invoke(ipcChannels.bootstrap) as Promise<RecorderSnapshot>,
+  getBootstrap: () => invokeSafely<RecorderSnapshot>(ipcChannels.bootstrap, "LOCAL_OPERATION_FAILED"),
   prepare: (request: PrepareRecorderRequest) =>
-    ipcRenderer.invoke(ipcChannels.prepare, request) as Promise<PrepareRecorderResponse>,
+    invokeSafely<PrepareRecorderResponse>(ipcChannels.prepare, "LOCAL_OPERATION_FAILED", request),
   authorizeMicrophone: () => {
     const request: MicrophoneAuthorizationRequest = {
       hasTransientUserActivation: navigator.userActivation.isActive,
     };
-    return ipcRenderer.invoke(ipcChannels.authorizeMicrophone, request) as Promise<void>;
+    return invokeSafely<void>(ipcChannels.authorizeMicrophone, "PERMISSION_DENIED", request);
   },
   startLiveStream: (request: AudioStreamStartRequest) =>
-    ipcRenderer.invoke(ipcChannels.startLiveStream, request) as Promise<AudioStreamStartResponse>,
+    invokeSafely<AudioStreamStartResponse>(ipcChannels.startLiveStream, "OPTIONAL_LIVE_FAILED", request),
   appendLiveChunk: (request: AudioStreamChunkRequest) =>
-    ipcRenderer.invoke(ipcChannels.appendLiveChunk, request) as Promise<AudioStreamChunkResponse>,
+    invokeSafely<AudioStreamChunkResponse>(ipcChannels.appendLiveChunk, "OPTIONAL_LIVE_FAILED", request),
   finishLiveStream: (request: AudioStreamFinishRequest) =>
-    ipcRenderer.invoke(ipcChannels.finishLiveStream, request) as Promise<LiveStreamResult>,
+    invokeSafely<LiveStreamResult>(ipcChannels.finishLiveStream, "OPTIONAL_LIVE_FAILED", request),
   cancelLiveStream: (request: AudioStreamCancelRequest) =>
-    ipcRenderer.invoke(ipcChannels.cancelLiveStream, request) as Promise<void>,
+    invokeSafely<void>(ipcChannels.cancelLiveStream, "OPTIONAL_LIVE_CLEANUP_PENDING", request),
   transcribeCapture: (request: AudioCapturePayload) =>
-    ipcRenderer.invoke(ipcChannels.transcribeCapture, request) as Promise<TranscriptionResponse>,
-  importWav: () => ipcRenderer.invoke(ipcChannels.importWav) as Promise<ImportWavResponse | null>,
+    invokeSafely<TranscriptionResponse>(ipcChannels.transcribeCapture, "LOCAL_OPERATION_FAILED", request),
+  importWav: () => invokeSafely<ImportWavResponse | null>(ipcChannels.importWav, "LOCAL_OPERATION_FAILED"),
   editTranscript: (request: EditTranscriptRequest) =>
-    ipcRenderer.invoke(ipcChannels.editTranscript, request) as Promise<RecorderSnapshot>,
-  generateSummary: () => ipcRenderer.invoke(ipcChannels.generateSummary) as Promise<SummaryResponse>,
-  reset: () => ipcRenderer.invoke(ipcChannels.reset) as Promise<RecorderSnapshot>,
+    invokeSafely<RecorderSnapshot>(ipcChannels.editTranscript, "LOCAL_OPERATION_FAILED", request),
+  generateSummary: () => invokeSafely<SummaryResponse>(ipcChannels.generateSummary, "LOCAL_OPERATION_FAILED"),
+  reset: () => invokeSafely<RecorderSnapshot>(ipcChannels.reset, "LOCAL_OPERATION_FAILED"),
   onProgress: (callback: (event: ProgressEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: ProgressEvent) => callback(progress);
     ipcRenderer.on(ipcChannels.progress, listener);
@@ -63,3 +64,15 @@ const api: RecorderApi = {
 };
 
 contextBridge.exposeInMainWorld("recorderApi", api);
+
+async function invokeSafely<T>(
+  channel: string,
+  fallbackCode: SafeDiagnosticCode,
+  ...args: readonly unknown[]
+): Promise<T> {
+  try {
+    return (await ipcRenderer.invoke(channel, ...args)) as T;
+  } catch (error) {
+    throw toSafeDiagnostic(error, fallbackCode);
+  }
+}

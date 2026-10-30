@@ -7,6 +7,7 @@ import {
   AUDIO_SAMPLE_RATE,
 } from "../src/audio/audio-types";
 import { RecorderController } from "../src/main/recorder-controller";
+import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import { chunks, keywordRecall, listOwnedTempFiles, loadFixturePcm, sleep } from "./integration-utils";
 
 const controller = new RecorderController();
@@ -15,7 +16,13 @@ try {
   const prepared = await controller.prepare({ enableLiveCaptions: true }, (event) =>
     process.stdout.write(`${event.detail}\n`),
   );
-  assert.equal(prepared.liveCaptionsAvailable, true, prepared.liveCaptionsFailure ?? "Nemotron unavailable");
+  assert.equal(
+    prepared.liveCaptionsAvailable,
+    true,
+    prepared.liveCaptionsFailure === null
+      ? "Nemotron unavailable"
+      : formatSafeDiagnostic(prepared.liveCaptionsFailure),
+  );
   assert.equal(prepared.snapshot.readiness.inProcessModeValidated, true);
   assert.equal(prepared.snapshot.readiness.externalEndpointUsed, false);
   assert.equal(prepared.snapshot.readiness.embeddedWebServiceRunning, false);

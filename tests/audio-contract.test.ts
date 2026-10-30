@@ -7,8 +7,6 @@ import {
   createTranscriptDraftUpdate,
   encodePcm16Wav,
   extractPcm16FromWav,
-  LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
-  LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER,
   reduceAudioRecorderState,
   StreamingTranscriptAccumulator,
   sanitizeLiveCaptionFailure,
@@ -55,6 +53,7 @@ import {
   StreamingPcm16Resampler,
   shouldOfferWhisperFallback,
 } from "../src/renderer/audio-capture";
+import { formatSafeDiagnostic, toSafeDiagnostic } from "../src/shared/safe-diagnostic";
 
 const STREAM_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_STREAM_ID = "22222222-2222-4222-8222-222222222222";
@@ -118,7 +117,13 @@ describe("audio IPC validation", () => {
       }),
     ).toMatchObject({
       ok: true,
-      value: { liveCaptionFailure: "chunk IPC failed" },
+      value: {
+        liveCaptionFailure: {
+          code: "OPTIONAL_LIVE_FAILED",
+          name: "UnknownError",
+          truncated: true,
+        },
+      },
     });
     expect(
       validateAudioCapturePayload({
@@ -127,40 +132,55 @@ describe("audio IPC validation", () => {
       }),
     ).toMatchObject({
       ok: true,
-      value: { liveCaptionFailure: "Live captions failed without safe diagnostic details." },
+      value: {
+        liveCaptionFailure: {
+          code: "OPTIONAL_LIVE_FAILED",
+          name: "UnknownError",
+          truncated: true,
+        },
+      },
     });
   });
 
-  it.each([999, 1_000])("preserves a %i-byte live-caption diagnostic", (length) => {
-    const diagnostic = "x".repeat(length);
-    expect(sanitizeLiveCaptionFailure(diagnostic)).toBe(diagnostic);
+  it.each([
+    "C:\\Users\\Jane Doe\\private recording.wav",
+    '"C:\\Users\\Jane Doe\\private recording.wav",',
+    "\\\\workstation 01\\private share\\private recording.wav",
+    "'\\\\workstation 01\\private share\\private recording.wav';",
+    "/home/Jane Doe/private.wav",
+    '"/home/Jane Doe/private.wav").',
+    "音声🔥 failed for /home/Jane Doe/秘密 recording.wav token=super-secret",
+  ])("converts raw path diagnostics into canonical safe metadata: %s", (raw) => {
+    const diagnostic = sanitizeLiveCaptionFailure(raw);
+    expect(diagnostic).toEqual({
+      code: "OPTIONAL_LIVE_FAILED",
+      name: "UnknownError",
+      safeSummary: "Optional live captions failed; Whisper audio remains authoritative.",
+      truncated: true,
+    });
+    const rendered = formatSafeDiagnostic(diagnostic ?? toSafeDiagnostic(null));
+    expect(rendered).not.toContain("Jane Doe");
+    expect(rendered).not.toContain("private recording.wav");
+    expect(rendered).not.toContain("workstation 01");
+    expect(rendered).not.toContain("private share");
+    expect(rendered).not.toContain("秘密");
+    expect(rendered).not.toContain("super-secret");
   });
 
-  it.each([1_001, 100_000])("truncates a %i-byte live-caption diagnostic with a marker", (length) => {
-    const diagnostic = sanitizeLiveCaptionFailure("x".repeat(length));
-    expect(diagnostic).not.toBeNull();
-    expect(new TextEncoder().encode(diagnostic ?? "").byteLength).toBeLessThanOrEqual(
-      LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
-    );
-    expect(diagnostic?.endsWith(LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER)).toBe(true);
+  it("reconstructs canonical summaries instead of trusting renderer-provided text", () => {
     expect(
-      validateAudioCapturePayload({ ...validPayload(), liveCaptionFailure: "x".repeat(length) }).ok,
-    ).toBe(true);
-  });
-
-  it("redacts path and credential-like Unicode diagnostics without splitting characters", () => {
-    const diagnostic = sanitizeLiveCaptionFailure(
-      `音声🔥 failed at C:\\Users\\person\\private.wav token=super-secret ${"東京".repeat(1_000)}`,
-    );
-    expect(diagnostic).not.toContain("C:\\Users\\person\\private.wav");
-    expect(diagnostic).not.toContain("super-secret");
-    expect(diagnostic).toContain("[path redacted]");
-    expect(diagnostic).toContain("token=[redacted]");
-    expect(diagnostic?.endsWith(LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER)).toBe(true);
-    expect(diagnostic?.includes("\uFFFD")).toBe(false);
-    expect(new TextEncoder().encode(diagnostic ?? "").byteLength).toBeLessThanOrEqual(
-      LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
-    );
+      sanitizeLiveCaptionFailure({
+        code: "RESOURCE_BUSY",
+        name: "Error",
+        safeSummary: "C:\\Users\\Jane Doe\\private recording.wav",
+        truncated: false,
+      }),
+    ).toEqual({
+      code: "RESOURCE_BUSY",
+      name: "Error",
+      safeSummary: "A local native resource is still busy.",
+      truncated: true,
+    });
   });
 
   it.each([
@@ -458,10 +478,14 @@ describe("live transcript and backpressure", () => {
     });
 
     expect(result.pcmBytes.byteLength).toBe(AUDIO_STREAM_CHUNK_BYTES * 2);
-    expect(result.liveCaptionError).toBeInstanceOf(Error);
+    expect(result.liveCaptionError).toMatchObject({
+      code: "OPTIONAL_LIVE_FAILED",
+      truncated: true,
+    });
     expect(stop).toHaveBeenCalledOnce();
     expect(trackStop).toHaveBeenCalledOnce();
     expect(finish).not.toHaveBeenCalled();
+    await result.liveCaptionCleanup;
     expect(cancel).toHaveBeenCalledWith(STREAM_ID);
   });
 
@@ -486,14 +510,18 @@ describe("live transcript and backpressure", () => {
       },
     });
 
-    expect(result.liveCaptionError).toBe("async live callback failed");
+    expect(result.liveCaptionError).toMatchObject({
+      code: "OPTIONAL_LIVE_FAILED",
+      truncated: true,
+    });
     expect(result.pcmBytes.byteLength).toBe(AUDIO_STREAM_CHUNK_BYTES * 2);
+    await result.liveCaptionCleanup;
     expect(cancel).toHaveBeenCalledWith(STREAM_ID);
     failureState.clear();
     expect(failureState.error).toBeNull();
   });
 
-  it("aggregates a detached callback failure with live-stream cancellation failure", async () => {
+  it("reports a detached live-stream cancellation failure independently", async () => {
     const failureState = new LiveCaptionFailureState();
     const callbackFailure = new Error("async live callback failed");
     const cancelFailure = new Error("live cancellation failed");
@@ -514,11 +542,39 @@ describe("live transcript and backpressure", () => {
       },
     });
 
-    expect(result.liveCaptionError).toBeInstanceOf(AggregateError);
-    expect((result.liveCaptionError as AggregateError).errors).toEqual([
-      "async live callback failed",
-      cancelFailure,
-    ]);
+    expect(result.liveCaptionError).toMatchObject({
+      code: "OPTIONAL_LIVE_FAILED",
+      truncated: true,
+    });
+    await expect(result.liveCaptionCleanup).resolves.toMatchObject({
+      code: "OPTIONAL_LIVE_CLEANUP_PENDING",
+      name: "Error",
+      truncated: true,
+    });
+  });
+
+  it("returns valid PCM without awaiting a pending optional live cancellation", async () => {
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const result = await finalizeCapturedAudio({
+      capture: { stop: async () => [new Uint8Array(AUDIO_STREAM_CHUNK_BYTES)] },
+      mediaStream: { getTracks: () => [] } as unknown as MediaStream,
+      pcm: new BoundedPcmCapture(),
+      live: {
+        pump: null,
+        streamId: STREAM_ID,
+        failure: new Error("live finalization failed"),
+        finish: async () => {},
+        cancel,
+      },
+    });
+
+    expect(result.pcmBytes.byteLength).toBe(AUDIO_STREAM_CHUNK_BYTES);
+    expect(result.liveCaptionError).toMatchObject({
+      code: "OPTIONAL_LIVE_FAILED",
+      truncated: true,
+    });
+    expect(result.liveCaptionCleanup).not.toBeNull();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith(STREAM_ID));
   });
 
   it("contains an asynchronous pump rejection after recording the callback failure", async () => {
@@ -534,11 +590,21 @@ describe("live transcript and backpressure", () => {
       );
 
       pump.enqueue(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
-      await vi.waitFor(() => expect(failureState.error).toBe("background pump failed"));
+      await vi.waitFor(() =>
+        expect(failureState.error).toMatchObject({
+          code: "OPTIONAL_LIVE_FAILED",
+          name: "Error",
+          truncated: true,
+        }),
+      );
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(unhandled).not.toHaveBeenCalled();
-      expect(failureState.error).toBe("background pump failed");
+      expect(failureState.error).toMatchObject({
+        code: "OPTIONAL_LIVE_FAILED",
+        name: "Error",
+        truncated: true,
+      });
     } finally {
       process.off("unhandledRejection", unhandled);
     }
@@ -598,6 +664,7 @@ describe("audio recorder state and draft behavior", () => {
     expect(shouldOfferWhisperFallback(whisper)).toBe(false);
 
     const renderer = await readFile(path.resolve("src/renderer/app.ts"), "utf8");
+    const preload = await readFile(path.resolve("src/preload/preload.ts"), "utf8");
     expect(renderer).toContain("Live draft <span>Nemotron</span>");
     expect(renderer).toContain("Final transcript <span>Whisper</span>");
     expect(renderer).toContain("Session summary <span>Qwen</span>");
@@ -608,7 +675,11 @@ describe("audio recorder state and draft behavior", () => {
     expect(renderer).toContain("transcriptEditorDirty");
     expect(renderer).toContain("LiveCaptionFailureState");
     expect(renderer).toContain("Whisper final succeeded; live captions failed");
+    expect(renderer).toContain("formatSafeDiagnostic(toSafeDiagnostic(error");
+    expect(renderer).not.toContain("error instanceof Error ? error.message");
     expect(renderer).not.toContain("finalTranscript.value.trim()");
+    expect(preload).toContain("invokeSafely");
+    expect(preload).toContain("throw toSafeDiagnostic(error, fallbackCode)");
   });
 
   it("stops every microphone track during cleanup", () => {
@@ -721,7 +792,7 @@ describe("audio recorder state and draft behavior", () => {
         },
         api,
       ),
-    ).resolves.toEqual({ result: "reset-complete", cancellationError: null });
+    ).resolves.toMatchObject({ result: "reset-complete", cancellationError: null });
 
     expect(cancel).toHaveBeenCalledWith(STREAM_ID);
     expect(reset).toHaveBeenCalledOnce();
@@ -731,5 +802,30 @@ describe("audio recorder state and draft behavior", () => {
     expect(finish).not.toHaveBeenCalled();
     expect(transcribe).not.toHaveBeenCalled();
     expect(summarize).not.toHaveBeenCalled();
+  });
+
+  it("starts Reset without awaiting a pending optional live cancellation", async () => {
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const reset = vi.fn(async () => "reset-complete");
+
+    const result = await cancelRecordingAndReset(
+      {
+        capture: { stop: async () => [] },
+        mediaStream: { getTracks: () => [] } as unknown as MediaStream,
+        pcm: new BoundedPcmCapture(),
+        pump: null,
+        streamId: STREAM_ID,
+        releaseStream: releaseMediaStream,
+      },
+      {
+        cancelLiveStream: cancel,
+        reset,
+      },
+    );
+
+    expect(result.result).toBe("reset-complete");
+    expect(result.liveCaptionCleanup).not.toBeNull();
+    expect(cancel).toHaveBeenCalledWith(STREAM_ID);
+    expect(reset).toHaveBeenCalledOnce();
   });
 });

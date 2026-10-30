@@ -35,6 +35,7 @@ import {
 } from "../audio/audio-types";
 import { TempAudioStore, withTemporaryWav } from "../audio/temp-audio-store";
 import type { ModelIdentity, ModelReadiness, ProgressEvent, RuntimeReadiness } from "../shared/contracts";
+import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../summary/summary-prompt";
 import { ModelSlot } from "./model-slot";
 import { type RecorderPaths, resolveRecorderPaths } from "./paths";
@@ -112,6 +113,7 @@ interface ActiveAudioStream {
   queueDisposed: boolean;
   sessionDisposed: boolean;
   terminationPromise: Promise<void> | null;
+  terminationResultPromise: Promise<void> | null;
 }
 
 interface ActiveNativeOperation {
@@ -130,6 +132,13 @@ interface NativeOperationContext {
   assertCurrent(): void;
 }
 
+interface LifecycleCleanupGeneration {
+  readonly generation: number;
+  shutdownRequested: boolean;
+  completion: Promise<void>;
+  result: Promise<void>;
+}
+
 export interface SummaryGenerationResult {
   readonly text: string;
   readonly durationMs: number;
@@ -141,7 +150,7 @@ export interface SummaryGenerationResult {
 export interface PrepareRuntimeResult {
   readonly readiness: RuntimeReadiness;
   readonly liveCaptionsAvailable: boolean;
-  readonly liveCaptionsFailure: string | null;
+  readonly liveCaptionsFailure: SafeDiagnostic | null;
 }
 
 export interface FoundryRecorderRuntimeOptions {
@@ -177,12 +186,12 @@ export class FoundryRecorderRuntime {
   readonly #activeOperations = new Set<ActiveNativeOperation>();
   readonly #settlementTimeoutMs: number;
   #cleanupCompletion: Promise<void> | null = null;
-  #resetPromise: Promise<void> | null = null;
-  #shutdownPromise: Promise<void> | null = null;
+  #lifecycleCleanup: LifecycleCleanupGeneration | null = null;
   #generation = 0;
   #shutdownRequested = false;
   #shutdownComplete = false;
   #invalidatingManager = false;
+  #audioCleanupRequired = false;
   #readiness: RuntimeReadiness;
 
   constructor(options: FoundryRecorderRuntimeOptions = {}) {
@@ -245,10 +254,13 @@ export class FoundryRecorderRuntime {
     onPartial: (event: AudioPartialTranscriptEvent) => void,
   ): Promise<AudioStreamStartResponse> {
     this.#assertAvailable();
+    if (this.#activeStream !== null) {
+      throw new Error("The previous live-caption stream is still active or draining.");
+    }
     await this.#ensureValidatedManager();
     this.#assertAvailable();
     if (this.#activeStream !== null) {
-      throw new Error("A live audio stream is already active.");
+      throw new Error("The previous live-caption stream is still active or draining.");
     }
     const model = this.#requireModel("nemotron");
     const generation = this.#generation;
@@ -287,6 +299,7 @@ export class FoundryRecorderRuntime {
         queueDisposed: false,
         sessionDisposed: false,
         terminationPromise: null,
+        terminationResultPromise: null,
       };
       void active.responsePromise.catch((error) => {
         active.streamError ??= error;
@@ -423,12 +436,12 @@ export class FoundryRecorderRuntime {
     return result;
   }
 
-  async cancelLiveStream(streamId: string): Promise<void> {
+  cancelLiveStream(streamId: string): Promise<void> {
     const active = this.#activeStream;
     if (active === null || active.id !== streamId) {
-      return;
+      return Promise.resolve();
     }
-    await this.#terminateStream(active);
+    return this.#terminateStream(active);
   }
 
   async transcribeCapture(capture: ValidatedAudioCapture): Promise<AudioTranscriptionResult> {
@@ -542,68 +555,31 @@ export class FoundryRecorderRuntime {
   }
 
   reset(): Promise<void> {
-    this.#assertNotShutdown();
-    if (this.#resetPromise !== null) {
-      return this.#resetPromise;
+    if (this.#lifecycleCleanup !== null) {
+      return this.#lifecycleCleanup.result;
     }
+    this.#assertNotShutdown();
     this.#generation += 1;
-    const completion = this.#queueCleanup(
-      "Native recorder work is draining before temporary audio cleanup.",
-      async () => {
-        const errors: unknown[] = [];
-        try {
-          await this.#drainNativeResources();
-        } catch (error) {
-          errors.push(error);
-        }
-        if (this.#hasUnsafeNativeResources()) {
-          throwCollectedErrors(errors, "Recorder reset could not confirm native resource cleanup.");
-          throw new Error("Recorder reset could not confirm native resource cleanup.");
-        }
-        try {
-          await this.#tempAudioStore?.cleanupAll();
-        } catch (error) {
-          errors.push(error);
-        }
-        this.#updateAudioRecoveryReadiness();
-        throwCollectedErrors(errors, "Recorder reset encountered cleanup failures.");
-      },
-    );
-    let trackedPromise: Promise<void>;
-    trackedPromise = this.#awaitBoundedSettlement(completion, "Recorder reset cleanup").finally(() => {
-      if (this.#resetPromise === trackedPromise) {
-        this.#resetPromise = null;
-      }
-    });
-    this.#resetPromise = trackedPromise;
-    return trackedPromise;
+    return this.#startLifecycleCleanup(false);
   }
 
   shutdown(): Promise<void> {
     if (this.#shutdownComplete) {
       return Promise.resolve();
     }
-    if (this.#shutdownPromise !== null) {
-      return this.#shutdownPromise;
+    if (this.#lifecycleCleanup !== null) {
+      if (!this.#lifecycleCleanup.shutdownRequested) {
+        this.#lifecycleCleanup.shutdownRequested = true;
+        this.#shutdownRequested = true;
+        this.#setCleanupDetail("Native recorder work is draining before model and manager shutdown.");
+      }
+      return this.#lifecycleCleanup.result;
     }
     if (!this.#shutdownRequested) {
       this.#shutdownRequested = true;
       this.#generation += 1;
     }
-    const completion = this.#queueCleanup(
-      "Native recorder work is draining before model and manager shutdown.",
-      async () => this.#performShutdown(),
-    );
-    let trackedPromise: Promise<void>;
-    trackedPromise = this.#awaitBoundedSettlement(completion, "Foundry Local shutdown cleanup").finally(
-      () => {
-        if (this.#shutdownPromise === trackedPromise) {
-          this.#shutdownPromise = null;
-        }
-      },
-    );
-    this.#shutdownPromise = trackedPromise;
-    return trackedPromise;
+    return this.#startLifecycleCleanup(true);
   }
 
   async #initializeOrRevalidate(): Promise<void> {
@@ -701,17 +677,7 @@ export class FoundryRecorderRuntime {
           );
           throw new Error("Endpoint guard cleanup could not confirm native resource disposal.");
         }
-        const slotOutcomes = await Promise.allSettled([
-          this.#slots.nemotron.clear(),
-          this.#slots.whisper.clear(),
-          this.#slots.summary.clear(),
-        ]);
-        for (const outcome of slotOutcomes) {
-          if (outcome.status === "rejected") {
-            cleanupErrors.push(outcome.reason);
-          }
-        }
-        cleanupErrors.push(...this.#attemptQuarantinedManagerCleanup());
+        cleanupErrors.push(...(await this.#cleanupQuarantinedResources()));
         throwCollectedErrors(cleanupErrors, "Endpoint guard cleanup failed.");
       },
     );
@@ -735,19 +701,19 @@ export class FoundryRecorderRuntime {
     this.#assertCurrent(generation);
     await this.#prepareModel("whisper", generation, onProgress);
     await this.#prepareModel("summary", generation, onProgress);
-    let liveCaptionsFailure: string | null = null;
+    let liveCaptionsFailure: SafeDiagnostic | null = null;
     if (enableLiveCaptions) {
       try {
         await this.#prepareModel("nemotron", generation, onProgress);
       } catch (error) {
-        liveCaptionsFailure = errorMessage(error);
+        liveCaptionsFailure = toSafeDiagnostic(error, "OPTIONAL_LIVE_FAILED");
       }
     }
     this.#assertCurrent(generation);
     const manager = this.#requireManager();
     return {
       readiness: this.#readiness,
-      liveCaptionsAvailable: this.#slots.nemotron.activeFor(manager) !== null,
+      liveCaptionsAvailable: this.#activeStream === null && this.#slots.nemotron.activeFor(manager) !== null,
       liveCaptionsFailure,
     };
   }
@@ -759,6 +725,9 @@ export class FoundryRecorderRuntime {
   ): Promise<IModel> {
     const target = this.#targets[role];
     const manager = this.#requireManager();
+    if (role === "nemotron" && this.#activeStream !== null) {
+      throw new Error("The previous live-caption stream is still active or draining.");
+    }
     const current = this.#slots[role].activeFor(manager);
     let candidate: IModel | null = null;
     try {
@@ -827,8 +796,10 @@ export class FoundryRecorderRuntime {
         current,
         currentLoaded ? "ready" : "error",
         currentLoaded
-          ? `Keeping working model ${current.id}; replacement preparation failed: ${errorMessage(failure)}`
-          : errorMessage(failure),
+          ? `Keeping working model ${current.id}; replacement preparation failed. ${formatSafeDiagnostic(
+              toSafeDiagnostic(failure, "LOCAL_OPERATION_FAILED"),
+            )}`
+          : formatSafeDiagnostic(toSafeDiagnostic(failure, "LOCAL_OPERATION_FAILED")),
       );
       throw new Error(`Failed to prepare ${role}: ${errorMessage(failure)}`, { cause: failure });
     }
@@ -929,16 +900,24 @@ export class FoundryRecorderRuntime {
   }
 
   #terminateStream(active: ActiveAudioStream): Promise<void> {
-    const completion = this.#queueCleanup("Nemotron native stream cleanup is draining.", async () =>
-      this.#terminateStreamCompletion(active),
-    );
-    return this.#awaitBoundedSettlement(completion, "Nemotron live stream");
+    const completion = this.#terminateStreamCompletion(active);
+    if (active.terminationResultPromise === null) {
+      active.terminationResultPromise = this.#awaitBoundedSettlement(completion, "Nemotron live stream");
+      void active.terminationResultPromise.catch(() => undefined);
+    }
+    return active.terminationResultPromise;
   }
 
   #terminateStreamCompletion(active: ActiveAudioStream): Promise<void> {
     if (active.terminationPromise !== null) {
       return active.terminationPromise;
     }
+    this.#setReadiness(
+      "nemotron",
+      active.model,
+      "ready",
+      "Optional live-caption cleanup is draining; Whisper and Qwen remain available.",
+    );
     const errors: unknown[] = [];
     try {
       active.abortController.abort();
@@ -966,14 +945,17 @@ export class FoundryRecorderRuntime {
         errors.push(error);
       }
       throwCollectedErrors(errors, "Nemotron live stream cleanup failed.");
-    })().catch((error) => {
-      if (active.terminationPromise === trackedPromise) {
-        active.terminationPromise = null;
-      }
-      throw error;
-    });
+    })();
     active.terminationPromise = trackedPromise;
-    void trackedPromise.catch(() => undefined);
+    void trackedPromise.then(
+      () => undefined,
+      () => {
+        if (active.terminationPromise === trackedPromise) {
+          active.terminationPromise = null;
+          active.terminationResultPromise = null;
+        }
+      },
+    );
     return trackedPromise;
   }
 
@@ -1002,6 +984,14 @@ export class FoundryRecorderRuntime {
       active.cleanedUp = true;
       if (this.#activeStream === active) {
         this.#activeStream = null;
+      }
+      if (!this.#shutdownRequested && this.#manager !== null) {
+        this.#setReadiness(
+          "nemotron",
+          active.model,
+          "ready",
+          `${active.model.id} is ready for local inference.`,
+        );
       }
     }
     throwCollectedErrors(errors, "Failed to dispose Nemotron native resources.");
@@ -1096,13 +1086,43 @@ export class FoundryRecorderRuntime {
     }
   }
 
-  async #performShutdown(): Promise<void> {
+  #startLifecycleCleanup(shutdownRequested: boolean): Promise<void> {
+    const cycle: LifecycleCleanupGeneration = {
+      generation: this.#generation,
+      shutdownRequested,
+      completion: Promise.resolve(),
+      result: Promise.resolve(),
+    };
+    const completion = this.#queueCleanup(
+      shutdownRequested
+        ? "Native recorder work is draining before model and manager shutdown."
+        : "Native recorder work is draining before temporary audio cleanup.",
+      async () => this.#performLifecycleCleanup(cycle),
+    );
+    cycle.completion = completion;
+    cycle.result = this.#awaitBoundedSettlement(
+      completion,
+      shutdownRequested ? "Foundry Local shutdown cleanup" : "Recorder reset cleanup",
+    );
+    this.#lifecycleCleanup = cycle;
+    void cycle.result.catch(() => undefined);
+    void completion.then(
+      () => {
+        if (this.#lifecycleCleanup === cycle) {
+          this.#lifecycleCleanup = null;
+        }
+      },
+      () => {
+        if (this.#lifecycleCleanup === cycle) {
+          this.#lifecycleCleanup = null;
+        }
+      },
+    );
+    return cycle.result;
+  }
+
+  async #performLifecycleCleanup(cycle: LifecycleCleanupGeneration): Promise<void> {
     const errors: unknown[] = [];
-    const manager = this.#manager;
-    this.#manager = null;
-    if (manager !== null) {
-      this.#quarantineManager(manager);
-    }
     try {
       await this.#drainNativeResources();
     } catch (error) {
@@ -1114,37 +1134,59 @@ export class FoundryRecorderRuntime {
       errors.push(error);
     }
     if (this.#hasUnsafeNativeResources()) {
-      throwCollectedErrors(errors, "Foundry Local shutdown could not confirm native resource cleanup.");
-      throw new Error("Foundry Local shutdown could not confirm native resource cleanup.");
+      throwCollectedErrors(errors, "Recorder cleanup could not confirm native resource cleanup.");
+      throw new Error("Recorder cleanup could not confirm native resource cleanup.");
     }
     try {
       await this.#tempAudioStore?.cleanupAll();
+      this.#audioCleanupRequired = false;
     } catch (error) {
+      this.#audioCleanupRequired = true;
       errors.push(error);
     }
     this.#updateAudioRecoveryReadiness();
-    const slotOutcomes = await Promise.allSettled([
-      this.#slots.nemotron.clear(),
-      this.#slots.whisper.clear(),
-      this.#slots.summary.clear(),
-    ]);
-    for (const outcome of slotOutcomes) {
-      if (outcome.status === "rejected") {
-        errors.push(outcome.reason);
-      }
+    await Promise.resolve();
+    if (cycle.shutdownRequested) {
+      await this.#performShutdownTeardown(errors);
     }
-    errors.push(...this.#attemptQuarantinedManagerCleanup());
+    throwCollectedErrors(
+      errors,
+      cycle.shutdownRequested
+        ? "Foundry Local shutdown encountered cleanup failures."
+        : "Recorder reset encountered cleanup failures.",
+    );
+  }
+
+  async #performShutdownTeardown(errors: unknown[]): Promise<void> {
+    const manager = this.#manager;
+    this.#manager = null;
+    if (manager !== null) {
+      this.#quarantineManager(manager);
+    }
+    errors.push(...(await this.#cleanupQuarantinedResources()));
     for (const role of ["whisper", "nemotron", "summary"] as const) {
-      this.#setReadiness(role, null, "not_initialized", `${this.#targets[role].modelId} is unloaded.`);
+      const active = this.#slots[role].active;
+      this.#setReadiness(
+        role,
+        active,
+        active === null ? "not_initialized" : "error",
+        active === null
+          ? `${this.#targets[role].modelId} is unloaded.`
+          : `${this.#targets[role].modelId} cleanup must be retried before manager disposal.`,
+      );
     }
     this.#readiness = {
       ...this.#readiness,
       inProcessModeValidated: false,
     };
-    if (this.#quarantinedManager === null && !this.#hasUnsafeNativeResources()) {
+    if (
+      this.#quarantinedManager === null &&
+      this.#modelSlotsCleared() &&
+      !this.#hasUnsafeNativeResources() &&
+      !this.#audioCleanupRequired
+    ) {
       this.#shutdownComplete = true;
     }
-    throwCollectedErrors(errors, "Foundry Local shutdown encountered cleanup failures.");
   }
 
   async #awaitPendingPreparation(): Promise<void> {
@@ -1199,7 +1241,7 @@ export class FoundryRecorderRuntime {
       await this.#awaitBoundedSettlement(completion, "Deferred native recorder cleanup");
     }
     if (this.#quarantinedManager !== null) {
-      const errors = this.#attemptQuarantinedManagerCleanup();
+      const errors = await this.#cleanupQuarantinedResources();
       this.#restoreCleanupReadiness();
       throwCollectedErrors(errors, "Rejected Foundry Local manager cleanup failed again.");
     }
@@ -1247,6 +1289,19 @@ export class FoundryRecorderRuntime {
 
   #restoreCleanupReadiness(): void {
     if (this.#cleanupCompletion !== null) {
+      return;
+    }
+    if (this.#audioCleanupRequired) {
+      this.#readiness = {
+        ...this.#readiness,
+        inProcessModeValidated: false,
+        cleanup: {
+          state: "audio_cleanup_required",
+          required: true,
+          completionPending: false,
+          detail: "App-owned temporary audio cleanup must be retried.",
+        },
+      };
       return;
     }
     if (this.#hasUnsafeNativeResources()) {
@@ -1304,6 +1359,21 @@ export class FoundryRecorderRuntime {
     };
   }
 
+  #setCleanupDetail(detail: string): void {
+    if (this.#cleanupCompletion === null) {
+      return;
+    }
+    this.#readiness = {
+      ...this.#readiness,
+      cleanup: {
+        state: "draining",
+        required: true,
+        completionPending: true,
+        detail,
+      },
+    };
+  }
+
   #quarantineManager(manager: ManagerContext): void {
     if (this.#quarantinedManager === null) {
       this.#quarantinedManager = {
@@ -1344,6 +1414,32 @@ export class FoundryRecorderRuntime {
       this.#quarantinedManager = null;
     }
     return errors;
+  }
+
+  async #cleanupQuarantinedResources(): Promise<unknown[]> {
+    const errors: unknown[] = [];
+    const slotOutcomes = await Promise.allSettled([
+      this.#slots.nemotron.clear(),
+      this.#slots.whisper.clear(),
+      this.#slots.summary.clear(),
+    ]);
+    for (const outcome of slotOutcomes) {
+      if (outcome.status === "rejected") {
+        errors.push(outcome.reason);
+      }
+    }
+    if (this.#modelSlotsCleared()) {
+      errors.push(...this.#attemptQuarantinedManagerCleanup());
+    }
+    return errors;
+  }
+
+  #modelSlotsCleared(): boolean {
+    return (
+      this.#slots.nemotron.active === null &&
+      this.#slots.whisper.active === null &&
+      this.#slots.summary.active === null
+    );
   }
 
   #hasUnsafeNativeResources(): boolean {

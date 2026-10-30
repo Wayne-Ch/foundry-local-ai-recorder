@@ -57,8 +57,9 @@ Message:
 
 > The renderer resamples once to PCM16LE/16 kHz/mono. `BoundedPcmCapture` trims at the exact
 > 960,000-byte contract. Stop releases tracks first and snapshots this capture independently;
-> Nemotron flush/finalization is optional, so sticky pump or backpressure errors cannot block
-> Whisper. Reset uses the cancellation path and never calls finish, transcription, or summary.
+> Nemotron flush/finalization is optional. When cancellation is required, the renderer initiates it
+> and observes the safe result independently instead of awaiting it before Whisper. Reset uses the
+> cancellation path and never calls finish, transcription, or summary.
 
 ## 5:00-6:30 — Nemotron native streaming contract
 
@@ -152,12 +153,13 @@ Show:
 
 - endpoint validation before manager acceptance and every Prepare retry;
 - tracked Nemotron, Whisper, and Qwen cancellation/settlement;
-- timeout-triggered draining status and completion promise;
-- queue/session disposal only after settlement, with temp/model/manager teardown behind the same
-  barrier;
-- model unload order;
+- the scoped Nemotron drain that blocks only another live stream while Whisper/Qwen continue;
+- the durable Reset/shutdown generation whose bounded public result survives timeout and retry;
+- queue/session disposal only after settlement, with temp/model/manager teardown behind the global
+  barrier and exactly once per generation;
+- model unload retry that keeps the manager quarantined until every slot is clear;
 - rejected-manager quarantine until shutdown and disposal are both confirmed;
-- bounded/redacted live-caption diagnostics that cannot invalidate Whisper audio;
+- canonical structured diagnostics that never render raw native/IPC messages or local paths;
 - reset clearing derived state without processing captured audio;
 - startup `capture-*.wav` orphan recovery and locked-file warning.
 

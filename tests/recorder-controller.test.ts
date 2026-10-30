@@ -1,10 +1,6 @@
 import type { RequestPreflightResult, Response } from "foundry-local-sdk";
 import { describe, expect, it } from "vitest";
 import {
-  LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
-  LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER,
-} from "../src/audio/audio-contract";
-import {
   AUDIO_CHANNELS,
   AUDIO_EXECUTION_PROVIDER,
   AUDIO_FORMAT,
@@ -24,6 +20,7 @@ import {
 } from "../src/foundry/runtime-config";
 import { RecorderController, type RecorderRuntime } from "../src/main/recorder-controller";
 import type { RuntimeReadiness } from "../src/shared/contracts";
+import { formatSafeDiagnostic, toSafeDiagnostic } from "../src/shared/safe-diagnostic";
 
 const targets = resolveRuntimeTargets({});
 
@@ -221,7 +218,7 @@ describe("RecorderController", () => {
       channels: AUDIO_CHANNELS,
       durationMs: 1_000,
       data: new ArrayBuffer(32_000),
-      liveCaptionFailure: "chunk IPC failed",
+      liveCaptionFailure: toSafeDiagnostic("chunk IPC failed", "OPTIONAL_LIVE_FAILED"),
     });
 
     expect(final.snapshot.transcript.finalText).toBe("Whisper authoritative final transcript.");
@@ -229,7 +226,8 @@ describe("RecorderController", () => {
       expect.objectContaining({
         phase: "live-caption-warning",
         severity: "warning",
-        detail: "Whisper final succeeded; live captions failed: chunk IPC failed",
+        detail:
+          "Whisper final succeeded; Optional live captions failed; Whisper audio remains authoritative. [OPTIONAL_LIVE_FAILED/UnknownError; details omitted]",
       }),
     );
 
@@ -238,7 +236,9 @@ describe("RecorderController", () => {
   });
 
   it("retains both live-caption and Whisper failures in the developer trace", async () => {
-    const runtime = new FakeRuntime("unused", new Error("Whisper native process failed"));
+    const rawWhisperError =
+      "Whisper failed at C:\\Users\\Jane Doe\\private recording.wav and /home/Jane Doe/private.wav";
+    const runtime = new FakeRuntime("unused", new Error(rawWhisperError));
     const controller = new RecorderController(runtime);
 
     await expect(
@@ -248,64 +248,64 @@ describe("RecorderController", () => {
         channels: AUDIO_CHANNELS,
         durationMs: 1_000,
         data: new ArrayBuffer(32_000),
-        liveCaptionFailure: "chunk IPC failed",
+        liveCaptionFailure: toSafeDiagnostic("chunk IPC failed", "OPTIONAL_LIVE_FAILED"),
       }),
-    ).rejects.toThrow("Whisper native process failed");
+    ).rejects.toThrow(rawWhisperError);
 
-    expect(controller.bootstrap().trace).toEqual(
+    const trace = controller.bootstrap().trace;
+    expect(trace).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           phase: "live-caption-warning",
           severity: "warning",
-          detail: "Whisper final failed after live captions failed: chunk IPC failed",
+          detail:
+            "Whisper final failed after Optional live captions failed; Whisper audio remains authoritative. [OPTIONAL_LIVE_FAILED/UnknownError; details omitted]",
         }),
         expect.objectContaining({
           phase: "whisper-final",
           severity: "error",
-          detail: "Whisper native process failed",
+          detail: "A local recorder operation failed. [LOCAL_OPERATION_FAILED/Error; details omitted]",
         }),
       ]),
     );
+    expect(JSON.stringify(trace)).not.toContain("Jane Doe");
+    expect(JSON.stringify(trace)).not.toContain("private recording.wav");
+    expect(JSON.stringify(trace)).not.toContain("/home/");
   });
 
   it.each([
-    ["999 bytes", "x".repeat(999), false],
-    ["1000 bytes", "x".repeat(1_000), false],
-    ["1001 bytes", "x".repeat(1_001), true],
-    ["very long", "x".repeat(100_000), true],
-    [
-      "Unicode and sensitive path",
-      `音声🔥 failed at C:\\Users\\person\\private.wav token=super-secret ${"東京".repeat(1_000)}`,
-      true,
-    ],
-  ])(
-    "keeps valid Whisper audio authoritative with a %s diagnostic",
-    async (_label, diagnostic, truncated) => {
-      const runtime = new FakeRuntime();
-      const controller = new RecorderController(runtime);
+    ["short arbitrary detail", "chunk IPC failed"],
+    ["very long", "x".repeat(100_000)],
+    ["spaced Windows path", "音声🔥 failed at C:\\Users\\Jane Doe\\private recording.wav token=super-secret"],
+    ["quoted UNC path", '"\\\\workstation 01\\private share\\private recording.wav",'],
+    ["spaced POSIX path", "'/home/Jane Doe/private recording.wav';"],
+  ])("keeps valid Whisper audio authoritative with a %s diagnostic", async (_label, rawDiagnostic) => {
+    const runtime = new FakeRuntime();
+    const controller = new RecorderController(runtime);
+    const diagnostic = toSafeDiagnostic(rawDiagnostic, "OPTIONAL_LIVE_FAILED");
 
-      const final = await controller.transcribeCapture({
-        format: AUDIO_FORMAT,
-        sampleRate: AUDIO_SAMPLE_RATE,
-        channels: AUDIO_CHANNELS,
-        durationMs: 1_000,
-        data: new ArrayBuffer(32_000),
-        liveCaptionFailure: diagnostic,
-      });
+    const final = await controller.transcribeCapture({
+      format: AUDIO_FORMAT,
+      sampleRate: AUDIO_SAMPLE_RATE,
+      channels: AUDIO_CHANNELS,
+      durationMs: 1_000,
+      data: new ArrayBuffer(32_000),
+      liveCaptionFailure: diagnostic,
+    });
 
-      const retained = runtime.lastCapture?.liveCaptionFailure ?? "";
-      const warning = final.snapshot.trace.find((entry) => entry.phase === "live-caption-warning");
-      expect(final.snapshot.transcript.finalText).toBe("Whisper authoritative final transcript.");
-      expect(new TextEncoder().encode(retained).byteLength).toBeLessThanOrEqual(
-        LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
-      );
-      expect(warning?.severity).toBe("warning");
-      expect(warning?.detail).toContain(retained);
-      expect(retained.endsWith(LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER)).toBe(truncated);
-      expect(retained).not.toContain("C:\\Users\\person\\private.wav");
-      expect(retained).not.toContain("super-secret");
-    },
-  );
+    const retained = runtime.lastCapture?.liveCaptionFailure ?? null;
+    const warning = final.snapshot.trace.find((entry) => entry.phase === "live-caption-warning");
+    expect(final.snapshot.transcript.finalText).toBe("Whisper authoritative final transcript.");
+    expect(retained).toEqual(diagnostic);
+    expect(warning?.severity).toBe("warning");
+    expect(warning?.detail).toContain(formatSafeDiagnostic(diagnostic));
+    expect(warning?.detail).not.toContain("Jane Doe");
+    expect(warning?.detail).not.toContain("private recording.wav");
+    expect(warning?.detail).not.toContain("workstation 01");
+    expect(warning?.detail).not.toContain("private share");
+    expect(warning?.detail).not.toContain("super-secret");
+    expect(warning?.detail).not.toContain(rawDiagnostic);
+  });
 });
 
 function modelReadiness(

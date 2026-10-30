@@ -24,9 +24,9 @@ Runtime log evidence:
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 44 files checked |
+| `npm run lint` | Pass; 45 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 10 files, 107 tests |
+| `npm test` | Pass; 10 files, 115 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
 
@@ -43,9 +43,9 @@ Unit coverage includes:
 - sticky live IPC/pump failure continuing to Whisper with track/stream cleanup and no unhandled
   rejection;
 - callback-time live-caption failure retained after the pump reference is detached, including
-  cancellation success/failure, Whisper success/failure, warning UI/trace, and Reset clearing;
+  pending-forever cancellation, Whisper success/failure, warning UI/trace, and Reset clearing;
 - cancellation/reset making zero finish, transcribe, or summary calls;
-- manager-epoch model ownership, detach-before-cleanup, and fail-closed guard recovery when
+- manager-epoch model ownership, retain-for-retry cleanup, and fail-closed guard recovery when
   `isLoaded`, model unload, manager shutdown/disposal, or multiple cleanup actions fail;
 - rejected-manager quarantine across combined shutdown/disposal failure, repeated cleanup failure,
   concurrent Prepare retry, later successful retry, and shutdown without replacement creation;
@@ -55,10 +55,15 @@ Unit coverage includes:
   settlement, or temporary-file deletion;
 - in-flight Whisper/Qwen cancellation and settlement before session/model/manager/temp teardown,
   including Reset and shutdown races;
-- settlement-timeout drain barriers for delayed Whisper, Qwen, and Nemotron work, with fail-closed
-  readiness, completion promises, exactly-once disposal, and no dependent teardown before settle;
-- 999/1,000/1,001-byte, very-long, and Unicode live-caption diagnostics, including path/credential
-  redaction, explicit truncation markers, Developer Trace warnings, and uninterrupted Whisper;
+- scoped Nemotron drain isolation: a pending cancel rejects a new live stream while valid PCM still
+  reaches Whisper, the exact final still reaches Qwen, and global shutdown defers model/manager
+  teardown until the native stream settles;
+- one durable Reset/shutdown cleanup generation across timeout, repeated Reset/shutdown calls,
+  upgrade from Reset to shutdown, late settlement, cleanup error, and retry, with counters proving
+  no duplicate temporary cleanup, model unload, manager shutdown, or manager disposal;
+- canonical structured diagnostics for quoted/unquoted Windows drive, spaced UNC, POSIX, Unicode,
+  credential-like, and very-long raw messages; status and Developer Trace retain no path suffix,
+  username, or arbitrary raw phrase;
 - temporary WAV creation, recovery, and failure cleanup;
 - EACCES/EBUSY/EPERM startup retention warnings with hidden paths and retry guidance;
 - model-slot replacement failure preserving a working model;
@@ -82,10 +87,10 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,291 ms |
-| Stop to Whisper final | 443 ms |
-| Transcript final to summary | 5,350 ms |
-| Qwen generation | 5,348 ms |
+| First live caption | 1,272 ms |
+| Stop to Whisper final | 420 ms |
+| Transcript final to summary | 3,195 ms |
+| Qwen generation | 3,194 ms |
 | Qwen prompt/completion tokens | 177 / 69 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
@@ -109,6 +114,12 @@ The leading space in that Whisper result is intentional evidence: the integratio
 summary input equals the returned Whisper string exactly and differs from both the last live partial
 and Nemotron terminal.
 
+The real chain was not deliberately wedged inside the native SDK. The forced cancellation-failure
+gate is covered deterministically by a direct runtime regression whose Nemotron response and
+iterator remain pending: the cancel caller times out, valid PCM still reaches Whisper, Qwen receives
+the exact Whisper final, the live warning remains, another live stream is rejected, and global
+shutdown defers teardown until the stream is released.
+
 ### Whisper
 
 Command: `npm run test:whisper-integration`
@@ -117,7 +128,7 @@ Result: `WHISPER_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 20,270 ms synthetic fixture;
-- 441 ms transcription;
+- 354 ms transcription;
 - 6/6 expected ODE words matched;
 - terminal `whisper_file_final`;
 - no owned temporary WAV residue;
@@ -131,8 +142,8 @@ Result: `NEMOTRON_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 92 partials;
-- first partial 1,232 ms;
-- terminal finalization 90 ms;
+- first partial 1,299 ms;
+- terminal finalization 109 ms;
 - 6/6 expected ODE words matched;
 - terminal `live_stream_final`.
 
@@ -144,9 +155,9 @@ Result: `SUMMARY_INTEGRATION_OK`
 
 | Prompt | Latency | Prompt tokens | Completion tokens |
 |---|---:|---:|---:|
-| ODE solution | 3,167 ms | 162 | 73 |
-| Euler comparison | 1,941 ms | 148 | 27 |
-| Solution procedure | 2,387 ms | 146 | 45 |
+| ODE solution | 3,197 ms | 162 | 73 |
+| Euler comparison | 2,078 ms | 148 | 27 |
+| Solution procedure | 2,639 ms | 146 | 45 |
 
 All three runs returned nonempty bounded output with `finishReason: "stop"`. Qwen thinking was
 disabled via `chat_template_kwargs` after an initial validation run showed the default reasoning

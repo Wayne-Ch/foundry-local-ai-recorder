@@ -25,6 +25,7 @@ import {
   type MicrophoneAuthorizationRequest,
   type PrepareRecorderRequest,
 } from "../shared/contracts";
+import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { type AudioStreamOwnerIdentity, AudioStreamOwnership } from "./audio-stream-owner";
 import {
   isAllowedAppNavigation,
@@ -314,7 +315,14 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.reset, async (event) => {
     const renderer = assertTrustedRendererIpc(event);
-    await audioStreamOwnership.revokeOwner(renderer.owner.webContentsId, renderer.owner);
+    void audioStreamOwnership
+      .revokeOwner(renderer.owner.webContentsId, renderer.owner)
+      .catch((error: unknown) => {
+        console.error(
+          "Renderer-owned live stream cleanup remains deferred:",
+          formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_LIVE_CLEANUP_PENDING")),
+        );
+      });
     return controller.reset();
   });
 }
@@ -362,7 +370,10 @@ function sendToFrame(frame: WebFrameMain, channel: string, payload: unknown): bo
     frame.send(channel, payload);
     return true;
   } catch (error) {
-    console.error(`Failed to send ${channel} to the owning renderer frame:`, error);
+    console.error(
+      `Failed to send ${channel} to the owning renderer frame:`,
+      formatSafeDiagnostic(toSafeDiagnostic(error, "IPC_UNAVAILABLE")),
+    );
     return false;
   }
 }
@@ -372,7 +383,10 @@ function revokeAudioStreamOwner(
   frame?: Pick<AudioStreamOwnerIdentity, "frameTreeNodeId" | "frameToken">,
 ): void {
   void audioStreamOwnership.revokeOwner(webContentsId, frame).catch((error: unknown) => {
-    console.error("Failed to cancel the renderer-owned live stream:", error);
+    console.error(
+      "Failed to cancel the renderer-owned live stream:",
+      formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_LIVE_CLEANUP_PENDING")),
+    );
   });
 }
 
@@ -388,7 +402,10 @@ function frameOwnership(
     }
     return { frameTreeNodeId: frame.frameTreeNodeId, frameToken: frame.frameToken };
   } catch (error) {
-    console.error("Failed to capture renderer frame ownership:", error);
+    console.error(
+      "Failed to capture renderer frame ownership:",
+      formatSafeDiagnostic(toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED")),
+    );
     return undefined;
   }
 }
@@ -633,7 +650,10 @@ async function shutdownForExit(): Promise<void> {
     await controller.shutdown();
   } catch (error) {
     shutdownFailed = true;
-    console.error("Foundry Local shutdown did not complete synchronously:", error);
+    console.error(
+      "Foundry Local shutdown did not complete synchronously:",
+      formatSafeDiagnostic(toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED")),
+    );
   }
 
   const deferredCleanup = controller.cleanupCompletion;
@@ -642,7 +662,10 @@ async function shutdownForExit(): Promise<void> {
       await deferredCleanup;
     } catch (error) {
       shutdownFailed = true;
-      console.error("Deferred Foundry Local cleanup failed:", error);
+      console.error(
+        "Deferred Foundry Local cleanup failed:",
+        formatSafeDiagnostic(toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED")),
+      );
     }
   }
 
@@ -651,7 +674,10 @@ async function shutdownForExit(): Promise<void> {
       await controller.shutdown();
     } catch (error) {
       shutdownFailed = true;
-      console.error("Foundry Local cleanup retry failed; application exit remains blocked:", error);
+      console.error(
+        "Foundry Local cleanup retry failed; application exit remains blocked:",
+        formatSafeDiagnostic(toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED")),
+      );
     }
   }
 

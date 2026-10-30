@@ -1,5 +1,4 @@
 import "../renderer/styles.css";
-import { sanitizeLiveCaptionFailure } from "../audio/audio-contract";
 import {
   AUDIO_CHANNELS,
   AUDIO_FORMAT,
@@ -8,6 +7,7 @@ import {
   type AudioCapturePayload,
 } from "../audio/audio-types";
 import type { ModelReadiness, RecorderSnapshot, TraceEntry } from "../shared/contracts";
+import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import {
   BoundedAudioChunkPump,
   BoundedPcmCapture,
@@ -312,7 +312,11 @@ async function prepareModels(): Promise<void> {
       setStatus(recoveryWarning, "warning");
     } else if (elements.liveToggle.checked && !liveAvailable) {
       setStatus(
-        `Whisper-only fallback is ready. ${response.liveCaptionsFailure ?? "Nemotron is unavailable."}`,
+        `Whisper-only fallback is ready. ${
+          response.liveCaptionsFailure === null
+            ? "Nemotron is unavailable."
+            : formatSafeDiagnostic(response.liveCaptionsFailure)
+        }`,
         "warning",
       );
     } else {
@@ -453,7 +457,7 @@ async function startRecording(): Promise<void> {
     );
   } catch (error) {
     if (streamId !== null) {
-      await api.cancelLiveStream({ streamId }).catch(() => undefined);
+      void api.cancelLiveStream({ streamId }).catch(() => undefined);
     }
     releaseMediaStream(mediaStream);
     if (liveCapture !== null) {
@@ -506,6 +510,13 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       },
       releaseStream: releaseMediaStream,
     });
+    if (finalized.liveCaptionCleanup !== null) {
+      void finalized.liveCaptionCleanup.then((diagnostic) => {
+        if (diagnostic !== null) {
+          active.liveCaptionFailure.record(diagnostic);
+        }
+      });
+    }
     if (finalized.durationMs < 300) {
       throw new Error("Record at least 0.3 seconds of audio.");
     }
@@ -518,7 +529,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
         finalized.pcmBytes.byteOffset,
         finalized.pcmBytes.byteOffset + finalized.pcmBytes.byteLength,
       ) as ArrayBuffer,
-      liveCaptionFailure: sanitizeLiveCaptionFailure(finalized.liveCaptionError),
+      liveCaptionFailure: finalized.liveCaptionError,
     };
     const response = await api.transcribeCapture(payload);
     snapshot = response.snapshot;
@@ -556,7 +567,7 @@ async function importWav(): Promise<void> {
     }
     snapshot = response.snapshot;
     summaryDraft = "";
-    setStatus(`${response.fileName} produced a Whisper final transcript.`, "success");
+    setStatus("The selected WAV produced a Whisper final transcript.", "success");
   } catch (error) {
     setStatus(errorMessage(error), "error");
   } finally {
@@ -625,7 +636,7 @@ async function resetRecorder(): Promise<void> {
     active === null ? "Deleting recorder state…" : "Cancelling recording and deleting recorder state…",
     "working",
   );
-  let cancellationError: unknown | null = null;
+  let cancellationError: SafeDiagnostic | null = null;
   try {
     const reset = await cancelRecordingAndReset(
       active === null
@@ -644,6 +655,9 @@ async function resetRecorder(): Promise<void> {
       },
     );
     cancellationError = reset.cancellationError;
+    if (reset.liveCaptionCleanup !== null) {
+      void reset.liveCaptionCleanup.then(() => undefined);
+    }
     snapshot = reset.result;
     summaryDraft = "";
     elements.consent.checked = false;
@@ -652,7 +666,7 @@ async function resetRecorder(): Promise<void> {
         ? active === null
           ? "Temporary audio and derived in-memory state were deleted."
           : "Recording was cancelled; captured audio was discarded without transcription or summary."
-        : `Recording was cancelled and reset completed with a cleanup warning: ${errorMessage(
+        : `Recording was cancelled and reset completed with a cleanup warning: ${formatSafeDiagnostic(
             cancellationError,
           )}`,
       cancellationError === null ? "success" : "warning",
@@ -682,7 +696,7 @@ async function failActiveRecording(error: unknown): Promise<void> {
   releaseMediaStream(active.mediaStream);
   await active.capture.stop().catch(() => undefined);
   if (active.streamId !== null) {
-    await api.cancelLiveStream({ streamId: active.streamId }).catch(() => undefined);
+    void api.cancelLiveStream({ streamId: active.streamId }).catch(() => undefined);
   }
   busy = false;
   setStatus(errorMessage(error), "error");
@@ -838,11 +852,11 @@ function microphoneError(error: unknown): string {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return formatSafeDiagnostic(toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED"));
 }
 
 function liveCaptionDiagnostic(error: unknown): string {
-  return sanitizeLiveCaptionFailure(error) ?? "Live captions failed without safe diagnostic details.";
+  return formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_LIVE_FAILED"));
 }
 
 function renderPrivacyBoundary(next: RecorderSnapshot): void {

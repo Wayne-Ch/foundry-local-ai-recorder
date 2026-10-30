@@ -16,6 +16,11 @@ import {
   type AudioReadiness,
   type AudioStreamChunkResponse,
 } from "../audio/audio-types";
+import {
+  combineSafeDiagnostics,
+  type SafeDiagnostic,
+  sanitizeSafeDiagnostic,
+} from "../shared/safe-diagnostic";
 
 const MIME_TYPE_CANDIDATES = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"] as const;
 
@@ -163,18 +168,14 @@ interface StoppablePcmCapture {
 }
 
 export class LiveCaptionFailureState {
-  #error: string | null = null;
+  #error: SafeDiagnostic | null = null;
 
-  get error(): string | null {
+  get error(): SafeDiagnostic | null {
     return this.#error;
   }
 
   record(error: unknown): void {
-    const recordedError =
-      sanitizeLiveCaptionFailure(error) ?? "Live captions failed without safe diagnostic details.";
-    this.#error = sanitizeLiveCaptionFailure(
-      this.#error === null ? recordedError : `${this.#error}; ${recordedError}`,
-    );
+    this.#error = combineSafeDiagnostics(this.#error, sanitizeLiveCaptionFailure(error));
   }
 
   clear(): void {
@@ -201,7 +202,8 @@ export interface FinalizeCapturedAudioOptions {
 export interface FinalizedCapturedAudio {
   readonly pcmBytes: Uint8Array;
   readonly durationMs: number;
-  readonly liveCaptionError: unknown | null;
+  readonly liveCaptionError: SafeDiagnostic | null;
+  readonly liveCaptionCleanup: Promise<SafeDiagnostic | null> | null;
 }
 
 export async function finalizeCapturedAudio(
@@ -209,20 +211,14 @@ export async function finalizeCapturedAudio(
 ): Promise<FinalizedCapturedAudio> {
   const releaseStream = options.releaseStream ?? releaseMediaStream;
   releaseStream(options.mediaStream);
-  let liveCaptionError: unknown | null = options.live.failure ?? null;
+  let liveCaptionError = sanitizeLiveCaptionFailure(options.live.failure);
+  let liveCaptionCleanup: Promise<SafeDiagnostic | null> | null = null;
   let finalChunks: Uint8Array[];
   try {
     finalChunks = await options.capture.stop();
   } catch (captureError) {
     options.live.pump?.cancel();
-    const cancelError = await cancelLiveCaption(options.live);
-    const cleanupErrors = [liveCaptionError, cancelError].filter((error) => error !== null);
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(
-        [captureError, ...cleanupErrors],
-        "Audio capture failed and live-caption cleanup also failed.",
-      );
-    }
+    startLiveCaptionCancellation(options.live);
     throw captureError;
   }
 
@@ -237,7 +233,7 @@ export async function finalizeCapturedAudio(
       try {
         options.live.pump.enqueue(accepted);
       } catch (error) {
-        liveCaptionError = error;
+        liveCaptionError = sanitizeLiveCaptionFailure(error);
         options.live.pump.cancel();
       }
     }
@@ -245,14 +241,7 @@ export async function finalizeCapturedAudio(
     durationMs = audioDurationMsFromPcmBytes(pcmBytes.byteLength);
   } catch (captureError) {
     options.live.pump?.cancel();
-    const cancelError = await cancelLiveCaption(options.live);
-    const cleanupErrors = [liveCaptionError, cancelError].filter((error) => error !== null);
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(
-        [captureError, ...cleanupErrors],
-        "Audio snapshot failed and live-caption cleanup also failed.",
-      );
-    }
+    startLiveCaptionCancellation(options.live);
     throw captureError;
   }
 
@@ -262,24 +251,16 @@ export async function finalizeCapturedAudio(
         await options.live.pump.flush();
         await options.live.finish(options.live.pump.lastSequence, durationMs);
       } catch (error) {
-        liveCaptionError = error;
+        liveCaptionError = sanitizeLiveCaptionFailure(error);
         options.live.pump.cancel();
       }
     }
     if (options.live.pump === null || liveCaptionError !== null) {
-      const cancelError = await cancelLiveCaption(options.live);
-      if (liveCaptionError === null) {
-        liveCaptionError = cancelError;
-      } else if (cancelError !== null) {
-        liveCaptionError = new AggregateError(
-          [liveCaptionError, cancelError],
-          "Live-caption finalization and cancellation both failed.",
-        );
-      }
+      liveCaptionCleanup = startLiveCaptionCancellation(options.live);
     }
   }
 
-  return { pcmBytes, durationMs, liveCaptionError };
+  return { pcmBytes, durationMs, liveCaptionError, liveCaptionCleanup };
 }
 
 export interface CancelCapturedAudioOptions {
@@ -292,31 +273,50 @@ export interface CancelCapturedAudioOptions {
   readonly releaseStream?: (stream: MediaStream | null) => void;
 }
 
-export async function cancelCapturedAudio(options: CancelCapturedAudioOptions): Promise<void> {
+export interface CancelCapturedAudioResult {
+  readonly cancellationError: SafeDiagnostic | null;
+  readonly liveCaptionCleanup: Promise<SafeDiagnostic | null> | null;
+}
+
+export async function cancelCapturedAudio(
+  options: CancelCapturedAudioOptions,
+): Promise<CancelCapturedAudioResult> {
   const releaseStream = options.releaseStream ?? releaseMediaStream;
-  options.pump?.cancel();
-  releaseStream(options.mediaStream);
-  const errors: unknown[] = [];
+  let cancellationError: SafeDiagnostic | null = null;
+  try {
+    options.pump?.cancel();
+  } catch (error) {
+    cancellationError = combineSafeDiagnostics(
+      cancellationError,
+      sanitizeSafeDiagnostic(error, "OPTIONAL_LIVE_FAILED"),
+    );
+  }
+  try {
+    releaseStream(options.mediaStream);
+  } catch (error) {
+    cancellationError = combineSafeDiagnostics(
+      cancellationError,
+      sanitizeSafeDiagnostic(error, "LOCAL_OPERATION_FAILED"),
+    );
+  }
+  const liveCaptionCleanup =
+    options.streamId === null
+      ? null
+      : startLiveCaptionCancellation({
+          streamId: options.streamId,
+          cancel: options.cancel,
+        });
   try {
     await options.capture.stop();
   } catch (error) {
-    errors.push(error);
+    cancellationError = combineSafeDiagnostics(
+      cancellationError,
+      sanitizeSafeDiagnostic(error, "LOCAL_OPERATION_FAILED"),
+    );
   } finally {
     options.pcm.clear();
   }
-  if (options.streamId !== null) {
-    try {
-      await options.cancel(options.streamId);
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-  if (errors.length === 1) {
-    throw errors[0];
-  }
-  if (errors.length > 1) {
-    throw new AggregateError(errors, "Recording cancellation encountered multiple cleanup failures.");
-  }
+  return { cancellationError, liveCaptionCleanup };
 }
 
 export interface RecordingResetApi<T> {
@@ -327,21 +327,25 @@ export interface RecordingResetApi<T> {
 export async function cancelRecordingAndReset<T>(
   recording: Omit<CancelCapturedAudioOptions, "cancel"> | null,
   api: RecordingResetApi<T>,
-): Promise<{ readonly result: T; readonly cancellationError: unknown | null }> {
-  let cancellationError: unknown | null = null;
+): Promise<{
+  readonly result: T;
+  readonly cancellationError: SafeDiagnostic | null;
+  readonly liveCaptionCleanup: Promise<SafeDiagnostic | null> | null;
+}> {
+  let cancellationError: SafeDiagnostic | null = null;
+  let liveCaptionCleanup: Promise<SafeDiagnostic | null> | null = null;
   if (recording !== null) {
-    try {
-      await cancelCapturedAudio({
-        ...recording,
-        cancel: (streamId) => api.cancelLiveStream(streamId),
-      });
-    } catch (error) {
-      cancellationError = error;
-    }
+    const cancellation = await cancelCapturedAudio({
+      ...recording,
+      cancel: (streamId) => api.cancelLiveStream(streamId),
+    });
+    cancellationError = cancellation.cancellationError;
+    liveCaptionCleanup = cancellation.liveCaptionCleanup;
   }
   return {
     result: await api.reset(),
     cancellationError,
+    liveCaptionCleanup,
   };
 }
 
@@ -721,16 +725,19 @@ export class LivePcmCapture {
   }
 }
 
-async function cancelLiveCaption(live: LiveCaptionFinalizer): Promise<unknown | null> {
+function startLiveCaptionCancellation(
+  live: Pick<LiveCaptionFinalizer, "streamId" | "cancel">,
+): Promise<SafeDiagnostic | null> | null {
   if (live.streamId === null) {
     return null;
   }
-  try {
-    await live.cancel(live.streamId);
-    return null;
-  } catch (error) {
-    return error;
-  }
+  const streamId = live.streamId;
+  return Promise.resolve()
+    .then(async () => live.cancel(streamId))
+    .then(
+      () => null,
+      (error) => sanitizeSafeDiagnostic(error, "OPTIONAL_LIVE_CLEANUP_PENDING"),
+    );
 }
 
 function clearAudioWorkletHandler(worklet: AudioWorkletNode | null): void {

@@ -54,7 +54,7 @@ describe("ModelSlot", () => {
     expect(slot.active).toBe(next);
   });
 
-  it("detaches the active model before a failing loaded-state probe", async () => {
+  it("retains the active model for retry after a failing loaded-state probe", async () => {
     const slot = new ModelSlot<FakeModel>();
     const model = new FakeModel("working", true);
     await slot.activate(model, {});
@@ -62,11 +62,14 @@ describe("ModelSlot", () => {
 
     await expect(slot.clear()).rejects.toThrow("loaded probe failed");
 
-    expect(slot.active).toBeNull();
+    expect(slot.active).toBe(model);
     expect(model.unload).not.toHaveBeenCalled();
+    await slot.clear();
+    expect(slot.active).toBeNull();
+    expect(model.unload).toHaveBeenCalledOnce();
   });
 
-  it("detaches the active model before a failing unload", async () => {
+  it("retains the active model for retry after a failing unload", async () => {
     const slot = new ModelSlot<FakeModel>();
     const model = new FakeModel("working", true);
     await slot.activate(model, {});
@@ -74,7 +77,10 @@ describe("ModelSlot", () => {
 
     await expect(slot.clear()).rejects.toThrow("unload failed");
 
+    expect(slot.active).toBe(model);
+    await slot.clear();
     expect(slot.active).toBeNull();
+    expect(model.unload).toHaveBeenCalledTimes(2);
   });
 
   it("forces a stale model through unload, load, and validation for a new owner", async () => {

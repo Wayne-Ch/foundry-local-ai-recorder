@@ -28,6 +28,7 @@ import { TempAudioStore } from "../src/audio/temp-audio-store";
 import { FoundryRecorderRuntime, type FoundryRecorderRuntimeOptions } from "../src/foundry/foundry-runtime";
 import { SUMMARY_EXECUTION_PROVIDER, SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
+import { toSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import { summaryUserPrompt } from "../src/summary/summary-prompt";
 
 const tempRoots: string[] = [];
@@ -228,7 +229,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("detaches stale models and reports every endpoint-guard cleanup failure before retrying", async () => {
+  it("retains stale models until unload succeeds before disposing a quarantined manager", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const rejected = new FakeManager(models);
@@ -256,9 +257,10 @@ describe("FoundryRecorderRuntime", () => {
         expect.stringContaining("endpoint guard"),
         "isLoaded cleanup failed",
         "summary unload failed",
-        "manager dispose failed",
       ]),
     );
+    expect(rejected.shutdown).not.toHaveBeenCalled();
+    expect(rejected.dispose).not.toHaveBeenCalled();
     expect(runtime.readiness.whisper).toMatchObject({
       model: null,
       status: "error",
@@ -272,14 +274,24 @@ describe("FoundryRecorderRuntime", () => {
 
     const staleRetryFailure = await captureFailure(runtime.prepare(false));
     expect(errorMessages(staleRetryFailure)).toContain("stale refresh unload failed");
+    expect(rejected.shutdown).not.toHaveBeenCalled();
+    expect(rejected.dispose).not.toHaveBeenCalled();
     expect(runtime.readiness.whisper).toMatchObject({
       model: null,
       status: "error",
       loaded: false,
     });
-    expect(accepted.catalog.getModelVariant).toHaveBeenCalledWith(WHISPER_AUDIO_MODEL_ID);
+    expect(accepted.catalog.getModelVariant).not.toHaveBeenCalled();
+
+    const managerRetryFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(managerRetryFailure)).toContain("manager dispose failed");
+    expect(rejected.shutdown).toHaveBeenCalledOnce();
+    expect(rejected.dispose).toHaveBeenCalledOnce();
+    expect(accepted.catalog.getModelVariant).not.toHaveBeenCalled();
 
     const prepared = await runtime.prepare(false);
+    expect(rejected.dispose).toHaveBeenCalledTimes(2);
+    expect(accepted.catalog.getModelVariant).toHaveBeenCalledWith(WHISPER_AUDIO_MODEL_ID);
     expect(prepared.readiness.whisper.status).toBe("ready");
     expect(prepared.readiness.summary.status).toBe("ready");
     expect(whisperLoad).toHaveBeenCalledTimes(2);
@@ -926,6 +938,236 @@ describe("FoundryRecorderRuntime", () => {
     expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
     expect(manager.shutdown).toHaveBeenCalledOnce();
     expect(manager.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("isolates a timed-out Nemotron drain while Whisper and Qwen complete on the shared manager", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const streamSettled = deferred<void>();
+    const nemotronDispose = vi.fn(() => {
+      order.push("nemotron-session-dispose");
+    });
+    const whisperProcess = vi.fn(async () => speechResponse("Exact Whisper final."));
+    const qwenProcess = vi.fn(async () => textResponse("Exact Qwen summary."));
+    const stream: StreamingResponse = {
+      response: streamSettled.promise.then(() => speechResponse("stale live transcript")),
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            await streamSettled.promise;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+    const runtime = createRuntime(root, [manager], {
+      models,
+      settlementTimeoutMs: 10,
+      createAudioSession: (model) =>
+        model.id === NEMOTRON_AUDIO_MODEL_ID
+          ? fakeAudioSession({
+              processStreamingRequest: () => stream,
+              dispose: nemotronDispose,
+            })
+          : fakeAudioSession({ processRequest: whisperProcess }),
+      createChatSession: () => fakeChatSession({ processRequest: qwenProcess }),
+    });
+    const controller = new RecorderController(runtime);
+    await controller.prepare({ enableLiveCaptions: true });
+    const started = await controller.startLiveStream(
+      {
+        format: AUDIO_FORMAT,
+        sampleRate: AUDIO_SAMPLE_RATE,
+        channels: AUDIO_CHANNELS,
+        maxDurationMs: 30_000,
+      },
+      () => {},
+    );
+
+    const firstCancel = runtime.cancelLiveStream(started.streamId);
+    const repeatedCancel = runtime.cancelLiveStream(started.streamId);
+    expect(repeatedCancel).toBe(firstCancel);
+    const cancelFailure = await captureFailure(firstCancel);
+
+    expect(errorMessages(cancelFailure)).toContain("Nemotron live stream did not settle within 10 ms.");
+    expect(runtime.cancelLiveStream(started.streamId)).toBe(firstCancel);
+    expect(runtime.cleanupCompletion).toBeNull();
+    expect(runtime.readiness).toMatchObject({
+      inProcessModeValidated: true,
+      cleanup: { state: "none", required: false, completionPending: false },
+      nemotron: {
+        detail: "Optional live-caption cleanup is draining; Whisper and Qwen remain available.",
+      },
+    });
+
+    const final = await controller.transcribeCapture({
+      format: AUDIO_FORMAT,
+      sampleRate: AUDIO_SAMPLE_RATE,
+      channels: AUDIO_CHANNELS,
+      durationMs: 1_000,
+      data: new ArrayBuffer(32_000),
+      liveCaptionFailure: toSafeDiagnostic(cancelFailure, "OPTIONAL_LIVE_CLEANUP_PENDING"),
+    });
+    const summary = await controller.generateSummary();
+
+    expect(final.result.transcript).toBe("Exact Whisper final.");
+    expect(summary.summaryInput).toBe("Exact Whisper final.");
+    expect(summary.snapshot.transcript.summary?.text).toBe("Exact Qwen summary.");
+    expect(whisperProcess).toHaveBeenCalledOnce();
+    expect(qwenProcess).toHaveBeenCalledOnce();
+    expect(summary.snapshot.trace.find((entry) => entry.phase === "live-caption-warning")).toMatchObject({
+      severity: "warning",
+      detail:
+        "Whisper final succeeded; The local operation did not finish within its bounded wait. [TIMEOUT/TimeoutError; details omitted]",
+    });
+    await expect(
+      controller.startLiveStream(
+        {
+          format: AUDIO_FORMAT,
+          sampleRate: AUDIO_SAMPLE_RATE,
+          channels: AUDIO_CHANNELS,
+          maxDurationMs: 30_000,
+        },
+        () => {},
+      ),
+    ).rejects.toThrow("still active or draining");
+
+    const firstShutdown = controller.shutdown();
+    const repeatedShutdown = controller.shutdown();
+    expect(repeatedShutdown).toBe(firstShutdown);
+    const shutdownFailure = await captureFailure(firstShutdown);
+    const cleanupCompletion = controller.cleanupCompletion;
+
+    expect(errorMessages(shutdownFailure)).toContain(
+      "Foundry Local shutdown cleanup did not settle within 10 ms.",
+    );
+    expect(cleanupCompletion).not.toBeNull();
+    expect(nemotronDispose).not.toHaveBeenCalled();
+    expect(order.some((entry) => entry.startsWith("model-unload:"))).toBe(false);
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+
+    streamSettled.resolve();
+    await cleanupCompletion;
+
+    expect(nemotronDispose).toHaveBeenCalledOnce();
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(3);
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
+    expect(runtime.readiness.cleanup).toMatchObject({ state: "none", required: false });
+  });
+
+  it("joins reset and shutdown retries into one durable cleanup generation", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const store = new TempAudioStore(root);
+    const cleanupAll = vi.spyOn(store, "cleanupAll");
+    const responseDeferred = deferred<Response>();
+    const requestReady = deferred<void>();
+    const dispose = vi.fn(() => {
+      order.push("whisper-session-dispose");
+    });
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager: () => manager,
+      createAudioSession: () =>
+        fakeAudioSession({
+          processRequest: async () => {
+            requestReady.resolve();
+            return responseDeferred.promise;
+          },
+          dispose,
+        }),
+      createChatSession: () => fakeChatSession(),
+      tempAudioStore: store,
+      settlementTimeoutMs: 10,
+    });
+    await runtime.prepare(false);
+    order.length = 0;
+
+    const transcription = runtime.transcribeCapture(validatedCapture());
+    await requestReady.promise;
+    const firstReset = runtime.reset();
+    const repeatedReset = runtime.reset();
+    const upgradedShutdown = runtime.shutdown();
+    const repeatedShutdown = runtime.shutdown();
+
+    expect(repeatedReset).toBe(firstReset);
+    expect(upgradedShutdown).toBe(firstReset);
+    expect(repeatedShutdown).toBe(firstReset);
+    const firstFailure = await captureFailure(firstReset);
+    const cleanupCompletion = runtime.cleanupCompletion;
+    expect(errorMessages(firstFailure)).toContain("Recorder reset cleanup did not settle within 10 ms.");
+    expect(runtime.reset()).toBe(firstReset);
+    expect(runtime.shutdown()).toBe(firstReset);
+    expect(cleanupCompletion).not.toBeNull();
+    expect(cleanupAll).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+
+    responseDeferred.resolve(speechResponse("stale transcript"));
+    await expect(transcription).rejects.toThrow("cancelled");
+    await cleanupCompletion;
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(cleanupAll).toHaveBeenCalledOnce();
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("starts a new cleanup generation after an error without duplicating completed teardown", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const store = new TempAudioStore(root);
+    const cleanupAll = vi
+      .spyOn(store, "cleanupAll")
+      .mockRejectedValueOnce(new Error("temporary audio cleanup failed"))
+      .mockResolvedValue(undefined);
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager: () => manager,
+      createAudioSession: () => fakeAudioSession(),
+      createChatSession: () => fakeChatSession(),
+      tempAudioStore: store,
+      settlementTimeoutMs: 1_000,
+    });
+    await runtime.prepare(false);
+    order.length = 0;
+
+    const firstReset = runtime.reset();
+    const repeatedReset = runtime.reset();
+    const upgradedShutdown = runtime.shutdown();
+
+    expect(repeatedReset).toBe(firstReset);
+    expect(upgradedShutdown).toBe(firstReset);
+    await expect(firstReset).rejects.toThrow("temporary audio cleanup failed");
+    expect(cleanupAll).toHaveBeenCalledOnce();
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
+    expect(runtime.readiness.cleanup).toMatchObject({
+      state: "audio_cleanup_required",
+      required: true,
+      completionPending: false,
+    });
+
+    const retry = runtime.shutdown();
+    expect(retry).not.toBe(firstReset);
+    await retry;
+
+    expect(cleanupAll).toHaveBeenCalledTimes(2);
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
+    expect(runtime.readiness.cleanup).toMatchObject({ state: "none", required: false });
   });
 
   it("keeps Nemotron session, models, and manager until a timed-out stream settles", async () => {

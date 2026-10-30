@@ -49,9 +49,11 @@ export class ModelSlot<T extends LoadableModel> {
 
   async clear(): Promise<void> {
     const current = this.#active;
-    this.#active = null;
     if (current !== null && (await current.model.isLoaded())) {
       await current.model.unload();
+    }
+    if (this.#active === current) {
+      this.#active = null;
     }
   }
 }

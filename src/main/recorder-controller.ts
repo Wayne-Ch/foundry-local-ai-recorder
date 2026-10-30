@@ -40,6 +40,7 @@ import type {
   TraceEntry,
   TranscriptionResponse,
 } from "../shared/contracts";
+import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { TranscriptStore } from "../transcript/transcript-store";
 
 const TRACE_LIMIT = 250;
@@ -78,6 +79,9 @@ export class RecorderController {
   #finalizedAt: number | null = null;
   #operationGeneration = 0;
   #lastRecoveryWarningKey: string | null = null;
+  #cleanupCompletion: Promise<void> | null = null;
+  #resetPromise: Promise<RecorderSnapshot> | null = null;
+  #shutdownPromise: Promise<void> | null = null;
 
   constructor(runtime: RecorderRuntime = new FoundryRecorderRuntime()) {
     this.#runtime = runtime;
@@ -119,7 +123,9 @@ export class RecorderController {
         this.#traceEvent(
           "Application",
           "live-fallback",
-          `Nemotron is unavailable; Whisper-only recording remains ready. ${liveCaptionsFailure}`,
+          `Nemotron is unavailable; Whisper-only recording remains ready. ${formatSafeDiagnostic(
+            liveCaptionsFailure,
+          )}`,
           "warning",
         );
       }
@@ -245,7 +251,7 @@ export class RecorderController {
         this.#traceEvent(
           "Application",
           "live-caption-warning",
-          `Whisper final succeeded; live captions failed: ${validation.value.liveCaptionFailure}`,
+          `Whisper final succeeded; ${formatSafeDiagnostic(validation.value.liveCaptionFailure)}`,
           "warning",
         );
       }
@@ -255,7 +261,7 @@ export class RecorderController {
         this.#traceEvent(
           "Application",
           "live-caption-warning",
-          `Whisper final failed after live captions failed: ${validation.value.liveCaptionFailure}`,
+          `Whisper final failed after ${formatSafeDiagnostic(validation.value.liveCaptionFailure)}`,
           "warning",
         );
       }
@@ -281,7 +287,7 @@ export class RecorderController {
     this.#traceEvent(
       "Application",
       "wav-import",
-      `${fileName} was decoded as bounded PCM and passed through the same owned temporary-WAV Whisper path.`,
+      "The selected WAV was decoded as bounded PCM and passed through the same owned temporary-WAV Whisper path.",
     );
     return { ...response, fileName };
   }
@@ -341,9 +347,57 @@ export class RecorderController {
     }
   }
 
-  async reset(): Promise<RecorderSnapshot> {
-    this.#operationGeneration += 1;
-    await this.#runtime.reset();
+  reset(): Promise<RecorderSnapshot> {
+    if (this.#resetPromise !== null) {
+      return this.#resetPromise;
+    }
+    const runtimeResult = this.#runtime.reset();
+    const cleanupCompletion = this.#runtime.cleanupCompletion ?? runtimeResult;
+    this.#trackCleanupGeneration(cleanupCompletion);
+    const durableReset = cleanupCompletion.then(() => this.#applyReset());
+    const result = runtimeResult.then(async () => durableReset);
+    this.#resetPromise = result;
+    void result.catch(() => undefined);
+    void durableReset.then(
+      () => {
+        if (this.#resetPromise === result) {
+          this.#resetPromise = null;
+        }
+      },
+      () => {
+        if (this.#resetPromise === result) {
+          this.#resetPromise = null;
+        }
+      },
+    );
+    return result;
+  }
+
+  shutdown(): Promise<void> {
+    if (this.#shutdownPromise !== null) {
+      return this.#shutdownPromise;
+    }
+    const result = this.#runtime.shutdown();
+    const cleanupCompletion = this.#runtime.cleanupCompletion ?? result;
+    this.#trackCleanupGeneration(cleanupCompletion);
+    this.#shutdownPromise = result;
+    void result.catch(() => undefined);
+    void cleanupCompletion.then(
+      () => {
+        if (this.#shutdownPromise === result) {
+          this.#shutdownPromise = null;
+        }
+      },
+      () => {
+        if (this.#shutdownPromise === result) {
+          this.#shutdownPromise = null;
+        }
+      },
+    );
+    return result;
+  }
+
+  #applyReset(): RecorderSnapshot {
     this.#transcript.reset();
     this.#timing = {
       firstCaptionMs: null,
@@ -362,13 +416,28 @@ export class RecorderController {
     return this.#snapshot();
   }
 
-  shutdown(): Promise<void> {
-    this.#operationGeneration += 1;
-    return this.#runtime.shutdown();
-  }
-
   get cleanupCompletion(): Promise<void> | null {
     return this.#runtime.cleanupCompletion;
+  }
+
+  #trackCleanupGeneration(completion: Promise<void>): void {
+    if (this.#cleanupCompletion === completion) {
+      return;
+    }
+    this.#cleanupCompletion = completion;
+    this.#operationGeneration += 1;
+    void completion.then(
+      () => {
+        if (this.#cleanupCompletion === completion) {
+          this.#cleanupCompletion = null;
+        }
+      },
+      () => {
+        if (this.#cleanupCompletion === completion) {
+          this.#cleanupCompletion = null;
+        }
+      },
+    );
   }
 
   #snapshot(): RecorderSnapshot {
@@ -404,7 +473,12 @@ export class RecorderController {
   }
 
   #traceError(phase: string, error: unknown): void {
-    this.#traceEvent("Application", phase, error instanceof Error ? error.message : String(error), "error");
+    this.#traceEvent(
+      "Application",
+      phase,
+      formatSafeDiagnostic(toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED")),
+      "error",
+    );
   }
 
   #traceErrorIfCurrent(generation: number, phase: string, error: unknown): void {

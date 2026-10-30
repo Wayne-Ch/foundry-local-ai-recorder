@@ -11,6 +11,7 @@ import type {
 } from "../audio/audio-types";
 import type { ModelRole, RuntimeTarget } from "../foundry/runtime-config";
 import type { TranscriptSnapshot } from "../transcript/transcript-store";
+import type { SafeDiagnostic } from "./safe-diagnostic";
 
 export const ipcChannels = {
   bootstrap: "recorder:bootstrap",
@@ -60,7 +61,8 @@ export type RuntimeCleanupState =
   | "none"
   | "draining"
   | "native_cleanup_required"
-  | "manager_cleanup_required";
+  | "manager_cleanup_required"
+  | "audio_cleanup_required";
 
 export interface RuntimeCleanupReadiness {
   readonly state: RuntimeCleanupState;
@@ -129,7 +131,7 @@ export interface PrepareRecorderRequest {
 export interface PrepareRecorderResponse {
   readonly snapshot: RecorderSnapshot;
   readonly liveCaptionsAvailable: boolean;
-  readonly liveCaptionsFailure: string | null;
+  readonly liveCaptionsFailure: SafeDiagnostic | null;
 }
 
 export interface MicrophoneAuthorizationRequest {

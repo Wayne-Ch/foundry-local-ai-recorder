@@ -6,12 +6,19 @@ import {
   NEMOTRON_AUDIO_MODEL_ID,
 } from "../src/audio/audio-types";
 import { FoundryRecorderRuntime } from "../src/foundry/foundry-runtime";
+import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import { chunks, keywordRecall, loadFixturePcm, sleep } from "./integration-utils";
 
 const runtime = new FoundryRecorderRuntime();
 try {
   const prepared = await runtime.prepare(true, (event) => process.stdout.write(`${event.detail}\n`));
-  assert.equal(prepared.liveCaptionsAvailable, true, prepared.liveCaptionsFailure ?? "Nemotron unavailable");
+  assert.equal(
+    prepared.liveCaptionsAvailable,
+    true,
+    prepared.liveCaptionsFailure === null
+      ? "Nemotron unavailable"
+      : formatSafeDiagnostic(prepared.liveCaptionsFailure),
+  );
   assert.equal(prepared.readiness.nemotron.model?.id, NEMOTRON_AUDIO_MODEL_ID);
   assert.equal(prepared.readiness.nemotron.model?.executionProvider, AUDIO_EXECUTION_PROVIDER);
   const partials: string[] = [];

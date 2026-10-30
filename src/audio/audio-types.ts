@@ -1,3 +1,5 @@
+import type { SafeDiagnostic } from "../shared/safe-diagnostic";
+
 export const NEMOTRON_AUDIO_MODEL_ID = "nemotron-speech-streaming-en-0.6b-generic-cpu:3";
 export const NEMOTRON_AUDIO_MODEL_ALIAS = "nemotron-speech-streaming-en-0.6b";
 export const WHISPER_AUDIO_MODEL_ID = "openai-whisper-tiny-generic-cpu:4";
@@ -64,7 +66,7 @@ export interface AudioCapturePayload {
   readonly channels: typeof AUDIO_CHANNELS;
   readonly durationMs: number;
   readonly data: ArrayBuffer;
-  readonly liveCaptionFailure?: string | null;
+  readonly liveCaptionFailure?: SafeDiagnostic | null;
 }
 
 export interface ValidatedAudioCapture {
@@ -73,7 +75,7 @@ export interface ValidatedAudioCapture {
   readonly channels: typeof AUDIO_CHANNELS;
   readonly durationMs: number;
   readonly pcmBytes: Uint8Array;
-  readonly liveCaptionFailure: string | null;
+  readonly liveCaptionFailure: SafeDiagnostic | null;
 }
 
 export interface AudioTranscriptionResult {
