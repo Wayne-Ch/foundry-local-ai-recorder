@@ -1,0 +1,50 @@
+{
+  "name": "foundry-local-smart-ai-recorder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows-first local Smart AI Recorder prototype powered by Foundry Local.",
+  "main": "dist/main/main.mjs",
+  "type": "module",
+  "scripts": {
+    "postinstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-electron.ps1",
+    "clean": "node scripts/clean.mjs",
+    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/main/main.mjs --external:electron --external:foundry-local-sdk --sourcemap",
+    "build:preload": "esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/preload/preload.cjs --external:electron --sourcemap",
+    "build:renderer": "vite build",
+    "build": "npm run clean && npm run build:main && npm run build:preload && npm run build:renderer",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fixture:generate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-ode-fixture.ps1",
+    "test:whisper-integration": "tsx scripts/run-whisper-integration.ts",
+    "test:nemotron-integration": "tsx scripts/run-nemotron-integration.ts",
+    "test:summary-integration": "tsx scripts/run-summary-integration.ts",
+    "test:chain-integration": "tsx scripts/run-chain-integration.ts",
+    "probe:microphone-permission": "npm run build && node scripts/probe-electron-microphone.mjs",
+    "probe:stream-owner": "npm run build && node scripts/probe-electron-stream-owner.mjs",
+    "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
+    "capture:ui": "npm run build && node scripts/capture-ui.mjs",
+    "start": "npm run build && electron .",
+    "start:built": "electron ."
+  },
+  "dependencies": {
+    "foundry-local-sdk": "2.2.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "24.19.2",
+    "electron": "42.11.18",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "foundry-local-sdk@2.2.1": true
+  }
+}

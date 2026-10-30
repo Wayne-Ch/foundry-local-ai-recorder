@@ -1,0 +1,11 @@
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  base: "./",
+  build: {
+    outDir: "dist/renderer",
+    emptyOutDir: false,
+    sourcemap: true,
+    target: "chrome142",
+  },
+});
