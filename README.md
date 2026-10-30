@@ -1,0 +1,155 @@
+# Foundry Local Smart AI Recorder
+
+Windows-first Electron prototype for a complete local recording workflow:
+
+1. **Nemotron live draft** while the microphone is active.
+2. **Whisper authoritative final transcript** after Stop, using the same owned capture.
+3. **Qwen post-session summary** generated only from the reviewed Whisper final transcript.
+
+The core record-then-transcribe path remains usable when live captions are disabled or Nemotron
+preparation fails. There are no canned transcript or summary fallbacks.
+
+## What is real
+
+| Responsibility | Exact implementation |
+|---|---|
+| SDK | `foundry-local-sdk@2.2.1`, in-process native sessions |
+| Live draft | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` / `CPUExecutionProvider` |
+| Final ASR | `openai-whisper-tiny-generic-cpu:4` / `CPUExecutionProvider` |
+| Summary | `qwen3-0.6b-generic-gpu:2` / `WebGPUExecutionProvider` |
+| Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded eight-chunk renderer/native queues |
+| Whisper input | Application-owned validated temporary WAV passed through `Item.audioFromUri(...)` |
+| Summary input | Exact transcript version captured by `TranscriptStore.submitForSummary()` |
+
+Nemotron uses `Item.audioDescriptor("pcm", 16000, 1)`, a borrowed `ItemQueue`,
+`Item.bytes(...)`, `markFinished()`, and `AudioSession.processStreamingRequest()`. Its replaceable
+partials and terminal aggregate are display/evidence only. The controller does not write either to
+durable transcript state.
+
+Whisper receives the same PCM capture after Stop. The application writes an owner-tracked WAV with
+mode `0600`, creates an `AudioSession`, adds `Item.audioFromUri(...)`, requires a terminal
+`SpeechResult`, and removes the WAV in `finally`.
+
+Qwen uses `ChatSession`, system/user messages, `preflightRequest()`, and `processRequest()`.
+Thinking is disabled through `chat_template_kwargs` so the small model spends its bounded output
+budget on the summary. A non-`stop`, empty, stale-version, or oversized result fails visibly.
+
+## Windows setup
+
+Validated on Wayne Chuang's Windows 11 x64 machine with Node.js `26.13.0`.
+
+```powershell
+npm install
+npm run fixture:generate
+npm run start
+```
+
+The project pins patched Electron `42.11.18`. The root `postinstall` runs
+`scripts/ensure-electron.ps1`, which guards the Node 26 archive-extraction edge encountered during
+initial setup: it first uses Electron's installer, then repairs from Electron's verified local cache
+with Windows `Expand-Archive` when necessary.
+
+Select **Prepare local models** before recording. Preparation can use the network to download an
+uncached model or the WebGPU execution-provider bundle. Once cached and loaded, inference uses
+native in-process sessions; the application does not start the Foundry embedded web service and has
+no cloud inference endpoint.
+
+## Run and validate
+
+```powershell
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run smoke:electron
+npm run probe:microphone-permission
+npm run probe:stream-owner
+npm run capture:ui
+npm run test:whisper-integration
+npm run test:nemotron-integration
+npm run test:summary-integration
+npm run test:chain-integration
+```
+
+The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
+Synthesis from original ODE teaching text. No copyrighted lecture material is included.
+
+## Product behavior
+
+- Recording requires an explicit consent checkbox and transient user-gesture microphone grant.
+- Live captions are optional. A failed Nemotron preparation leaves loaded Whisper and Qwen models
+  intact and reports the Whisper-only fallback.
+- Stop finalizes Nemotron for timing/evidence, then sends the complete capture to Whisper.
+- The final transcript is editable. A correction increments its version and invalidates a prior
+  summary.
+- **Generate summary** submits only the current final transcript version.
+- **Delete / reset** cancels active work, removes owned temporary audio, and clears transcript,
+  summary, timing, and trace state.
+- Transcript and summary state are memory-only. There is intentionally no automatic retention,
+  export, account sync, or background upload in this prototype.
+- A local PCM16LE/16 kHz/mono WAV can be opened as a stage fallback and follows the same temporary
+  WAV + Whisper path.
+
+## Security and lifecycle
+
+- `contextIsolation: true`
+- `sandbox: true`
+- `nodeIntegration: false`
+- narrow typed preload API
+- exact main-frame/document URL checks on every IPC call
+- deny-by-default navigation and window creation
+- short-lived microphone authorization bound to the active main frame
+- main-process stream leases bound to webContents, process, frame tree node, and frame token
+- cancellation on reload, navigation, render loss, webContents destruction, and window close
+- deterministic queue, session, model, manager, and temporary-file cleanup
+- startup orphan recovery removes only owned `capture-*.wav` files
+
+## Configuration overrides
+
+Each override requires an exact model ID and execution provider together. Invalid or partial
+overrides fail; they never silently fall back.
+
+| Role | Model variable | Provider variable |
+|---|---|---|
+| Whisper | `SMART_RECORDER_WHISPER_MODEL_ID` | `SMART_RECORDER_WHISPER_EXECUTION_PROVIDER` |
+| Nemotron | `SMART_RECORDER_NEMOTRON_MODEL_ID` | `SMART_RECORDER_NEMOTRON_EXECUTION_PROVIDER` |
+| Summary | `SMART_RECORDER_SUMMARY_MODEL_ID` | `SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER` |
+
+Overrides are labeled not stage-validated unless they exactly match the built-in pair.
+
+Other paths:
+
+- `SMART_RECORDER_APP_DATA_DIR`
+- `FOUNDRY_MODEL_CACHE_DIR`
+
+## Current limits
+
+- Windows 11 x64 only.
+- English speech only.
+- 30-second bounded capture; this is a classroom demo bound, not a lecture-length stability claim.
+- Imported WAV files must already be PCM16LE, 16 kHz, mono.
+- The small Qwen model is concise and fast on this machine, but can render mathematical notation
+  imperfectly; the summary is explicitly AI-generated and editable.
+- Physical network-disconnect rehearsal remains a manual release gate. Passing integration tests
+  proves in-process local inference and no application cloud endpoint, not that every machine-level
+  network path was physically disconnected.
+- Foundry Local logs show nonessential telemetry disabled, while SDK process information may still
+  initialize. This is separate from inference and is documented rather than hidden.
+
+## Application versus Foundry Local
+
+**Application-owned:** consent, capture, resampling, bounds, IPC/frame ownership, temporary WAV
+ownership, transcript versioning, summary submission policy, rendering, trace, and cleanup.
+
+**Foundry Local-owned:** catalog resolution, model download/cache/load, execution-provider
+registration, `AudioSession`/`ChatSession`, token preflight, and native inference.
+
+## Later image-processing boundary
+
+Image processing is deliberately absent. A later feature should add a separate typed image-ingest
+service and model slot, then attach extracted evidence to a finalized transcript version. It must
+not share microphone stream ownership, mutate live caption drafts, or bypass the existing
+transcript-version/summary boundary.
+
+See [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md), [CODE-WALKTHROUGH.md](CODE-WALKTHROUGH.md), and
+[VALIDATION.md](VALIDATION.md).
