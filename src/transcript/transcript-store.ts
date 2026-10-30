@@ -55,7 +55,7 @@ export class TranscriptStore {
       return false;
     }
     this.#liveSequence = sequence;
-    this.#liveDraft = normalizeTranscript(text);
+    this.#liveDraft = normalizeLiveTranscript(text);
     return true;
   }
 
@@ -69,11 +69,10 @@ export class TranscriptStore {
   }
 
   setWhisperFinal(text: string): TranscriptSnapshot {
-    const normalized = normalizeTranscript(text);
-    if (!normalized) {
+    if (!text.trim()) {
       throw new Error("The Whisper final transcript is empty.");
     }
-    this.#finalText = normalized;
+    this.#finalText = text;
     this.#version += 1;
     this.#submittedVersion = null;
     this.#summary = null;
@@ -82,12 +81,11 @@ export class TranscriptStore {
   }
 
   editFinal(text: string): TranscriptSnapshot {
-    const normalized = normalizeTranscript(text);
-    if (!normalized) {
+    if (!text.trim()) {
       throw new Error("The final transcript cannot be empty.");
     }
-    if (normalized !== this.#finalText) {
-      this.#finalText = normalized;
+    if (text !== this.#finalText) {
+      this.#finalText = text;
       this.#version += 1;
       this.#submittedVersion = null;
       this.#summary = null;
@@ -123,6 +121,6 @@ export class TranscriptStore {
   }
 }
 
-function normalizeTranscript(value: string): string {
+function normalizeLiveTranscript(value: string): string {
   return value.trim().replaceAll(/\s+/g, " ");
 }

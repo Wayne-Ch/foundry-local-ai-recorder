@@ -28,15 +28,26 @@ class FakeRuntime implements RecorderRuntime {
     sdkVersion: "2.2.1",
     provider: "Foundry Local in-process SDK",
     externalEndpointUsed: false,
+    inProcessModeValidated: true,
     embeddedWebServiceRunning: false,
     embeddedWebServiceUrls: [],
     nonessentialTelemetryDisabled: true,
     modelCachePath: "C:\\models",
+    audioRecovery: {
+      discovered: 0,
+      removed: 0,
+      retained: 0,
+      pathPolicy: "App-owned temporary audio directory; exact paths are not exposed.",
+      retryGuidance:
+        "Close applications using retained files, then use Delete / reset or restart to retry cleanup.",
+    },
     whisper: modelReadiness("whisper", WHISPER_AUDIO_MODEL_ID, AUDIO_EXECUTION_PROVIDER),
     nemotron: modelReadiness("nemotron", NEMOTRON_AUDIO_MODEL_ID, AUDIO_EXECUTION_PROVIDER),
     summary: modelReadiness("summary", SUMMARY_MODEL_ID, SUMMARY_EXECUTION_PROVIDER),
   };
   summaryInput = "";
+
+  constructor(readonly finalTranscript = "Whisper authoritative final transcript.") {}
 
   async prepare(): Promise<PrepareRuntimeResult> {
     return {
@@ -83,12 +94,7 @@ class FakeRuntime implements RecorderRuntime {
   async cancelLiveStream(): Promise<void> {}
 
   async transcribeCapture(_capture: ValidatedAudioCapture): Promise<AudioTranscriptionResult> {
-    return transcription(
-      "Whisper authoritative final transcript.",
-      WHISPER_AUDIO_MODEL_ID,
-      "whisper_file",
-      "whisper_file_final",
-    );
+    return transcription(this.finalTranscript, WHISPER_AUDIO_MODEL_ID, "whisper_file", "whisper_file_final");
   }
 
   async summarize(transcript: string): Promise<SummaryGenerationResult> {
@@ -164,6 +170,26 @@ describe("RecorderController", () => {
     const edited = controller.editTranscript("Corrected authoritative final.");
     expect(edited.transcript.version).toBe(2);
     expect(edited.transcript.summary).toBeNull();
+  });
+
+  it("preserves an exact Whisper transcript through controller summary submission", async () => {
+    const exact = "  Line one.\r\nLine  two — café 東京!\n\nPunctuation: “yes?”  ";
+    const runtime = new FakeRuntime(exact);
+    const controller = new RecorderController(runtime);
+
+    const final = await controller.transcribeCapture({
+      format: AUDIO_FORMAT,
+      sampleRate: AUDIO_SAMPLE_RATE,
+      channels: AUDIO_CHANNELS,
+      durationMs: 1_000,
+      data: new ArrayBuffer(32_000),
+    });
+    const summary = await controller.generateSummary();
+
+    expect(final.result.transcript).toBe(exact);
+    expect(final.snapshot.transcript.finalText).toBe(exact);
+    expect(runtime.summaryInput).toBe(exact);
+    expect(summary.summaryInput).toBe(exact);
   });
 });
 

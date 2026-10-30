@@ -54,4 +54,20 @@ describe("main-process audio stream ownership", () => {
     expect(ownership.canRoute(newLease, "stream-b")).toBe(true);
     await expect(ownership.activate(newLease, "stream-b")).resolves.toBe(true);
   });
+
+  it("cancels and releases ownership when finish rejects", async () => {
+    const cancelStream = vi.fn(async () => {});
+    const ownership = new AudioStreamOwnership(cancelStream);
+    const lease = ownership.begin(ownerA);
+    await ownership.activate(lease, "stream-a");
+
+    await expect(
+      ownership.finish(ownerA, "stream-a", async () => {
+        throw new Error("finish rejected");
+      }),
+    ).rejects.toThrow("finish rejected");
+
+    expect(cancelStream).toHaveBeenCalledWith("stream-a");
+    expect(() => ownership.begin(ownerB)).not.toThrow();
+  });
 });

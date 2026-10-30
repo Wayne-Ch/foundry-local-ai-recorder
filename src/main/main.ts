@@ -266,12 +266,9 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.finishLiveStream, async (event, request: AudioStreamFinishRequest) => {
     const renderer = assertTrustedRendererIpc(event);
-    audioStreamOwnership.assertOwned(renderer.owner, request.streamId);
-    try {
-      return await controller.finishLiveStream(request);
-    } finally {
-      audioStreamOwnership.complete(renderer.owner, request.streamId);
-    }
+    return audioStreamOwnership.finish(renderer.owner, request.streamId, () =>
+      controller.finishLiveStream(request),
+    );
   });
   ipcMain.handle(ipcChannels.cancelLiveStream, async (event, request: AudioStreamCancelRequest) => {
     const renderer = assertTrustedRendererIpc(event);
@@ -315,8 +312,9 @@ function registerIpc(): void {
     assertTrustedRendererIpc(event);
     return controller.generateSummary();
   });
-  ipcMain.handle(ipcChannels.reset, (event) => {
-    assertTrustedRendererIpc(event);
+  ipcMain.handle(ipcChannels.reset, async (event) => {
+    const renderer = assertTrustedRendererIpc(event);
+    await audioStreamOwnership.revokeOwner(renderer.owner.webContentsId, renderer.owner);
     return controller.reset();
   });
 }

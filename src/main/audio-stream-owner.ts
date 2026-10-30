@@ -78,6 +78,33 @@ export class AudioStreamOwnership {
     }
   }
 
+  async finish<T>(
+    owner: AudioStreamOwnerIdentity,
+    streamId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this.assertOwned(owner, streamId);
+    const active = this.#current;
+    if (active === null) {
+      throw new Error("The renderer no longer owns the active audio stream.");
+    }
+    try {
+      return await operation();
+    } catch (operationError) {
+      try {
+        await this.#cancel(active);
+      } catch (cancelError) {
+        throw new AggregateError(
+          [operationError, cancelError],
+          "Audio stream finish failed and cancellation also failed.",
+        );
+      }
+      throw operationError;
+    } finally {
+      this.complete(owner, streamId);
+    }
+  }
+
   async revokeOwner(
     webContentsId: number,
     frame?: Pick<AudioStreamOwnerIdentity, "frameTreeNodeId" | "frameToken">,

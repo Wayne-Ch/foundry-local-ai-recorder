@@ -59,14 +59,24 @@ export interface ModelReadiness {
 export interface RuntimeReadiness {
   readonly sdkVersion: "2.2.1";
   readonly provider: "Foundry Local in-process SDK";
-  readonly externalEndpointUsed: false;
-  readonly embeddedWebServiceRunning: false;
-  readonly embeddedWebServiceUrls: readonly [];
+  readonly externalEndpointUsed: boolean;
+  readonly inProcessModeValidated: boolean;
+  readonly embeddedWebServiceRunning: boolean;
+  readonly embeddedWebServiceUrls: readonly string[];
   readonly nonessentialTelemetryDisabled: true;
   readonly modelCachePath: string;
+  readonly audioRecovery: AudioRecoveryReadiness;
   readonly whisper: ModelReadiness;
   readonly nemotron: ModelReadiness;
   readonly summary: ModelReadiness;
+}
+
+export interface AudioRecoveryReadiness {
+  readonly discovered: number;
+  readonly removed: number;
+  readonly retained: number;
+  readonly pathPolicy: "App-owned temporary audio directory; exact paths are not exposed.";
+  readonly retryGuidance: "Close applications using retained files, then use Delete / reset or restart to retry cleanup.";
 }
 
 export interface TraceEntry {

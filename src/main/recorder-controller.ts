@@ -74,6 +74,8 @@ export class RecorderController {
   };
   #stopRequestedAt: number | null = null;
   #finalizedAt: number | null = null;
+  #operationGeneration = 0;
+  #lastRecoveryWarningKey: string | null = null;
 
   constructor(runtime: RecorderRuntime = new FoundryRecorderRuntime()) {
     this.#runtime = runtime;
@@ -92,6 +94,7 @@ export class RecorderController {
     request: PrepareRecorderRequest,
     onProgress?: (event: ProgressEvent) => void,
   ): Promise<PrepareRecorderResponse> {
+    const generation = this.#operationGeneration;
     this.#traceEvent(
       "Application",
       "prepare",
@@ -101,9 +104,14 @@ export class RecorderController {
     );
     try {
       const result = await this.#runtime.prepare(request.enableLiveCaptions, (event) => {
+        if (generation !== this.#operationGeneration) {
+          return;
+        }
         this.#traceEvent("Foundry Local", event.phase, event.detail);
         onProgress?.(event);
       });
+      this.#assertCurrent(generation);
+      this.#traceRecoveryWarning();
       if (result.liveCaptionsFailure !== null) {
         this.#traceEvent(
           "Application",
@@ -118,7 +126,8 @@ export class RecorderController {
         liveCaptionsFailure: result.liveCaptionsFailure,
       };
     } catch (error) {
-      this.#traceError("prepare", error);
+      this.#traceRecoveryWarning();
+      this.#traceErrorIfCurrent(generation, "prepare", error);
       throw error;
     }
   }
@@ -127,8 +136,12 @@ export class RecorderController {
     request: AudioStreamStartRequest,
     onPartial: (event: AudioPartialTranscriptEvent) => void,
   ): Promise<AudioStreamStartResponse> {
+    const generation = this.#operationGeneration;
     validateAudioStreamStart(request);
     const response = await this.#runtime.startLiveStream((event) => {
+      if (generation !== this.#operationGeneration) {
+        return;
+      }
       if (this.#transcript.snapshot.liveStreamId === null) {
         this.#transcript.startLiveDraft(event.streamId);
       }
@@ -137,6 +150,7 @@ export class RecorderController {
         onPartial(event);
       }
     });
+    this.#assertCurrent(generation);
     if (this.#transcript.snapshot.liveStreamId !== response.streamId) {
       this.#transcript.startLiveDraft(response.streamId);
     }
@@ -154,10 +168,12 @@ export class RecorderController {
   }
 
   async finishLiveStream(request: AudioStreamFinishRequest): Promise<LiveStreamResult> {
+    const generation = this.#operationGeneration;
     const validated = validateAudioStreamFinish(request);
     this.#stopRequestedAt = performance.now();
     try {
       const result = await this.#runtime.finishLiveStream(validated);
+      this.#assertCurrent(generation);
       this.#traceEvent(
         "Application",
         "live-terminal-discarded",
@@ -167,18 +183,23 @@ export class RecorderController {
       );
       return { result, snapshot: this.#snapshot() };
     } catch (error) {
-      this.#traceError("nemotron-finish", error);
+      this.#traceErrorIfCurrent(generation, "nemotron-finish", error);
       throw error;
     }
   }
 
   async cancelLiveStream(streamId: string): Promise<void> {
+    const generation = this.#operationGeneration;
     await this.#runtime.cancelLiveStream(streamId);
+    if (generation !== this.#operationGeneration) {
+      return;
+    }
     this.#transcript.clearLiveDraft(streamId);
     this.#traceEvent("Application", "live-cancel", "Renderer-owned live stream was cancelled.");
   }
 
   async transcribeCapture(payload: AudioCapturePayload): Promise<TranscriptionResponse> {
+    const generation = this.#operationGeneration;
     const validation = validateAudioCapturePayload(payload);
     if (!validation.ok) {
       throw new Error(validation.error.message);
@@ -191,6 +212,7 @@ export class RecorderController {
     );
     try {
       const result = await this.#runtime.transcribeCapture(validation.value);
+      this.#assertCurrent(generation);
       this.#transcript.setWhisperFinal(result.transcript);
       this.#finalizedAt = performance.now();
       this.#timing = {
@@ -208,7 +230,7 @@ export class RecorderController {
       );
       return { result, snapshot: this.#snapshot() };
     } catch (error) {
-      this.#traceError("whisper-final", error);
+      this.#traceErrorIfCurrent(generation, "whisper-final", error);
       throw error;
     }
   }
@@ -251,6 +273,7 @@ export class RecorderController {
   }
 
   async generateSummary(): Promise<SummaryResponse> {
+    const generation = this.#operationGeneration;
     const submitted = this.#transcript.submitForSummary();
     this.#traceEvent(
       "Application",
@@ -259,6 +282,7 @@ export class RecorderController {
     );
     try {
       const result = await this.#runtime.summarize(submitted.text);
+      this.#assertCurrent(generation);
       this.#transcript.applySummary({
         text: result.text,
         transcriptVersion: submitted.version,
@@ -283,12 +307,13 @@ export class RecorderController {
       );
       return { snapshot: this.#snapshot(), summaryInput: submitted.text };
     } catch (error) {
-      this.#traceError("summary-final", error);
+      this.#traceErrorIfCurrent(generation, "summary-final", error);
       throw error;
     }
   }
 
   async reset(): Promise<RecorderSnapshot> {
+    this.#operationGeneration += 1;
     await this.#runtime.reset();
     this.#transcript.reset();
     this.#timing = {
@@ -298,6 +323,7 @@ export class RecorderController {
     };
     this.#stopRequestedAt = null;
     this.#finalizedAt = null;
+    this.#lastRecoveryWarningKey = null;
     this.#trace.length = 0;
     this.#traceEvent(
       "Application",
@@ -308,6 +334,7 @@ export class RecorderController {
   }
 
   shutdown(): Promise<void> {
+    this.#operationGeneration += 1;
     return this.#runtime.shutdown();
   }
 
@@ -345,5 +372,38 @@ export class RecorderController {
 
   #traceError(phase: string, error: unknown): void {
     this.#traceEvent("Application", phase, error instanceof Error ? error.message : String(error), "error");
+  }
+
+  #traceErrorIfCurrent(generation: number, phase: string, error: unknown): void {
+    if (generation === this.#operationGeneration) {
+      this.#traceError(phase, error);
+    }
+  }
+
+  #traceRecoveryWarning(): void {
+    const recovery = this.#runtime.readiness.audioRecovery;
+    if (recovery.retained === 0) {
+      this.#lastRecoveryWarningKey = null;
+      return;
+    }
+    const warningKey = `${recovery.discovered}:${recovery.removed}:${recovery.retained}`;
+    if (warningKey === this.#lastRecoveryWarningKey) {
+      return;
+    }
+    this.#lastRecoveryWarningKey = warningKey;
+    this.#traceEvent(
+      "Application",
+      "startup-audio-retained",
+      `${recovery.retained} locked app-owned temporary audio ${
+        recovery.retained === 1 ? "file remains" : "files remain"
+      } in the private temp directory. Exact paths are hidden. ${recovery.retryGuidance}`,
+      "warning",
+    );
+  }
+
+  #assertCurrent(generation: number): void {
+    if (generation !== this.#operationGeneration) {
+      throw new Error("The recorder operation was cancelled.");
+    }
   }
 }

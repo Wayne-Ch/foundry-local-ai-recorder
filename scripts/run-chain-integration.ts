@@ -16,6 +16,10 @@ try {
     process.stdout.write(`${event.detail}\n`),
   );
   assert.equal(prepared.liveCaptionsAvailable, true, prepared.liveCaptionsFailure ?? "Nemotron unavailable");
+  assert.equal(prepared.snapshot.readiness.inProcessModeValidated, true);
+  assert.equal(prepared.snapshot.readiness.externalEndpointUsed, false);
+  assert.equal(prepared.snapshot.readiness.embeddedWebServiceRunning, false);
+  assert.deepEqual(prepared.snapshot.readiness.embeddedWebServiceUrls, []);
   const partials: string[] = [];
   const started = await controller.startLiveStream(
     {
@@ -57,6 +61,8 @@ try {
   assert.equal(summary.summaryInput, final.result.transcript);
   assert.notEqual(summary.summaryInput, live.result.transcript);
   assert.notEqual(summary.summaryInput, partials.at(-1));
+  assert.equal(live.result.externalEndpointUsed, false);
+  assert.equal(final.result.externalEndpointUsed, false);
   assert.equal(summary.snapshot.transcript.summary?.transcriptVersion, final.snapshot.transcript.version);
   assert.deepEqual(await listOwnedTempFiles(), before);
   console.log(
@@ -69,6 +75,14 @@ try {
       whisperFinal: final.result.transcript,
       summary: summary.snapshot.transcript.summary,
       summaryInputEqualsWhisperFinal: summary.summaryInput === final.result.transcript,
+      summaryInputLength: summary.summaryInput.length,
+      inProcessModeValidated: summary.snapshot.readiness.inProcessModeValidated,
+      externalEndpointUsed:
+        summary.snapshot.readiness.externalEndpointUsed ||
+        live.result.externalEndpointUsed ||
+        final.result.externalEndpointUsed,
+      embeddedWebServiceRunning: summary.snapshot.readiness.embeddedWebServiceRunning,
+      embeddedWebServiceUrls: summary.snapshot.readiness.embeddedWebServiceUrls,
       tempResidue: await listOwnedTempFiles(),
     })}`,
   );

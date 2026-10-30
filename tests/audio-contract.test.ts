@@ -39,8 +39,13 @@ import {
   type AudioRecorderOperationRef,
   audioModeDisplay,
   BoundedAudioChunkPump,
+  BoundedPcmCapture,
+  beginRecordingStop,
+  cancelRecordingAndReset,
   cleanupRecorderOperation,
   clipPcm16ToMaxBytes,
+  finalizeCapturedAudio,
+  recordingLimitDelay,
   releaseMediaStream,
   resampleChannelsToPcm16,
   StreamingPcm16Resampler,
@@ -229,6 +234,25 @@ describe("PCM and WAV conversion", () => {
     expect(new DataView(chunks[0]?.buffer ?? new ArrayBuffer(0)).getInt16(0, true)).toBe(0);
     expect(new DataView(chunks[9]?.buffer ?? new ArrayBuffer(0)).getInt16(0, true)).toBeGreaterThan(20_000);
   });
+
+  it("caps PCM accumulation at the exact 30-second byte contract", () => {
+    const exact = new BoundedPcmCapture();
+    expect(exact.append(new Uint8Array(AUDIO_MAX_PCM_BYTES)).reachedLimit).toBe(true);
+    expect(exact.byteLength).toBe(AUDIO_MAX_PCM_BYTES);
+    expect(exact.durationMs).toBe(AUDIO_MAX_DURATION_MS);
+
+    const oneFrameBeyond = new BoundedPcmCapture();
+    const beyond = oneFrameBeyond.append(new Uint8Array(AUDIO_MAX_PCM_BYTES + 2));
+    expect(beyond.accepted.byteLength).toBe(AUDIO_MAX_PCM_BYTES);
+    expect(oneFrameBeyond.byteLength).toBe(AUDIO_MAX_PCM_BYTES);
+
+    const crossing = new BoundedPcmCapture();
+    crossing.append(new Uint8Array(AUDIO_MAX_PCM_BYTES - 1_000));
+    const crossed = crossing.append(new Uint8Array(4_000));
+    expect(crossed.accepted.byteLength).toBe(1_000);
+    expect(crossing.byteLength).toBe(AUDIO_MAX_PCM_BYTES);
+    expect(crossing.snapshot().byteLength).toBe(AUDIO_MAX_PCM_BYTES);
+  });
 });
 
 describe("live transcript and backpressure", () => {
@@ -342,6 +366,46 @@ describe("live transcript and backpressure", () => {
     expect(() => pump.enqueue(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES))).toThrow("remembered chunk failure");
     expect(sent).toEqual([0]);
   });
+
+  it("continues with bounded Whisper audio after a sticky pump failure and cleans live resources", async () => {
+    const errors: unknown[] = [];
+    const pump = new BoundedAudioChunkPump(
+      async () => {
+        throw new Error("live IPC failed");
+      },
+      (error) => errors.push(error),
+    );
+    const pcm = new BoundedPcmCapture();
+    pcm.append(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
+    pump.enqueue(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
+    await vi.waitFor(() => expect(errors).toHaveLength(1));
+
+    const stop = vi.fn(async () => [new Uint8Array(AUDIO_STREAM_CHUNK_BYTES)]);
+    const trackStop = vi.fn();
+    const finish = vi.fn(async () => {});
+    const cancel = vi.fn(async () => {});
+    const result = await finalizeCapturedAudio({
+      capture: { stop },
+      mediaStream: {
+        getTracks: () => [{ stop: trackStop }],
+      } as unknown as MediaStream,
+      pcm,
+      live: {
+        pump,
+        streamId: STREAM_ID,
+        finish,
+        cancel,
+      },
+      releaseStream: releaseMediaStream,
+    });
+
+    expect(result.pcmBytes.byteLength).toBe(AUDIO_STREAM_CHUNK_BYTES * 2);
+    expect(result.liveCaptionError).toBeInstanceOf(Error);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(trackStop).toHaveBeenCalledOnce();
+    expect(finish).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith(STREAM_ID);
+  });
 });
 
 describe("audio recorder state and draft behavior", () => {
@@ -401,6 +465,11 @@ describe("audio recorder state and draft behavior", () => {
     expect(renderer).toContain("Final transcript <span>Whisper</span>");
     expect(renderer).toContain("Session summary <span>Qwen</span>");
     expect(renderer).toContain("Whisper-only fallback is ready");
+    expect(renderer).toContain("Endpoint guard pending");
+    expect(renderer).toContain("locked temporary audio");
+    expect(renderer).toContain("Cancel / reset");
+    expect(renderer).toContain("transcriptEditorDirty");
+    expect(renderer).not.toContain("finalTranscript.value.trim()");
   });
 
   it("stops every microphone track during cleanup", () => {
@@ -470,5 +539,58 @@ describe("audio recorder state and draft behavior", () => {
     expect(clearTimeout).toHaveBeenCalledWith(21);
     expect(releaseStream).toHaveBeenCalledWith(newOperation.stream);
     expect(newRecorder.stop).toHaveBeenCalledOnce();
+  });
+
+  it("allows only one winner when automatic and manual stop race", () => {
+    const operation = { stopping: false };
+    expect(recordingLimitDelay(1_000, 1_000)).toBe(AUDIO_MAX_DURATION_MS);
+    expect(recordingLimitDelay(1_000, 31_001)).toBe(0);
+    expect(beginRecordingStop(operation)).toBe(true);
+    expect(beginRecordingStop(operation)).toBe(false);
+  });
+
+  it("cancels and discards a recording without finish, transcription, or summary work", async () => {
+    const pcm = new BoundedPcmCapture();
+    pcm.append(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
+    const stop = vi.fn(async () => [new Uint8Array(AUDIO_STREAM_CHUNK_BYTES)]);
+    const trackStop = vi.fn();
+    const cancel = vi.fn(async () => {});
+    const finish = vi.fn();
+    const transcribe = vi.fn();
+    const summarize = vi.fn();
+
+    const reset = vi.fn(async () => "reset-complete");
+    const api = {
+      cancelLiveStream: cancel,
+      reset,
+      finishLiveStream: finish,
+      transcribeCapture: transcribe,
+      generateSummary: summarize,
+    };
+
+    await expect(
+      cancelRecordingAndReset(
+        {
+          capture: { stop },
+          mediaStream: {
+            getTracks: () => [{ stop: trackStop }],
+          } as unknown as MediaStream,
+          pcm,
+          pump: null,
+          streamId: STREAM_ID,
+          releaseStream: releaseMediaStream,
+        },
+        api,
+      ),
+    ).resolves.toEqual({ result: "reset-complete", cancellationError: null });
+
+    expect(cancel).toHaveBeenCalledWith(STREAM_ID);
+    expect(reset).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(trackStop).toHaveBeenCalledOnce();
+    expect(pcm.byteLength).toBe(0);
+    expect(finish).not.toHaveBeenCalled();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(summarize).not.toHaveBeenCalled();
   });
 });

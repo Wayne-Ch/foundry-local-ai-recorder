@@ -7,16 +7,25 @@ import {
   type AudioCapturePayload,
 } from "../audio/audio-types";
 import type { ModelReadiness, RecorderSnapshot, TraceEntry } from "../shared/contracts";
-import { BoundedAudioChunkPump, LivePcmCapture, releaseMediaStream } from "./audio-capture";
+import {
+  BoundedAudioChunkPump,
+  BoundedPcmCapture,
+  beginRecordingStop,
+  cancelRecordingAndReset,
+  finalizeCapturedAudio,
+  LivePcmCapture,
+  recordingLimitDelay,
+  releaseMediaStream,
+} from "./audio-capture";
 
 interface RecordingOperation {
   readonly generation: number;
   readonly mediaStream: MediaStream;
   readonly capture: LivePcmCapture;
-  readonly pump: BoundedAudioChunkPump | null;
+  pump: BoundedAudioChunkPump | null;
   readonly streamId: string | null;
   readonly startedAt: number;
-  readonly chunks: Uint8Array[];
+  readonly pcm: BoundedPcmCapture;
   timerId: number;
   limitId: number;
   stopping: boolean;
@@ -36,7 +45,7 @@ root.innerHTML = `
         <h1>Smart AI Recorder</h1>
       </div>
       <div class="topbar-status">
-        <span class="privacy-pill"><span class="pulse-dot"></span>No cloud endpoint</span>
+        <span class="privacy-pill"><span class="pulse-dot"></span><span id="privacy-state">Endpoint guard pending</span></span>
         <span id="clock" class="clock">00:00</span>
       </div>
     </header>
@@ -177,6 +186,7 @@ root.innerHTML = `
 
 const elements = {
   clock: required("#clock"),
+  privacyState: required("#privacy-state"),
   consent: required<HTMLInputElement>("#consent"),
   liveToggle: required<HTMLInputElement>("#live-toggle"),
   prepare: required<HTMLButtonElement>("#prepare-button"),
@@ -221,8 +231,10 @@ let operationGeneration = 0;
 let prepared = false;
 let liveAvailable = false;
 let busy = false;
+let resetting = false;
 let summaryDraft = "";
 let progressDetail = "";
+let transcriptEditorDirty = false;
 
 render(snapshot);
 
@@ -254,7 +266,10 @@ elements.traceToggle.addEventListener("click", () => {
 });
 elements.consent.addEventListener("change", updateControls);
 elements.liveToggle.addEventListener("change", updateControls);
-elements.finalTranscript.addEventListener("input", updateControls);
+elements.finalTranscript.addEventListener("input", () => {
+  transcriptEditorDirty = true;
+  updateControls();
+});
 elements.summaryOutput.addEventListener("input", () => {
   summaryDraft = elements.summaryOutput.value;
 });
@@ -267,7 +282,9 @@ window.addEventListener("beforeunload", () => {
     window.clearInterval(active.timerId);
     window.clearTimeout(active.limitId);
     active.pump?.cancel();
+    active.pcm.clear();
     releaseMediaStream(active.mediaStream);
+    void active.capture.stop().catch(() => undefined);
     if (active.streamId !== null) {
       void api.cancelLiveStream({ streamId: active.streamId }).catch(() => undefined);
     }
@@ -286,7 +303,10 @@ async function prepareModels(): Promise<void> {
     snapshot = response.snapshot;
     prepared = true;
     liveAvailable = response.liveCaptionsAvailable;
-    if (elements.liveToggle.checked && !liveAvailable) {
+    const recoveryWarning = startupRecoveryWarning(snapshot);
+    if (recoveryWarning !== null) {
+      setStatus(recoveryWarning, "warning");
+    } else if (elements.liveToggle.checked && !liveAvailable) {
       setStatus(
         `Whisper-only fallback is ready. ${response.liveCaptionsFailure ?? "Nemotron is unavailable."}`,
         "warning",
@@ -295,7 +315,14 @@ async function prepareModels(): Promise<void> {
       setStatus("Local models are ready. Audio remains on this PC.", "success");
     }
   } catch (error) {
-    setStatus(errorMessage(error), "error");
+    snapshot = await api.getBootstrap().catch(() => snapshot);
+    prepared = false;
+    liveAvailable = false;
+    const recoveryWarning = startupRecoveryWarning(snapshot);
+    setStatus(
+      recoveryWarning === null ? errorMessage(error) : `${errorMessage(error)} ${recoveryWarning}`,
+      "error",
+    );
   } finally {
     busy = false;
     render(snapshot);
@@ -315,7 +342,7 @@ async function startRecording(): Promise<void> {
   let liveCapture: LivePcmCapture | null = null;
   let streamId: string | null = null;
   let pump: BoundedAudioChunkPump | null = null;
-  const chunks: Uint8Array[] = [];
+  const pcm = new BoundedPcmCapture();
   try {
     await api.authorizeMicrophone();
     mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -339,8 +366,14 @@ async function startRecording(): Promise<void> {
         streamId = stream.streamId;
         pump = new BoundedAudioChunkPump(
           (sequence, data) => api.appendLiveChunk({ streamId: stream.streamId, sequence, data }),
-          (error) =>
-            setStatus(`Live captions stopped: ${errorMessage(error)}. Whisper still records.`, "warning"),
+          (error) => {
+            pump?.cancel();
+            pump = null;
+            if (recording?.generation === generation) {
+              recording.pump = null;
+            }
+            setStatus(`Live captions stopped: ${errorMessage(error)}. Whisper still records.`, "warning");
+          },
         );
       } catch (error) {
         liveAvailable = false;
@@ -357,31 +390,42 @@ async function startRecording(): Promise<void> {
         if (generation !== operationGeneration) {
           return;
         }
-        const copy = chunk.slice();
-        chunks.push(copy);
+        const { accepted, reachedLimit } = pcm.append(chunk);
         try {
-          pump?.enqueue(copy);
+          if (accepted.byteLength > 0) {
+            pump?.enqueue(accepted);
+          }
         } catch (error) {
           pump?.cancel();
           pump = null;
+          if (recording?.generation === generation) {
+            recording.pump = null;
+          }
           setStatus(`Live captions stopped: ${errorMessage(error)}. Whisper still records.`, "warning");
+        }
+        if (reachedLimit) {
+          queueMicrotask(() => void stopRecording("limit"));
         }
       },
       (error) => void failActiveRecording(error),
     );
-    const startedAt = performance.now();
-    recording = {
+    const operation: RecordingOperation = {
       generation,
       mediaStream,
       capture: liveCapture,
       pump,
       streamId,
-      startedAt,
-      chunks,
+      startedAt: liveCapture.startedAt,
+      pcm,
       timerId: window.setInterval(updateElapsed, 100),
-      limitId: window.setTimeout(() => void stopRecording(), AUDIO_MAX_DURATION_MS),
+      limitId: 0,
       stopping: false,
     };
+    recording = operation;
+    operation.limitId = window.setTimeout(
+      () => void stopRecording("limit"),
+      recordingLimitDelay(operation.startedAt, performance.now()),
+    );
     elements.liveDraft.textContent =
       streamId === null
         ? "Whisper-only recording active. No live draft is being stored."
@@ -397,10 +441,10 @@ async function startRecording(): Promise<void> {
     if (streamId !== null) {
       await api.cancelLiveStream({ streamId }).catch(() => undefined);
     }
+    releaseMediaStream(mediaStream);
     if (liveCapture !== null) {
       await liveCapture.stop().catch(() => undefined);
     }
-    releaseMediaStream(mediaStream);
     setStatus(microphoneError(error), "error");
   } finally {
     busy = false;
@@ -408,58 +452,70 @@ async function startRecording(): Promise<void> {
   }
 }
 
-async function stopRecording(): Promise<void> {
+async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<void> {
   const active = recording;
-  if (active === null || active.stopping) {
+  if (active === null || !beginRecordingStop(active)) {
     return;
   }
-  active.stopping = true;
   busy = true;
   window.clearInterval(active.timerId);
   window.clearTimeout(active.limitId);
   elements.recordingIndicator.textContent = "Finalizing";
-  setStatus("Stopping live captions, then running the same capture through Whisper…", "working");
+  setStatus(
+    reason === "limit"
+      ? "The 30-second limit was reached. Finalizing the bounded capture with Whisper…"
+      : "Stopping capture and running the bounded audio through Whisper…",
+    "working",
+  );
   updateControls();
   try {
-    const finalChunks = await active.capture.stop();
-    for (const chunk of finalChunks) {
-      const copy = chunk.slice();
-      active.chunks.push(copy);
-      active.pump?.enqueue(copy);
-    }
-    releaseMediaStream(active.mediaStream);
-    if (active.streamId !== null && active.pump !== null) {
-      try {
-        await active.pump.flush();
-        await api.finishLiveStream({
-          streamId: active.streamId,
-          lastSequence: active.pump.lastSequence,
-          audioDurationMs: durationFromChunks(active.chunks),
-        });
-      } catch (error) {
-        await api.cancelLiveStream({ streamId: active.streamId }).catch(() => undefined);
-        setStatus(
-          `Live caption finalization failed: ${errorMessage(error)}. Whisper is continuing.`,
-          "warning",
-        );
-      }
-    }
-    const pcm = concatenateChunks(active.chunks);
-    const durationMs = Math.round((pcm.byteLength / (AUDIO_SAMPLE_RATE * AUDIO_CHANNELS * 2)) * 1000);
-    if (durationMs < 300) {
+    const finalized = await finalizeCapturedAudio({
+      capture: active.capture,
+      mediaStream: active.mediaStream,
+      pcm: active.pcm,
+      live: {
+        pump: active.pump,
+        streamId: active.streamId,
+        finish: async (lastSequence, audioDurationMs) => {
+          if (active.streamId === null) {
+            return;
+          }
+          await api.finishLiveStream({
+            streamId: active.streamId,
+            lastSequence,
+            audioDurationMs,
+          });
+        },
+        cancel: async (streamId) => api.cancelLiveStream({ streamId }),
+      },
+      releaseStream: releaseMediaStream,
+    });
+    if (finalized.durationMs < 300) {
       throw new Error("Record at least 0.3 seconds of audio.");
     }
     const payload: AudioCapturePayload = {
       format: AUDIO_FORMAT,
       sampleRate: AUDIO_SAMPLE_RATE,
       channels: AUDIO_CHANNELS,
-      durationMs,
-      data: pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer,
+      durationMs: finalized.durationMs,
+      data: finalized.pcmBytes.buffer.slice(
+        finalized.pcmBytes.byteOffset,
+        finalized.pcmBytes.byteOffset + finalized.pcmBytes.byteLength,
+      ) as ArrayBuffer,
     };
     const response = await api.transcribeCapture(payload);
     snapshot = response.snapshot;
     summaryDraft = "";
-    setStatus("Whisper final transcript is ready for review.", "success");
+    if (finalized.liveCaptionError === null) {
+      setStatus("Whisper final transcript is ready for review.", "success");
+    } else {
+      setStatus(
+        `Whisper final transcript is ready. Live captions ended early: ${errorMessage(
+          finalized.liveCaptionError,
+        )}`,
+        "warning",
+      );
+    }
   } catch (error) {
     setStatus(errorMessage(error), "error");
   } finally {
@@ -519,7 +575,7 @@ async function generateSummary(): Promise<void> {
   updateControls();
   setStatus("Submitting the exact final transcript to the local summary model…", "working");
   try {
-    if (elements.finalTranscript.value.trim() !== snapshot.transcript.finalText) {
+    if (transcriptEditorDirty) {
       snapshot = await api.editTranscript({ text: elements.finalTranscript.value });
     }
     const response = await api.generateSummary();
@@ -538,19 +594,57 @@ async function resetRecorder(): Promise<void> {
   if (busy) {
     return;
   }
-  if (recording !== null) {
-    await stopRecording();
-  }
   busy = true;
+  resetting = true;
+  operationGeneration += 1;
+  const active = recording;
+  recording = null;
+  if (active !== null) {
+    active.stopping = true;
+    window.clearInterval(active.timerId);
+    window.clearTimeout(active.limitId);
+  }
   updateControls();
+  setStatus(
+    active === null ? "Deleting recorder state…" : "Cancelling recording and deleting recorder state…",
+    "working",
+  );
+  let cancellationError: unknown | null = null;
   try {
-    snapshot = await api.reset();
+    const reset = await cancelRecordingAndReset(
+      active === null
+        ? null
+        : {
+            capture: active.capture,
+            mediaStream: active.mediaStream,
+            pcm: active.pcm,
+            pump: active.pump,
+            streamId: active.streamId,
+            releaseStream: releaseMediaStream,
+          },
+      {
+        cancelLiveStream: async (streamId) => api.cancelLiveStream({ streamId }),
+        reset: () => api.reset(),
+      },
+    );
+    cancellationError = reset.cancellationError;
+    snapshot = reset.result;
     summaryDraft = "";
     elements.consent.checked = false;
-    setStatus("Temporary audio and derived in-memory state were deleted.", "success");
+    setStatus(
+      cancellationError === null
+        ? active === null
+          ? "Temporary audio and derived in-memory state were deleted."
+          : "Recording was cancelled; captured audio was discarded without transcription or summary."
+        : `Recording was cancelled and reset completed with a cleanup warning: ${errorMessage(
+            cancellationError,
+          )}`,
+      cancellationError === null ? "success" : "warning",
+    );
   } catch (error) {
     setStatus(errorMessage(error), "error");
   } finally {
+    resetting = false;
     busy = false;
     render(snapshot);
   }
@@ -566,8 +660,9 @@ async function failActiveRecording(error: unknown): Promise<void> {
   window.clearInterval(active.timerId);
   window.clearTimeout(active.limitId);
   active.pump?.cancel();
-  await active.capture.stop().catch(() => undefined);
+  active.pcm.clear();
   releaseMediaStream(active.mediaStream);
+  await active.capture.stop().catch(() => undefined);
   if (active.streamId !== null) {
     await api.cancelLiveStream({ streamId: active.streamId }).catch(() => undefined);
   }
@@ -581,6 +676,7 @@ function render(next: RecorderSnapshot): void {
   renderModel("whisper", snapshot.readiness.whisper);
   renderModel("nemotron", snapshot.readiness.nemotron);
   renderModel("summary", snapshot.readiness.summary);
+  renderPrivacyBoundary(snapshot);
 
   const transcript = snapshot.transcript;
   if (recording === null) {
@@ -590,6 +686,7 @@ function render(next: RecorderSnapshot): void {
   }
   elements.finalTranscript.disabled = !transcript.finalText || busy;
   elements.finalTranscript.value = transcript.finalText;
+  transcriptEditorDirty = false;
   elements.transcriptVersion.textContent = `Version ${transcript.version}`;
   elements.whisperTiming.textContent = `Stop → final ${formatMilliseconds(
     snapshot.timing.stopToWhisperFinalMs,
@@ -645,8 +742,7 @@ function renderTrace(trace: readonly TraceEntry[]): void {
 
 function updateControls(): void {
   const hasFinal = Boolean(snapshot.transcript.finalText);
-  const transcriptChanged =
-    hasFinal && elements.finalTranscript.value.trim() !== snapshot.transcript.finalText;
+  const transcriptChanged = hasFinal && transcriptEditorDirty;
   elements.prepare.disabled = busy || recording !== null;
   elements.start.disabled = !prepared || busy || recording !== null || !elements.consent.checked;
   elements.stop.disabled = recording === null || busy;
@@ -655,7 +751,20 @@ function updateControls(): void {
   elements.saveTranscript.disabled = busy || !transcriptChanged;
   elements.summary.disabled = busy || !hasFinal;
   elements.reset.disabled = busy;
-  elements.recordingIndicator.textContent = recording === null ? (busy ? "Working" : "Idle") : "Recording";
+  elements.reset.textContent = resetting
+    ? "Cancelling / resetting…"
+    : recording === null
+      ? "Delete / reset"
+      : "Cancel / reset";
+  elements.recordingIndicator.textContent = resetting
+    ? "Cancelling"
+    : recording === null
+      ? busy
+        ? "Working"
+        : "Idle"
+      : recording.stopping
+        ? "Finalizing"
+        : "Recording";
   elements.recordingIndicator.classList.toggle("active", recording !== null);
 }
 
@@ -682,22 +791,6 @@ function required<T extends Element = HTMLElement>(selector: string): T {
     throw new Error(`Missing renderer element ${selector}.`);
   }
   return element;
-}
-
-function concatenateChunks(chunks: readonly Uint8Array[]): Uint8Array {
-  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-  const output = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return output;
-}
-
-function durationFromChunks(chunks: readonly Uint8Array[]): number {
-  const bytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
-  return Math.round((bytes / (AUDIO_SAMPLE_RATE * AUDIO_CHANNELS * 2)) * 1000);
 }
 
 function formatElapsed(milliseconds: number): string {
@@ -728,4 +821,22 @@ function microphoneError(error: unknown): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function renderPrivacyBoundary(next: RecorderSnapshot): void {
+  const readiness = next.readiness;
+  elements.privacyState.textContent = readiness.inProcessModeValidated
+    ? "In-process boundary validated"
+    : readiness.embeddedWebServiceRunning || readiness.embeddedWebServiceUrls.length > 0
+      ? "Endpoint guard failed"
+      : "Endpoint guard pending";
+}
+
+function startupRecoveryWarning(next: RecorderSnapshot): string | null {
+  const recovery = next.readiness.audioRecovery;
+  if (recovery.retained === 0) {
+    return null;
+  }
+  const noun = recovery.retained === 1 ? "file was" : "files were";
+  return `${recovery.retained} locked temporary audio ${noun} retained in the app-owned temp directory. ${recovery.retryGuidance}`;
 }

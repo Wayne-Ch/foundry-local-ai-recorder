@@ -28,6 +28,29 @@ describe("TranscriptStore", () => {
     expect(store.snapshot.liveDraft).toBe("");
   });
 
+  it("preserves the exact Whisper text through durable and submitted snapshots", () => {
+    const store = new TranscriptStore();
+    const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
+
+    const snapshot = store.setWhisperFinal(exact);
+    const submitted = store.submitForSummary();
+
+    expect(snapshot.finalText).toBe(exact);
+    expect(submitted.text).toBe(exact);
+    expect(store.snapshot.finalText).toBe(exact);
+  });
+
+  it("preserves exact user corrections instead of collapsing their whitespace", () => {
+    const store = new TranscriptStore();
+    store.setWhisperFinal("Original");
+    const correction = "Corrected line one.\n  Indented line two.  ";
+
+    const snapshot = store.editFinal(correction);
+
+    expect(snapshot.finalText).toBe(correction);
+    expect(store.submitForSummary().text).toBe(correction);
+  });
+
   it("invalidates a prior summary when the final transcript is corrected", () => {
     const store = new TranscriptStore();
     store.setWhisperFinal("Initial final.");

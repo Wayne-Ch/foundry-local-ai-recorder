@@ -86,6 +86,7 @@ interface ActiveAudioStream {
   readonly request: Request;
   readonly abortController: AbortController;
   readonly stream: StreamingResponse;
+  readonly responsePromise: Promise<Response>;
   readonly accumulator: StreamingTranscriptAccumulator;
   readonly startedAt: number;
   readonly onPartial: (event: AudioPartialTranscriptEvent) => void;
@@ -97,6 +98,23 @@ interface ActiveAudioStream {
   stopRequestedAt: number | null;
   streamError: unknown | null;
   cleanedUp: boolean;
+  terminationPromise: Promise<void> | null;
+}
+
+interface ActiveNativeOperation {
+  readonly kind: "whisper" | "summary";
+  readonly generation: number;
+  readonly settled: Promise<void>;
+  readonly resolveSettled: () => void;
+  cancel: (() => void) | null;
+  cancelRequested: boolean;
+  cancelInvoked: boolean;
+  cancelError: unknown | null;
+}
+
+interface NativeOperationContext {
+  setCancel(cancel: () => void): void;
+  assertCurrent(): void;
 }
 
 export interface SummaryGenerationResult {
@@ -120,7 +138,10 @@ export interface FoundryRecorderRuntimeOptions {
   readonly createChatSession?: (model: IModel) => ChatSessionHandle;
   readonly createAudioSession?: (model: IModel) => AudioSessionHandle;
   readonly tempAudioStore?: TempAudioStore;
+  readonly settlementTimeoutMs?: number;
 }
+
+const DEFAULT_SETTLEMENT_TIMEOUT_MS = 10_000;
 
 export class FoundryRecorderRuntime {
   readonly #targets: RuntimeTargets;
@@ -133,12 +154,14 @@ export class FoundryRecorderRuntime {
     nemotron: new ModelSlot<IModel>(),
     summary: new ModelSlot<IModel>(),
   };
-  #paths: RecorderPaths | null = null;
   #manager: ManagerHandle | null = null;
   #tempAudioStore: TempAudioStore | null;
   #initializePromise: Promise<void> | null = null;
   #preparePromise: Promise<PrepareRuntimeResult> | null = null;
   #activeStream: ActiveAudioStream | null = null;
+  readonly #activeOperations = new Set<ActiveNativeOperation>();
+  readonly #settlementTimeoutMs: number;
+  #shutdownPromise: Promise<void> | null = null;
   #generation = 0;
   #shuttingDown = false;
   #readiness: RuntimeReadiness;
@@ -150,6 +173,10 @@ export class FoundryRecorderRuntime {
     this.#createChatSession = options.createChatSession ?? ((model) => new ChatSession(model));
     this.#createAudioSession = options.createAudioSession ?? ((model) => new AudioSession(model));
     this.#tempAudioStore = options.tempAudioStore ?? null;
+    this.#settlementTimeoutMs = options.settlementTimeoutMs ?? DEFAULT_SETTLEMENT_TIMEOUT_MS;
+    if (!Number.isFinite(this.#settlementTimeoutMs) || this.#settlementTimeoutMs <= 0) {
+      throw new Error("Native settlement timeout must be a positive finite duration.");
+    }
     this.#readiness = initialReadiness(this.#targets);
   }
 
@@ -160,7 +187,7 @@ export class FoundryRecorderRuntime {
   initialize(): Promise<void> {
     this.#assertAvailable();
     if (this.#manager !== null) {
-      return Promise.resolve();
+      return this.#revalidateExistingManager(this.#manager);
     }
     if (this.#initializePromise !== null) {
       return this.#initializePromise;
@@ -183,8 +210,9 @@ export class FoundryRecorderRuntime {
     if (this.#preparePromise !== null) {
       return this.#preparePromise;
     }
+    const generation = this.#generation;
     let trackedPromise: Promise<PrepareRuntimeResult>;
-    trackedPromise = this.#prepare(enableLiveCaptions, onProgress).finally(() => {
+    trackedPromise = this.#prepare(enableLiveCaptions, generation, onProgress).finally(() => {
       if (this.#preparePromise === trackedPromise) {
         this.#preparePromise = null;
       }
@@ -197,6 +225,7 @@ export class FoundryRecorderRuntime {
     onPartial: (event: AudioPartialTranscriptEvent) => void,
   ): Promise<AudioStreamStartResponse> {
     this.#assertAvailable();
+    this.#requireValidatedManager();
     if (this.#activeStream !== null) {
       throw new Error("A live audio stream is already active.");
     }
@@ -204,10 +233,11 @@ export class FoundryRecorderRuntime {
     const generation = this.#generation;
     let session: AudioSessionHandle | null = null;
     let queue: ItemQueue | null = null;
+    let request: Request | null = null;
     try {
       session = this.#createAudioSession(model);
       queue = new ItemQueue();
-      const request = new Request()
+      request = new Request()
         .addItem(Item.audioDescriptor("pcm", AUDIO_SAMPLE_RATE, AUDIO_CHANNELS))
         .addItem(queue);
       const abortController = new AbortController();
@@ -221,6 +251,7 @@ export class FoundryRecorderRuntime {
         request,
         abortController,
         stream,
+        responsePromise: stream.response,
         accumulator: new StreamingTranscriptAccumulator(),
         startedAt: performance.now(),
         onPartial,
@@ -232,7 +263,11 @@ export class FoundryRecorderRuntime {
         stopRequestedAt: null,
         streamError: null,
         cleanedUp: false,
+        terminationPromise: null,
       };
+      void active.responsePromise.catch((error) => {
+        active.streamError ??= error;
+      });
       active.consumePromise = this.#consumeAudioStream(active);
       this.#activeStream = active;
       return {
@@ -242,6 +277,7 @@ export class FoundryRecorderRuntime {
       };
     } catch (error) {
       try {
+        request?.cancel();
         queue?.dispose();
       } finally {
         session?.dispose();
@@ -290,6 +326,8 @@ export class FoundryRecorderRuntime {
     const active = this.#requireStream(input.streamId);
     this.#assertCurrent(active.generation);
     active.stopRequestedAt = performance.now();
+    let result: AudioTranscriptionResult | null = null;
+    let operationError: unknown | null = null;
     try {
       if (input.lastSequence !== active.nextSequence - 1) {
         throw new Error(
@@ -310,15 +348,15 @@ export class FoundryRecorderRuntime {
       if (active.streamError !== null) {
         throw active.streamError;
       }
-      const response = await active.stream.response;
+      const response = await active.responsePromise;
       this.#assertCurrent(active.generation);
-      const result = response.output.find((item) => item.type === "speechResult");
-      if (result?.type !== "speechResult" || !result.text.trim()) {
+      const speechResult = response.output.find((item) => item.type === "speechResult");
+      if (speechResult?.type !== "speechResult" || !speechResult.text.trim()) {
         throw new Error("Nemotron returned no terminal transcript.");
       }
       const completedAt = performance.now();
-      return {
-        transcript: active.accumulator.finalize(result.text.trim()).trim(),
+      result = {
+        transcript: active.accumulator.finalize(speechResult.text.trim()).trim(),
         transcriptionMs: Math.round(completedAt - active.startedAt),
         audioDurationMs: measuredDuration,
         model: audioModelIdentity(active.model, true),
@@ -328,9 +366,32 @@ export class FoundryRecorderRuntime {
         finalizationMs: Math.round(completedAt - active.stopRequestedAt),
         externalEndpointUsed: false,
       };
-    } finally {
-      await this.#cleanupStream(active);
+    } catch (error) {
+      operationError = error;
     }
+
+    let terminationError: unknown | null = null;
+    try {
+      await this.#terminateStream(active);
+    } catch (error) {
+      terminationError = error;
+    }
+    if (operationError !== null) {
+      if (terminationError !== null) {
+        throw new AggregateError(
+          [operationError, terminationError],
+          "Nemotron finalization failed and native stream cleanup also failed.",
+        );
+      }
+      throw operationError;
+    }
+    if (terminationError !== null) {
+      throw terminationError;
+    }
+    if (result === null) {
+      throw new Error("Nemotron finalization completed without a result.");
+    }
+    return result;
   }
 
   async cancelLiveStream(streamId: string): Promise<void> {
@@ -338,171 +399,277 @@ export class FoundryRecorderRuntime {
     if (active === null || active.id !== streamId) {
       return;
     }
-    await this.#settleStream(active);
-    await this.#cleanupStream(active);
+    await this.#terminateStream(active);
   }
 
   async transcribeCapture(capture: ValidatedAudioCapture): Promise<AudioTranscriptionResult> {
     this.#assertAvailable();
+    this.#requireValidatedManager();
     const model = this.#requireModel("whisper");
     const store = this.#requireTempStore();
     const generation = this.#generation;
     const startedAt = performance.now();
-    try {
-      const transcript = await withTemporaryWav(store, capture.pcmBytes, async (filePath) => {
-        const session = this.#createAudioSession(model);
-        const request = new Request();
-        try {
-          request
-            .addItem(Item.audioFromUri(filePath))
-            .setOptions({ search: { temperature: 0 }, additionalOptions: { language: AUDIO_LANGUAGE } });
-          const response = await session.processRequest(request);
-          this.#assertCurrent(generation);
-          const result = response.output.find((item) => item.type === "speechResult");
-          if (result?.type !== "speechResult" || !result.text.trim()) {
-            throw new Error("Whisper returned no final speech transcript.");
+    return this.#runTrackedOperation("whisper", generation, async (operation) => {
+      try {
+        const transcript = await withTemporaryWav(store, capture.pcmBytes, async (filePath) => {
+          operation.assertCurrent();
+          const session = this.#createAudioSession(model);
+          const request = new Request();
+          operation.setCancel(() => request.cancel());
+          try {
+            request
+              .addItem(Item.audioFromUri(filePath))
+              .setOptions({ search: { temperature: 0 }, additionalOptions: { language: AUDIO_LANGUAGE } });
+            const response = await session.processRequest(request);
+            operation.assertCurrent();
+            const speechResult = response.output.find((item) => item.type === "speechResult");
+            if (speechResult?.type !== "speechResult" || !speechResult.text.trim()) {
+              throw new Error("Whisper returned no final speech transcript.");
+            }
+            return speechResult.text;
+          } finally {
+            request.cancel();
+            session.dispose();
           }
-          return result.text.trim();
-        } finally {
-          request.cancel();
-          session.dispose();
-        }
-      });
-      const durationMs = Math.round(performance.now() - startedAt);
-      return {
-        transcript,
-        transcriptionMs: durationMs,
-        audioDurationMs: capture.durationMs,
-        model: audioModelIdentity(model, false),
-        mode: "whisper_file",
-        transcriptSource: "whisper_file_final",
-        firstPartialMs: null,
-        finalizationMs: durationMs,
-        externalEndpointUsed: false,
-      };
-    } catch (error) {
-      throw new Error(`Whisper transcription failed: ${errorMessage(error)}`, { cause: error });
-    }
+        });
+        const durationMs = Math.round(performance.now() - startedAt);
+        return {
+          transcript,
+          transcriptionMs: durationMs,
+          audioDurationMs: capture.durationMs,
+          model: audioModelIdentity(model, false),
+          mode: "whisper_file",
+          transcriptSource: "whisper_file_final",
+          firstPartialMs: null,
+          finalizationMs: durationMs,
+          externalEndpointUsed: false,
+        };
+      } catch (error) {
+        throw new Error(`Whisper transcription failed: ${errorMessage(error)}`, { cause: error });
+      }
+    });
   }
 
   async summarize(transcript: string): Promise<SummaryGenerationResult> {
     this.#assertAvailable();
+    this.#requireValidatedManager();
     const model = this.#requireModel("summary");
     const generation = this.#generation;
-    const session = this.#createChatSession(model);
-    const request = new Request()
-      .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
-      .addItem(Item.userMessage(summaryUserPrompt(transcript)))
-      .setOptions({
-        search: {
-          doSample: false,
-          temperature: 0,
-          seed: 42,
-          maxOutputTokens: 260,
-        },
-        toolChoice: "none",
-        additionalOptions: {
-          chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
-        },
-      });
-    const startedAt = performance.now();
-    try {
-      const preflight = await session.preflightRequest(request);
-      if (!preflight.fits) {
-        throw new Error(
-          `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
-        );
+    return this.#runTrackedOperation("summary", generation, async (operation) => {
+      const session = this.#createChatSession(model);
+      const request = new Request()
+        .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
+        .addItem(Item.userMessage(summaryUserPrompt(transcript)))
+        .setOptions({
+          search: {
+            doSample: false,
+            temperature: 0,
+            seed: 42,
+            maxOutputTokens: 260,
+          },
+          toolChoice: "none",
+          additionalOptions: {
+            chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
+          },
+        });
+      operation.setCancel(() => request.cancel());
+      const startedAt = performance.now();
+      try {
+        const preflight = await session.preflightRequest(request);
+        operation.assertCurrent();
+        if (!preflight.fits) {
+          throw new Error(
+            `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
+          );
+        }
+        const response = await session.processRequest(request);
+        operation.assertCurrent();
+        if (response.finishReason !== "stop") {
+          throw new Error(`Summary generation ended with ${response.finishReason}.`);
+        }
+        const text = extractDefaultText(response);
+        if (!text) {
+          throw new Error("The local summary model returned no text.");
+        }
+        if (text.length > 2_500) {
+          throw new Error("The local summary exceeded the prototype output bound.");
+        }
+        return {
+          text,
+          durationMs: Math.round(performance.now() - startedAt),
+          model: modelIdentity("summary", model),
+          preflight,
+          response,
+        };
+      } finally {
+        request.cancel();
+        session.dispose();
       }
-      const response = await session.processRequest(request);
-      this.#assertCurrent(generation);
-      if (response.finishReason !== "stop") {
-        throw new Error(`Summary generation ended with ${response.finishReason}.`);
-      }
-      const text = extractDefaultText(response);
-      if (!text) {
-        throw new Error("The local summary model returned no text.");
-      }
-      if (text.length > 2_500) {
-        throw new Error("The local summary exceeded the prototype output bound.");
-      }
-      return {
-        text,
-        durationMs: Math.round(performance.now() - startedAt),
-        model: modelIdentity("summary", model),
-        preflight,
-        response,
-      };
-    } finally {
-      request.cancel();
-      session.dispose();
-    }
+    });
   }
 
   async reset(): Promise<void> {
     this.#generation += 1;
+    const errors: unknown[] = [];
     if (this.#activeStream !== null) {
-      await this.cancelLiveStream(this.#activeStream.id);
+      try {
+        await this.cancelLiveStream(this.#activeStream.id);
+      } catch (error) {
+        if (error instanceof NativeSettlementTimeoutError) {
+          throw error;
+        }
+        errors.push(error);
+      }
     }
-    await this.#tempAudioStore?.cleanupAll();
+    try {
+      await this.#cancelAndSettleOperations();
+    } catch (error) {
+      if (error instanceof NativeSettlementTimeoutError) {
+        throw error;
+      }
+      errors.push(error);
+    }
+    try {
+      await this.#tempAudioStore?.cleanupAll();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (this.#tempAudioStore !== null) {
+      const retained = this.#tempAudioStore.activeCount;
+      this.#readiness = {
+        ...this.#readiness,
+        audioRecovery: {
+          ...this.#readiness.audioRecovery,
+          removed: Math.max(
+            this.#readiness.audioRecovery.removed,
+            this.#readiness.audioRecovery.discovered - retained,
+          ),
+          retained,
+        },
+      };
+    }
+    throwCollectedErrors(errors, "Recorder reset encountered cleanup failures.");
   }
 
-  async shutdown(): Promise<void> {
-    if (this.#shuttingDown) {
-      return;
+  shutdown(): Promise<void> {
+    if (this.#shutdownPromise !== null) {
+      return this.#shutdownPromise;
     }
     this.#shuttingDown = true;
     this.#generation += 1;
-    try {
-      if (this.#activeStream !== null) {
-        await this.cancelLiveStream(this.#activeStream.id);
+    let trackedPromise: Promise<void>;
+    trackedPromise = this.#performShutdown().finally(() => {
+      this.#shuttingDown = false;
+      if (this.#shutdownPromise === trackedPromise) {
+        this.#shutdownPromise = null;
       }
-      await this.#tempAudioStore?.cleanupAll();
-      await Promise.all([
+    });
+    this.#shutdownPromise = trackedPromise;
+    return trackedPromise;
+  }
+
+  async #initialize(): Promise<void> {
+    const paths = await this.#resolvePaths();
+    this.#assertAvailable();
+    this.#tempAudioStore ??= new TempAudioStore(paths.audioTempDir);
+    const recovery = await this.#tempAudioStore.recoverOwnedCaptures();
+    this.#assertAvailable();
+    this.#readiness = {
+      ...this.#readiness,
+      modelCachePath: paths.modelCacheDir,
+      audioRecovery: {
+        ...this.#readiness.audioRecovery,
+        discovered: recovery.discovered,
+        removed: recovery.removed,
+        retained: recovery.retained,
+      },
+    };
+    const manager = this.#createManager({
+      appName: "FoundryLocalSmartAIRecorder",
+      appDataDir: paths.appDataDir,
+      modelCacheDir: paths.modelCacheDir,
+      logsDir: paths.logsDir,
+      logLevel: "info",
+      disableNonessentialTelemetry: true,
+    });
+    try {
+      this.#assertAvailable();
+      this.#validateInProcessBoundary(manager);
+      this.#manager = manager;
+    } catch (error) {
+      const cleanupErrors = this.#disposeManager(manager);
+      throw combineErrors(error, cleanupErrors, "Endpoint guard cleanup failed.");
+    }
+  }
+
+  async #revalidateExistingManager(manager: ManagerHandle): Promise<void> {
+    try {
+      this.#validateInProcessBoundary(manager);
+    } catch (error) {
+      this.#generation += 1;
+      const cleanupErrors: unknown[] = [];
+      if (this.#activeStream !== null) {
+        try {
+          await this.#terminateStream(this.#activeStream);
+        } catch (cleanupError) {
+          if (cleanupError instanceof NativeSettlementTimeoutError) {
+            throw combineErrors(error, [cleanupError], "Endpoint guard cleanup timed out.");
+          }
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      try {
+        await this.#cancelAndSettleOperations();
+      } catch (cleanupError) {
+        if (cleanupError instanceof NativeSettlementTimeoutError) {
+          throw combineErrors(error, [cleanupError], "Endpoint guard cleanup timed out.");
+        }
+        cleanupErrors.push(cleanupError);
+      }
+      const slotOutcomes = await Promise.allSettled([
         this.#slots.nemotron.clear(),
         this.#slots.whisper.clear(),
         this.#slots.summary.clear(),
       ]);
-      this.#manager?.shutdown();
-      this.#manager?.dispose();
-      this.#manager = null;
-    } finally {
-      this.#shuttingDown = false;
+      for (const outcome of slotOutcomes) {
+        if (outcome.status === "rejected") {
+          cleanupErrors.push(outcome.reason);
+        }
+      }
+      for (const role of ["whisper", "nemotron", "summary"] as const) {
+        this.#setReadiness(
+          role,
+          this.#slots[role].active,
+          "error",
+          "Inference is blocked because the in-process endpoint guard failed.",
+        );
+      }
+      if (this.#manager === manager) {
+        this.#manager = null;
+      }
+      cleanupErrors.push(...this.#disposeManager(manager));
+      throw combineErrors(error, cleanupErrors, "Endpoint guard cleanup failed.");
     }
-  }
-
-  async #initialize(): Promise<void> {
-    this.#paths = await this.#resolvePaths();
-    this.#tempAudioStore ??= new TempAudioStore(this.#paths.audioTempDir);
-    await this.#tempAudioStore.recoverOwnedCaptures();
-    this.#manager = this.#createManager({
-      appName: "FoundryLocalSmartAIRecorder",
-      appDataDir: this.#paths.appDataDir,
-      modelCacheDir: this.#paths.modelCacheDir,
-      logsDir: this.#paths.logsDir,
-      logLevel: "info",
-      disableNonessentialTelemetry: true,
-    });
-    if (this.#manager.isWebServiceRunning === true || (this.#manager.urls?.length ?? 0) > 0) {
-      throw new Error("The Foundry Local embedded web service started unexpectedly.");
-    }
-    this.#readiness = { ...this.#readiness, modelCachePath: this.#paths.modelCacheDir };
   }
 
   async #prepare(
     enableLiveCaptions: boolean,
+    generation: number,
     onProgress?: (event: ProgressEvent) => void,
   ): Promise<PrepareRuntimeResult> {
     await this.initialize();
-    await this.#prepareModel("whisper", onProgress);
-    await this.#prepareModel("summary", onProgress);
+    this.#assertCurrent(generation);
+    await this.#prepareModel("whisper", generation, onProgress);
+    await this.#prepareModel("summary", generation, onProgress);
     let liveCaptionsFailure: string | null = null;
     if (enableLiveCaptions) {
       try {
-        await this.#prepareModel("nemotron", onProgress);
+        await this.#prepareModel("nemotron", generation, onProgress);
       } catch (error) {
         liveCaptionsFailure = errorMessage(error);
       }
     }
+    this.#assertCurrent(generation);
     return {
       readiness: this.#readiness,
       liveCaptionsAvailable: this.#slots.nemotron.active !== null,
@@ -510,7 +677,11 @@ export class FoundryRecorderRuntime {
     };
   }
 
-  async #prepareModel(role: ModelRole, onProgress?: (event: ProgressEvent) => void): Promise<IModel> {
+  async #prepareModel(
+    role: ModelRole,
+    generation: number,
+    onProgress?: (event: ProgressEvent) => void,
+  ): Promise<IModel> {
     const target = this.#targets[role];
     const manager = this.#requireManager();
     const current = this.#slots[role].active;
@@ -520,6 +691,7 @@ export class FoundryRecorderRuntime {
       executionProvider(current) === target.executionProvider &&
       (await current.isLoaded())
     ) {
+      this.#assertCurrent(generation);
       this.#setReadiness(role, current, "ready", `${current.id} is loaded and ready.`);
       return current;
     }
@@ -528,6 +700,7 @@ export class FoundryRecorderRuntime {
     let candidate: IModel | null = null;
     try {
       candidate = await this.#resolveModel(target);
+      this.#assertCurrent(generation);
       this.#assertModel(role, candidate, target);
       this.#setReadiness(
         role,
@@ -543,13 +716,16 @@ export class FoundryRecorderRuntime {
             detail: `${candidate?.id ?? target.modelId} ${percent.toFixed(1)}%`,
           });
         });
+        this.#assertCurrent(generation);
         if (!candidate.isCached) {
           throw new Error(`Model download completed without caching ${candidate.id}.`);
         }
       }
       await this.#ensureProvider(target, manager, onProgress);
+      this.#assertCurrent(generation);
       onProgress?.({ phase: `${role}:load`, detail: `Loading ${candidate.id} in-process.` });
       await this.#slots[role].activate(candidate);
+      this.#assertCurrent(generation);
       this.#setReadiness(role, candidate, "ready", `${candidate.id} is ready for local inference.`);
       return candidate;
     } catch (error) {
@@ -562,7 +738,15 @@ export class FoundryRecorderRuntime {
           // Preserve the preparation error; a later shutdown retries cleanup.
         }
       }
-      this.#setReadiness(role, current, "error", errorMessage(error));
+      const currentLoaded = current !== null && (await isModelLoaded(current));
+      this.#setReadiness(
+        role,
+        current,
+        currentLoaded ? "ready" : "error",
+        currentLoaded
+          ? `Keeping working model ${current.id}; replacement preparation failed: ${errorMessage(error)}`
+          : errorMessage(error),
+      );
       throw new Error(`Failed to prepare ${role}: ${errorMessage(error)}`, { cause: error });
     }
   }
@@ -660,13 +844,49 @@ export class FoundryRecorderRuntime {
     }
   }
 
-  async #settleStream(active: ActiveAudioStream): Promise<void> {
-    active.abortController.abort();
-    active.request.cancel();
-    if (!active.queue.finished) {
-      active.queue.markFinished();
+  #terminateStream(active: ActiveAudioStream): Promise<void> {
+    if (active.terminationPromise === null) {
+      let trackedPromise: Promise<void>;
+      trackedPromise = this.#terminateStreamOnce(active).catch((error) => {
+        if (active.terminationPromise === trackedPromise) {
+          active.terminationPromise = null;
+        }
+        throw error;
+      });
+      active.terminationPromise = trackedPromise;
     }
-    await Promise.allSettled([active.consumePromise, active.stream.response]);
+    return active.terminationPromise;
+  }
+
+  async #terminateStreamOnce(active: ActiveAudioStream): Promise<void> {
+    const errors: unknown[] = [];
+    try {
+      active.abortController.abort();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      active.request.cancel();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      if (!active.queue.finished) {
+        active.queue.markFinished();
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+    await this.#awaitBoundedSettlement(
+      Promise.allSettled([active.consumePromise, active.responsePromise]).then(() => undefined),
+      "Nemotron live stream",
+    );
+    try {
+      await this.#cleanupStream(active);
+    } catch (error) {
+      errors.push(error);
+    }
+    throwCollectedErrors(errors, "Nemotron live stream cleanup failed.");
   }
 
   async #cleanupStream(active: ActiveAudioStream): Promise<void> {
@@ -677,11 +897,212 @@ export class FoundryRecorderRuntime {
     if (this.#activeStream === active) {
       this.#activeStream = null;
     }
+    const errors: unknown[] = [];
     try {
       active.queue.dispose();
-    } finally {
-      active.session.dispose();
+    } catch (error) {
+      errors.push(error);
     }
+    try {
+      active.session.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    throwCollectedErrors(errors, "Failed to dispose Nemotron native resources.");
+  }
+
+  async #runTrackedOperation<T>(
+    kind: ActiveNativeOperation["kind"],
+    generation: number,
+    run: (operation: NativeOperationContext) => Promise<T>,
+  ): Promise<T> {
+    let resolveSettled = () => {};
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    const active: ActiveNativeOperation = {
+      kind,
+      generation,
+      settled,
+      resolveSettled,
+      cancel: null,
+      cancelRequested: false,
+      cancelInvoked: false,
+      cancelError: null,
+    };
+    this.#activeOperations.add(active);
+    const context: NativeOperationContext = {
+      setCancel: (cancel) => {
+        active.cancel = cancel;
+        if (active.cancelRequested) {
+          this.#invokeOperationCancel(active);
+        }
+      },
+      assertCurrent: () => this.#assertCurrent(generation),
+    };
+    try {
+      context.assertCurrent();
+      return await run(context);
+    } finally {
+      this.#activeOperations.delete(active);
+      active.resolveSettled();
+    }
+  }
+
+  async #cancelAndSettleOperations(): Promise<void> {
+    const active = [...this.#activeOperations];
+    for (const operation of active) {
+      operation.cancelRequested = true;
+      this.#invokeOperationCancel(operation);
+    }
+    if (active.length === 0) {
+      return;
+    }
+    await this.#awaitBoundedSettlement(
+      Promise.all(active.map(async (operation) => operation.settled)).then(() => undefined),
+      "Whisper/Qwen native requests",
+    );
+    const errors = active.flatMap((operation) =>
+      operation.cancelError === null ? [] : [operation.cancelError],
+    );
+    throwCollectedErrors(errors, "Failed to cancel one or more native inference requests.");
+  }
+
+  #invokeOperationCancel(operation: ActiveNativeOperation): void {
+    if (operation.cancelInvoked || operation.cancel === null) {
+      return;
+    }
+    operation.cancelInvoked = true;
+    try {
+      operation.cancel();
+    } catch (error) {
+      operation.cancelError = error;
+    }
+  }
+
+  async #performShutdown(): Promise<void> {
+    const errors: unknown[] = [];
+    if (this.#activeStream !== null) {
+      try {
+        await this.#terminateStream(this.#activeStream);
+      } catch (error) {
+        if (error instanceof NativeSettlementTimeoutError) {
+          throw error;
+        }
+        errors.push(error);
+      }
+    }
+    try {
+      await this.#cancelAndSettleOperations();
+    } catch (error) {
+      if (error instanceof NativeSettlementTimeoutError) {
+        throw error;
+      }
+      errors.push(error);
+    }
+    await this.#awaitPendingPreparation();
+    try {
+      await this.#tempAudioStore?.cleanupAll();
+    } catch (error) {
+      errors.push(error);
+    }
+    const slotOutcomes = await Promise.allSettled([
+      this.#slots.nemotron.clear(),
+      this.#slots.whisper.clear(),
+      this.#slots.summary.clear(),
+    ]);
+    for (const outcome of slotOutcomes) {
+      if (outcome.status === "rejected") {
+        errors.push(outcome.reason);
+      }
+    }
+    const manager = this.#manager;
+    this.#manager = null;
+    if (manager !== null) {
+      errors.push(...this.#disposeManager(manager));
+    }
+    this.#readiness = {
+      ...this.#readiness,
+      inProcessModeValidated: false,
+    };
+    throwCollectedErrors(errors, "Foundry Local shutdown encountered cleanup failures.");
+  }
+
+  async #awaitPendingPreparation(): Promise<void> {
+    const pending: Promise<unknown>[] = [];
+    if (this.#initializePromise !== null) {
+      pending.push(this.#initializePromise);
+    }
+    if (this.#preparePromise !== null) {
+      pending.push(this.#preparePromise);
+    }
+    if (pending.length === 0) {
+      return;
+    }
+    await this.#awaitBoundedSettlement(
+      Promise.allSettled(pending).then(() => undefined),
+      "Foundry Local preparation",
+    );
+  }
+
+  async #awaitBoundedSettlement(operation: Promise<void>, label: string): Promise<void> {
+    let timeoutId: NodeJS.Timeout | null = null;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(
+          new NativeSettlementTimeoutError(`${label} did not settle within ${this.#settlementTimeoutMs} ms.`),
+        );
+      }, this.#settlementTimeoutMs);
+      timeoutId.unref?.();
+    });
+    try {
+      await Promise.race([operation, timeout]);
+    } finally {
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+    }
+  }
+
+  #validateInProcessBoundary(manager: ManagerHandle): void {
+    const embeddedWebServiceUrls = [...(manager.urls ?? [])];
+    const embeddedWebServiceRunning = manager.isWebServiceRunning === true;
+    const inProcessModeValidated = !embeddedWebServiceRunning && embeddedWebServiceUrls.length === 0;
+    this.#readiness = {
+      ...this.#readiness,
+      externalEndpointUsed: false,
+      inProcessModeValidated,
+      embeddedWebServiceRunning,
+      embeddedWebServiceUrls,
+    };
+    if (!inProcessModeValidated) {
+      throw new Error(
+        `Foundry Local endpoint guard rejected embedded service state (${embeddedWebServiceUrls.length} URL${
+          embeddedWebServiceUrls.length === 1 ? "" : "s"
+        }, running=${embeddedWebServiceRunning}).`,
+      );
+    }
+  }
+
+  #requireValidatedManager(): ManagerHandle {
+    const manager = this.#requireManager();
+    this.#validateInProcessBoundary(manager);
+    return manager;
+  }
+
+  #disposeManager(manager: ManagerHandle): unknown[] {
+    const errors: unknown[] = [];
+    try {
+      manager.shutdown();
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      manager.dispose();
+    } catch (error) {
+      errors.push(error);
+    }
+    return errors;
   }
 
   #setReadiness(
@@ -751,10 +1172,19 @@ function initialReadiness(targets: RuntimeTargets): RuntimeReadiness {
     sdkVersion: "2.2.1",
     provider: "Foundry Local in-process SDK",
     externalEndpointUsed: false,
+    inProcessModeValidated: false,
     embeddedWebServiceRunning: false,
     embeddedWebServiceUrls: [],
     nonessentialTelemetryDisabled: true,
     modelCachePath: "",
+    audioRecovery: {
+      discovered: 0,
+      removed: 0,
+      retained: 0,
+      pathPolicy: "App-owned temporary audio directory; exact paths are not exposed.",
+      retryGuidance:
+        "Close applications using retained files, then use Delete / reset or restart to retry cleanup.",
+    },
     whisper: initialModelReadiness(targets.whisper),
     nemotron: initialModelReadiness(targets.nemotron),
     summary: initialModelReadiness(targets.summary),
@@ -803,6 +1233,34 @@ function audioModelIdentity(model: IModel, streaming: boolean): AudioModelIdenti
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+class NativeSettlementTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NativeSettlementTimeoutError";
+  }
+}
+
+function throwCollectedErrors(errors: readonly unknown[], message: string): void {
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, message);
+  }
+}
+
+function combineErrors(primary: unknown, additional: readonly unknown[], message: string): unknown {
+  return additional.length === 0 ? primary : new AggregateError([primary, ...additional], message);
+}
+
+async function isModelLoaded(model: IModel): Promise<boolean> {
+  try {
+    return await model.isLoaded();
+  } catch {
+    return false;
+  }
 }
 
 function extractDefaultText(response: Response): string {

@@ -1,5 +1,6 @@
 import { audioDurationMsFromPcmBytes, validateAudioCapturePayload } from "../audio/audio-contract";
 import {
+  AUDIO_BYTES_PER_SAMPLE,
   AUDIO_CHANNELS,
   AUDIO_FORMAT,
   AUDIO_MAX_DURATION_MS,
@@ -100,6 +101,233 @@ export function cleanupRecorderOperation(
 
 export function clipPcm16ToMaxBytes(pcmBytes: Uint8Array): Uint8Array {
   return pcmBytes.byteLength <= AUDIO_MAX_PCM_BYTES ? pcmBytes : pcmBytes.subarray(0, AUDIO_MAX_PCM_BYTES);
+}
+
+export interface BoundedPcmAppendResult {
+  readonly accepted: Uint8Array;
+  readonly reachedLimit: boolean;
+}
+
+export class BoundedPcmCapture {
+  readonly #chunks: Uint8Array[] = [];
+  #byteLength = 0;
+
+  get byteLength(): number {
+    return this.#byteLength;
+  }
+
+  get durationMs(): number {
+    return audioDurationMsFromPcmBytes(this.#byteLength);
+  }
+
+  get reachedLimit(): boolean {
+    return this.#byteLength === AUDIO_MAX_PCM_BYTES;
+  }
+
+  append(chunk: Uint8Array): BoundedPcmAppendResult {
+    if (chunk.byteLength % AUDIO_BYTES_PER_SAMPLE !== 0) {
+      throw new Error("PCM capture chunks must contain complete 16-bit samples.");
+    }
+    const remaining = AUDIO_MAX_PCM_BYTES - this.#byteLength;
+    const acceptedLength = Math.min(remaining, chunk.byteLength);
+    const accepted = acceptedLength === 0 ? new Uint8Array(0) : chunk.slice(0, acceptedLength);
+    if (accepted.byteLength > 0) {
+      this.#chunks.push(accepted);
+      this.#byteLength += accepted.byteLength;
+    }
+    return { accepted, reachedLimit: this.reachedLimit };
+  }
+
+  snapshot(): Uint8Array {
+    const output = new Uint8Array(this.#byteLength);
+    let offset = 0;
+    for (const chunk of this.#chunks) {
+      output.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return output;
+  }
+
+  clear(): void {
+    this.#chunks.length = 0;
+    this.#byteLength = 0;
+  }
+}
+
+interface StoppablePcmCapture {
+  stop(): Promise<Uint8Array[]>;
+}
+
+interface LiveCaptionFinalizer {
+  readonly pump: BoundedAudioChunkPump | null;
+  readonly streamId: string | null;
+  finish(lastSequence: number, audioDurationMs: number): Promise<void>;
+  cancel(streamId: string): Promise<void>;
+}
+
+export interface FinalizeCapturedAudioOptions {
+  readonly capture: StoppablePcmCapture;
+  readonly mediaStream: MediaStream;
+  readonly pcm: BoundedPcmCapture;
+  readonly live: LiveCaptionFinalizer;
+  readonly releaseStream?: (stream: MediaStream | null) => void;
+}
+
+export interface FinalizedCapturedAudio {
+  readonly pcmBytes: Uint8Array;
+  readonly durationMs: number;
+  readonly liveCaptionError: unknown | null;
+}
+
+export async function finalizeCapturedAudio(
+  options: FinalizeCapturedAudioOptions,
+): Promise<FinalizedCapturedAudio> {
+  const releaseStream = options.releaseStream ?? releaseMediaStream;
+  releaseStream(options.mediaStream);
+  let finalChunks: Uint8Array[];
+  try {
+    finalChunks = await options.capture.stop();
+  } catch (captureError) {
+    options.live.pump?.cancel();
+    const cancelError = await cancelLiveCaption(options.live);
+    if (cancelError !== null) {
+      throw new AggregateError(
+        [captureError, cancelError],
+        "Audio capture failed and live-caption cleanup also failed.",
+      );
+    }
+    throw captureError;
+  }
+
+  let liveCaptionError: unknown | null = null;
+  let pcmBytes: Uint8Array;
+  let durationMs: number;
+  try {
+    for (const chunk of finalChunks) {
+      const { accepted } = options.pcm.append(chunk);
+      if (accepted.byteLength === 0 || options.live.pump === null || liveCaptionError !== null) {
+        continue;
+      }
+      try {
+        options.live.pump.enqueue(accepted);
+      } catch (error) {
+        liveCaptionError = error;
+        options.live.pump.cancel();
+      }
+    }
+    pcmBytes = options.pcm.snapshot();
+    durationMs = audioDurationMsFromPcmBytes(pcmBytes.byteLength);
+  } catch (captureError) {
+    options.live.pump?.cancel();
+    const cancelError = await cancelLiveCaption(options.live);
+    if (cancelError !== null) {
+      throw new AggregateError(
+        [captureError, cancelError],
+        "Audio snapshot failed and live-caption cleanup also failed.",
+      );
+    }
+    throw captureError;
+  }
+
+  if (options.live.streamId !== null) {
+    if (options.live.pump !== null && liveCaptionError === null) {
+      try {
+        await options.live.pump.flush();
+        await options.live.finish(options.live.pump.lastSequence, durationMs);
+      } catch (error) {
+        liveCaptionError = error;
+        options.live.pump.cancel();
+      }
+    }
+    if (options.live.pump === null || liveCaptionError !== null) {
+      const cancelError = await cancelLiveCaption(options.live);
+      if (liveCaptionError === null) {
+        liveCaptionError = cancelError;
+      } else if (cancelError !== null) {
+        liveCaptionError = new AggregateError(
+          [liveCaptionError, cancelError],
+          "Live-caption finalization and cancellation both failed.",
+        );
+      }
+    }
+  }
+
+  return { pcmBytes, durationMs, liveCaptionError };
+}
+
+export interface CancelCapturedAudioOptions {
+  readonly capture: StoppablePcmCapture;
+  readonly mediaStream: MediaStream;
+  readonly pcm: BoundedPcmCapture;
+  readonly pump: BoundedAudioChunkPump | null;
+  readonly streamId: string | null;
+  cancel(streamId: string): Promise<void>;
+  readonly releaseStream?: (stream: MediaStream | null) => void;
+}
+
+export async function cancelCapturedAudio(options: CancelCapturedAudioOptions): Promise<void> {
+  const releaseStream = options.releaseStream ?? releaseMediaStream;
+  options.pump?.cancel();
+  releaseStream(options.mediaStream);
+  const errors: unknown[] = [];
+  try {
+    await options.capture.stop();
+  } catch (error) {
+    errors.push(error);
+  } finally {
+    options.pcm.clear();
+  }
+  if (options.streamId !== null) {
+    try {
+      await options.cancel(options.streamId);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Recording cancellation encountered multiple cleanup failures.");
+  }
+}
+
+export interface RecordingResetApi<T> {
+  cancelLiveStream(streamId: string): Promise<void>;
+  reset(): Promise<T>;
+}
+
+export async function cancelRecordingAndReset<T>(
+  recording: Omit<CancelCapturedAudioOptions, "cancel"> | null,
+  api: RecordingResetApi<T>,
+): Promise<{ readonly result: T; readonly cancellationError: unknown | null }> {
+  let cancellationError: unknown | null = null;
+  if (recording !== null) {
+    try {
+      await cancelCapturedAudio({
+        ...recording,
+        cancel: (streamId) => api.cancelLiveStream(streamId),
+      });
+    } catch (error) {
+      cancellationError = error;
+    }
+  }
+  return {
+    result: await api.reset(),
+    cancellationError,
+  };
+}
+
+export function beginRecordingStop(operation: { stopping: boolean }): boolean {
+  if (operation.stopping) {
+    return false;
+  }
+  operation.stopping = true;
+  return true;
+}
+
+export function recordingLimitDelay(startedAt: number, now: number): number {
+  return Math.max(0, AUDIO_MAX_DURATION_MS - Math.max(0, now - startedAt));
 }
 
 export async function recordedBlobToAudioPayload(blob: Blob): Promise<AudioCapturePayload> {
@@ -287,6 +515,16 @@ export class BoundedAudioChunkPump {
     if (this.#queue.length >= AUDIO_STREAM_MAX_QUEUED_CHUNKS) {
       throw new Error("Audio stream backpressure limit was exceeded.");
     }
+    if (
+      chunk.byteLength === 0 ||
+      chunk.byteLength > AUDIO_STREAM_CHUNK_BYTES ||
+      chunk.byteLength % AUDIO_BYTES_PER_SAMPLE !== 0
+    ) {
+      throw new Error(`Audio stream chunks must contain 1-${AUDIO_STREAM_CHUNK_BYTES} complete PCM bytes.`);
+    }
+    if (this.#nextTotalBytes + chunk.byteLength > AUDIO_MAX_PCM_BYTES) {
+      throw new Error("Audio stream exceeded the maximum recording duration.");
+    }
     const data = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer;
     this.#nextTotalBytes += chunk.byteLength;
     this.#queue.push({
@@ -364,6 +602,7 @@ export class BoundedAudioChunkPump {
 }
 
 export class LivePcmCapture {
+  readonly startedAt: number;
   readonly #context: AudioContext;
   readonly #source: MediaStreamAudioSourceNode;
   readonly #worklet: AudioWorkletNode;
@@ -381,6 +620,7 @@ export class LivePcmCapture {
     onChunk: (chunk: Uint8Array) => void,
     onError: (error: unknown) => void,
   ) {
+    this.startedAt = performance.now();
     this.#context = context;
     this.#source = source;
     this.#worklet = worklet;
@@ -444,13 +684,25 @@ export class LivePcmCapture {
       return [];
     }
     this.#stopped = true;
-    this.#worklet.port.onmessage = null;
-    this.#source.disconnect();
-    this.#worklet.disconnect();
-    this.#silentGain.disconnect();
     const finalChunks = this.#resampler.finish();
-    await this.#context.close();
+    clearAudioWorkletHandler(this.#worklet);
+    disconnectAudioNode(this.#source);
+    disconnectAudioNode(this.#worklet);
+    disconnectAudioNode(this.#silentGain);
+    await closeAudioContext(this.#context);
     return finalChunks;
+  }
+}
+
+async function cancelLiveCaption(live: LiveCaptionFinalizer): Promise<unknown | null> {
+  if (live.streamId === null) {
+    return null;
+  }
+  try {
+    await live.cancel(live.streamId);
+    return null;
+  } catch (error) {
+    return error;
   }
 }
 
