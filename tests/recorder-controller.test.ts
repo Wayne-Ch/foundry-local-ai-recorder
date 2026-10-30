@@ -1,6 +1,10 @@
 import type { RequestPreflightResult, Response } from "foundry-local-sdk";
 import { describe, expect, it } from "vitest";
 import {
+  LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
+  LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER,
+} from "../src/audio/audio-contract";
+import {
   AUDIO_CHANNELS,
   AUDIO_EXECUTION_PROVIDER,
   AUDIO_FORMAT,
@@ -24,6 +28,7 @@ import type { RuntimeReadiness } from "../src/shared/contracts";
 const targets = resolveRuntimeTargets({});
 
 class FakeRuntime implements RecorderRuntime {
+  readonly cleanupCompletion: Promise<void> | null = null;
   readonly readiness: RuntimeReadiness = {
     sdkVersion: "2.2.1",
     provider: "Foundry Local in-process SDK",
@@ -31,6 +36,12 @@ class FakeRuntime implements RecorderRuntime {
     inProcessModeValidated: true,
     embeddedWebServiceRunning: false,
     embeddedWebServiceUrls: [],
+    cleanup: {
+      state: "none",
+      required: false,
+      completionPending: false,
+      detail: "No deferred runtime cleanup is pending.",
+    },
     nonessentialTelemetryDisabled: true,
     modelCachePath: "C:\\models",
     audioRecovery: {
@@ -46,6 +57,7 @@ class FakeRuntime implements RecorderRuntime {
     summary: modelReadiness("summary", SUMMARY_MODEL_ID, SUMMARY_EXECUTION_PROVIDER),
   };
   summaryInput = "";
+  lastCapture: ValidatedAudioCapture | null = null;
 
   constructor(
     readonly finalTranscript = "Whisper authoritative final transcript.",
@@ -96,7 +108,8 @@ class FakeRuntime implements RecorderRuntime {
 
   async cancelLiveStream(): Promise<void> {}
 
-  async transcribeCapture(_capture: ValidatedAudioCapture): Promise<AudioTranscriptionResult> {
+  async transcribeCapture(capture: ValidatedAudioCapture): Promise<AudioTranscriptionResult> {
+    this.lastCapture = capture;
     if (this.transcriptionError !== null) {
       throw this.transcriptionError;
     }
@@ -254,6 +267,45 @@ describe("RecorderController", () => {
       ]),
     );
   });
+
+  it.each([
+    ["999 bytes", "x".repeat(999), false],
+    ["1000 bytes", "x".repeat(1_000), false],
+    ["1001 bytes", "x".repeat(1_001), true],
+    ["very long", "x".repeat(100_000), true],
+    [
+      "Unicode and sensitive path",
+      `音声🔥 failed at C:\\Users\\person\\private.wav token=super-secret ${"東京".repeat(1_000)}`,
+      true,
+    ],
+  ])(
+    "keeps valid Whisper audio authoritative with a %s diagnostic",
+    async (_label, diagnostic, truncated) => {
+      const runtime = new FakeRuntime();
+      const controller = new RecorderController(runtime);
+
+      const final = await controller.transcribeCapture({
+        format: AUDIO_FORMAT,
+        sampleRate: AUDIO_SAMPLE_RATE,
+        channels: AUDIO_CHANNELS,
+        durationMs: 1_000,
+        data: new ArrayBuffer(32_000),
+        liveCaptionFailure: diagnostic,
+      });
+
+      const retained = runtime.lastCapture?.liveCaptionFailure ?? "";
+      const warning = final.snapshot.trace.find((entry) => entry.phase === "live-caption-warning");
+      expect(final.snapshot.transcript.finalText).toBe("Whisper authoritative final transcript.");
+      expect(new TextEncoder().encode(retained).byteLength).toBeLessThanOrEqual(
+        LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
+      );
+      expect(warning?.severity).toBe("warning");
+      expect(warning?.detail).toContain(retained);
+      expect(retained.endsWith(LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER)).toBe(truncated);
+      expect(retained).not.toContain("C:\\Users\\person\\private.wav");
+      expect(retained).not.toContain("super-secret");
+    },
+  );
 });
 
 function modelReadiness(

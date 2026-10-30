@@ -624,11 +624,45 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   shutdownStarted = true;
-  void controller
-    .shutdown()
-    .catch((error: unknown) => {
-      process.exitCode = 1;
-      console.error("Failed to shut down Foundry Local cleanly:", error);
-    })
-    .finally(() => app.quit());
+  void shutdownForExit();
 });
+
+async function shutdownForExit(): Promise<void> {
+  let shutdownFailed = false;
+  try {
+    await controller.shutdown();
+  } catch (error) {
+    shutdownFailed = true;
+    console.error("Foundry Local shutdown did not complete synchronously:", error);
+  }
+
+  const deferredCleanup = controller.cleanupCompletion;
+  if (deferredCleanup !== null) {
+    try {
+      await deferredCleanup;
+    } catch (error) {
+      shutdownFailed = true;
+      console.error("Deferred Foundry Local cleanup failed:", error);
+    }
+  }
+
+  if (controller.bootstrap().readiness.cleanup.required) {
+    try {
+      await controller.shutdown();
+    } catch (error) {
+      shutdownFailed = true;
+      console.error("Foundry Local cleanup retry failed; application exit remains blocked:", error);
+    }
+  }
+
+  if (controller.bootstrap().readiness.cleanup.required) {
+    shutdownStarted = false;
+    process.exitCode = 1;
+    console.error("Application exit was deferred because native or manager cleanup is still required.");
+    return;
+  }
+  if (shutdownFailed) {
+    process.exitCode = 1;
+  }
+  app.quit();
+}

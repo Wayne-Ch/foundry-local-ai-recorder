@@ -26,7 +26,7 @@ Runtime log evidence:
 |---|---|
 | `npm run lint` | Pass; 44 files checked |
 | `npm run typecheck` | Pass |
-| `npm test -- --reporter=dot` | Pass; 10 files, 90 tests |
+| `npm test` | Pass; 10 files, 107 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
 
@@ -47,12 +47,18 @@ Unit coverage includes:
 - cancellation/reset making zero finish, transcribe, or summary calls;
 - manager-epoch model ownership, detach-before-cleanup, and fail-closed guard recovery when
   `isLoaded`, model unload, manager shutdown/disposal, or multiple cleanup actions fail;
+- rejected-manager quarantine across combined shutdown/disposal failure, repeated cleanup failure,
+  concurrent Prepare retry, later successful retry, and shutdown without replacement creation;
 - endpoint guard first-fail/retry disposal, stale-model rejection, and inference blocking for
   active URL/service state;
 - request-cancel failure never skipping Whisper/Qwen/Nemotron session disposal, tracked-operation
   settlement, or temporary-file deletion;
 - in-flight Whisper/Qwen cancellation and settlement before session/model/manager/temp teardown,
   including Reset and shutdown races;
+- settlement-timeout drain barriers for delayed Whisper, Qwen, and Nemotron work, with fail-closed
+  readiness, completion promises, exactly-once disposal, and no dependent teardown before settle;
+- 999/1,000/1,001-byte, very-long, and Unicode live-caption diagnostics, including path/credential
+  redaction, explicit truncation markers, Developer Trace warnings, and uninterrupted Whisper;
 - temporary WAV creation, recovery, and failure cleanup;
 - EACCES/EBUSY/EPERM startup retention warnings with hidden paths and retry guidance;
 - model-slot replacement failure preserving a working model;
@@ -76,10 +82,10 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,268 ms |
-| Stop to Whisper final | 410 ms |
-| Transcript final to summary | 3,096 ms |
-| Qwen generation | 3,094 ms |
+| First live caption | 1,291 ms |
+| Stop to Whisper final | 443 ms |
+| Transcript final to summary | 5,350 ms |
+| Qwen generation | 5,348 ms |
 | Qwen prompt/completion tokens | 177 / 69 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
@@ -111,7 +117,7 @@ Result: `WHISPER_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 20,270 ms synthetic fixture;
-- 328 ms transcription;
+- 441 ms transcription;
 - 6/6 expected ODE words matched;
 - terminal `whisper_file_final`;
 - no owned temporary WAV residue;
@@ -125,8 +131,8 @@ Result: `NEMOTRON_INTEGRATION_OK`
 
 - exact ID/CPU provider asserted;
 - 92 partials;
-- first partial 1,299 ms;
-- terminal finalization 126 ms;
+- first partial 1,232 ms;
+- terminal finalization 90 ms;
 - 6/6 expected ODE words matched;
 - terminal `live_stream_final`.
 
@@ -138,9 +144,9 @@ Result: `SUMMARY_INTEGRATION_OK`
 
 | Prompt | Latency | Prompt tokens | Completion tokens |
 |---|---:|---:|---:|
-| ODE solution | 6,882 ms | 162 | 73 |
-| Euler comparison | 2,973 ms | 148 | 27 |
-| Solution procedure | 4,826 ms | 146 | 45 |
+| ODE solution | 3,167 ms | 162 | 73 |
+| Euler comparison | 1,941 ms | 148 | 27 |
+| Solution procedure | 2,387 ms | 146 | 45 |
 
 All three runs returned nonempty bounded output with `finishReason: "stop"`. Qwen thinking was
 disabled via `chat_template_kwargs` after an initial validation run showed the default reasoning
@@ -150,10 +156,15 @@ mode exhausting the 260-token output budget.
 
 | Command | Result |
 |---|---|
-| `node scripts/smoke-electron.mjs` | `ELECTRON_SMOKE_OK` |
-| `node scripts/probe-electron-microphone.mjs` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
-| `node scripts/probe-electron-stream-owner.mjs` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
-| `node scripts/capture-ui.mjs` | `UI_CAPTURE_OK`; captured stage inspected successfully |
+| `npm run smoke:electron` | `ELECTRON_SMOKE_OK` |
+| `npm run probe:microphone-permission` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
+| `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
+| `npm run capture:ui` | `UI_CAPTURE_OK`; captured stage inspected successfully |
+
+No Electron or recorder process started by these validation commands remained. The shared machine
+already had an OS-installed `foundrylocald` listener started on 2026-10-29, before this worktree
+session; it was not used by the in-process runtime and was not terminated because it is not owned by
+this validation run.
 
 Stage screenshot:
 
@@ -173,6 +184,8 @@ Evidence:
 4. Static tests reject cloud inference endpoint strings and renderer/main `fetch(...)`.
 5. Integration results report `externalEndpointUsed: false`.
 6. No CLI subprocess performs inference.
+7. Static source audit found no `startWebService(...)`, `fetch(...)`, or HTTP endpoint string in
+   `src` or integration scripts.
 
 This proves the application's inference path is in-process and has no external inference endpoint.
 It does not prove physical isolation of the PC. Model/EP preparation can download uncached assets,

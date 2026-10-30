@@ -1,4 +1,5 @@
 import "../renderer/styles.css";
+import { sanitizeLiveCaptionFailure } from "../audio/audio-contract";
 import {
   AUDIO_CHANNELS,
   AUDIO_FORMAT,
@@ -377,13 +378,16 @@ async function startRecording(): Promise<void> {
             if (recording?.generation === generation) {
               recording.pump = null;
             }
-            setStatus(`Live captions stopped: ${errorMessage(error)}. Whisper still records.`, "warning");
+            setStatus(
+              `Live captions stopped: ${liveCaptionDiagnostic(error)}. Whisper still records.`,
+              "warning",
+            );
           },
         );
       } catch (error) {
         liveAvailable = false;
         setStatus(
-          `Nemotron unavailable: ${errorMessage(error)}. Recording continues for Whisper.`,
+          `Nemotron unavailable: ${liveCaptionDiagnostic(error)}. Recording continues for Whisper.`,
           "warning",
         );
       }
@@ -407,7 +411,10 @@ async function startRecording(): Promise<void> {
           if (recording?.generation === generation) {
             recording.pump = null;
           }
-          setStatus(`Live captions stopped: ${errorMessage(error)}. Whisper still records.`, "warning");
+          setStatus(
+            `Live captions stopped: ${liveCaptionDiagnostic(error)}. Whisper still records.`,
+            "warning",
+          );
         }
         if (reachedLimit) {
           queueMicrotask(() => void stopRecording("limit"));
@@ -511,8 +518,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
         finalized.pcmBytes.byteOffset,
         finalized.pcmBytes.byteOffset + finalized.pcmBytes.byteLength,
       ) as ArrayBuffer,
-      liveCaptionFailure:
-        finalized.liveCaptionError === null ? null : errorMessage(finalized.liveCaptionError),
+      liveCaptionFailure: sanitizeLiveCaptionFailure(finalized.liveCaptionError),
     };
     const response = await api.transcribeCapture(payload);
     snapshot = response.snapshot;
@@ -521,7 +527,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       setStatus("Whisper final transcript is ready for review.", "success");
     } else {
       setStatus(
-        `Whisper final succeeded; live captions failed: ${errorMessage(finalized.liveCaptionError)}`,
+        "Whisper final succeeded; live captions failed. See Developer Trace for a bounded diagnostic.",
         "warning",
       );
     }
@@ -835,13 +841,21 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function liveCaptionDiagnostic(error: unknown): string {
+  return sanitizeLiveCaptionFailure(error) ?? "Live captions failed without safe diagnostic details.";
+}
+
 function renderPrivacyBoundary(next: RecorderSnapshot): void {
   const readiness = next.readiness;
-  elements.privacyState.textContent = readiness.inProcessModeValidated
-    ? "In-process boundary validated"
-    : readiness.embeddedWebServiceRunning || readiness.embeddedWebServiceUrls.length > 0
-      ? "Endpoint guard failed"
-      : "Endpoint guard pending";
+  elements.privacyState.textContent = readiness.cleanup.required
+    ? readiness.cleanup.state === "draining"
+      ? "Native cleanup draining"
+      : "Cleanup required"
+    : readiness.inProcessModeValidated
+      ? "In-process boundary validated"
+      : readiness.embeddedWebServiceRunning || readiness.embeddedWebServiceUrls.length > 0
+        ? "Endpoint guard failed"
+        : "Endpoint guard pending";
 }
 
 function startupRecoveryWarning(next: RecorderSnapshot): string | null {

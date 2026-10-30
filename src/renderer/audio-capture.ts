@@ -1,4 +1,8 @@
-import { audioDurationMsFromPcmBytes, validateAudioCapturePayload } from "../audio/audio-contract";
+import {
+  audioDurationMsFromPcmBytes,
+  sanitizeLiveCaptionFailure,
+  validateAudioCapturePayload,
+} from "../audio/audio-contract";
 import {
   AUDIO_BYTES_PER_SAMPLE,
   AUDIO_CHANNELS,
@@ -159,24 +163,18 @@ interface StoppablePcmCapture {
 }
 
 export class LiveCaptionFailureState {
-  #error: unknown | null = null;
+  #error: string | null = null;
 
-  get error(): unknown | null {
+  get error(): string | null {
     return this.#error;
   }
 
   record(error: unknown): void {
     const recordedError =
-      error === null || error === undefined
-        ? new Error("Live captions failed without an error detail.")
-        : error;
-    this.#error =
-      this.#error === null
-        ? recordedError
-        : new AggregateError(
-            [this.#error, recordedError],
-            "Live captions encountered multiple failures during this recording.",
-          );
+      sanitizeLiveCaptionFailure(error) ?? "Live captions failed without safe diagnostic details.";
+    this.#error = sanitizeLiveCaptionFailure(
+      this.#error === null ? recordedError : `${this.#error}; ${recordedError}`,
+    );
   }
 
   clear(): void {

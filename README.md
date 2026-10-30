@@ -112,11 +112,16 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
 - deterministic queue, session, model, manager, and temporary-file cleanup
 - request cancellation, session disposal, operation settlement, and temporary-file deletion are
   attempted independently so one cleanup failure cannot skip the rest
-- bounded cancellation/settlement of active Nemotron, Whisper, and Qwen native work before model or
-  manager disposal and before temporary-file deletion
+- cancellation timeouts enter an explicit draining state, reject new work, and expose a completion
+  promise/status while native Nemotron, Whisper, or Qwen work continues settling
+- temporary-file deletion, model unload, and manager shutdown/disposal remain behind that drain
+  barrier and run only after native sessions settle; timeout never authorizes early teardown
 - manager-epoch-bound model slots that detach before fallible unload/probe cleanup
 - fail-closed in-process endpoint validation on every Prepare retry and before new inference; guard
-  failure invalidates all prior manager/model state before a retry
+  failure quarantines the rejected manager until both shutdown and disposal are confirmed, and a
+  retry cannot create a replacement manager while cleanup remains unsafe
+- live-caption failure diagnostics are redacted and bounded to 1,000 UTF-8 bytes before audio
+  validation, so diagnostic size cannot block valid PCM or the authoritative Whisper fallback
 - startup orphan recovery removes only owned `capture-*.wav` files; locked retained files produce a
   UI/Developer Trace warning with count, hidden-path policy, and retry guidance
 

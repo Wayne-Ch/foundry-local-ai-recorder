@@ -24,7 +24,18 @@ import {
 } from "./audio-types";
 
 const PCM_DURATION_TOLERANCE_BYTES = 64;
-const MAX_LIVE_CAPTION_FAILURE_LENGTH = 1_000;
+export const LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES = 1_000;
+export const LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER = " ... [truncated]";
+
+export function sanitizeLiveCaptionFailure(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const raw = diagnosticParts(value).join("; ");
+  const normalized = redactDiagnostic(stripControlCharacters(raw).replaceAll(/\s+/g, " ").trim());
+  const diagnostic = normalized || "Live captions failed without safe diagnostic details.";
+  return truncateUtf8(diagnostic, LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES);
+}
 
 export function validateAudioCapturePayload(input: unknown): AudioCaptureValidationResult {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -70,18 +81,7 @@ export function validateAudioCapturePayload(input: unknown): AudioCaptureValidat
       `PCM byte length ${candidate.data.byteLength} does not match ${candidate.durationMs} ms.`,
     );
   }
-  if (
-    candidate.liveCaptionFailure !== undefined &&
-    candidate.liveCaptionFailure !== null &&
-    (typeof candidate.liveCaptionFailure !== "string" ||
-      candidate.liveCaptionFailure.trim().length === 0 ||
-      candidate.liveCaptionFailure.length > MAX_LIVE_CAPTION_FAILURE_LENGTH)
-  ) {
-    return failure(
-      "INVALID_LIVE_CAPTION_FAILURE",
-      `Live-caption failure details must be 1-${MAX_LIVE_CAPTION_FAILURE_LENGTH} characters.`,
-    );
-  }
+  const liveCaptionFailure = sanitizeLiveCaptionFailure(candidate.liveCaptionFailure);
 
   return {
     ok: true,
@@ -91,7 +91,7 @@ export function validateAudioCapturePayload(input: unknown): AudioCaptureValidat
       channels: AUDIO_CHANNELS,
       durationMs: candidate.durationMs ?? 0,
       pcmBytes: new Uint8Array(candidate.data),
-      liveCaptionFailure: candidate.liveCaptionFailure ?? null,
+      liveCaptionFailure,
     },
   };
 }
@@ -387,4 +387,56 @@ function writeAscii(target: Uint8Array, offset: number, value: string): void {
 
 function readAscii(source: Uint8Array, offset: number, length: number): string {
   return String.fromCharCode(...source.subarray(offset, offset + length));
+}
+
+function diagnosticParts(value: unknown, depth = 0): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (value instanceof AggregateError && depth < 2) {
+    return [value.message, ...value.errors.flatMap((nested) => diagnosticParts(nested, depth + 1))];
+  }
+  if (value instanceof Error) {
+    return [value.message];
+  }
+  return ["Live captions failed without safe diagnostic details."];
+}
+
+function redactDiagnostic(value: string): string {
+  return value
+    .replaceAll(/\bfile:\/\/\/[^\s,;)\]}]+/gi, "[path redacted]")
+    .replaceAll(/\b[A-Za-z]:\\[^\s,;)\]}]+/g, "[path redacted]")
+    .replaceAll(/\\\\[^\s,;)\]}]+/g, "[path redacted]")
+    .replaceAll(/\/(?:Users|home|tmp|var\/tmp)\/[^\s,;)\]}]+/g, "[path redacted]")
+    .replaceAll(
+      /\b(api[_-]?key|access[_-]?token|token|secret|password)\b\s*[:=]\s*[^\s,;]+/gi,
+      "$1=[redacted]",
+    );
+}
+
+function stripControlCharacters(value: string): string {
+  return Array.from(value, (character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 32 || codePoint === 127 ? " " : character;
+  }).join("");
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(value).byteLength <= maxBytes) {
+    return value;
+  }
+  const markerBytes = encoder.encode(LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER).byteLength;
+  const budget = Math.max(0, maxBytes - markerBytes);
+  const output: string[] = [];
+  let usedBytes = 0;
+  for (const character of value) {
+    const characterBytes = encoder.encode(character).byteLength;
+    if (usedBytes + characterBytes > budget) {
+      break;
+    }
+    output.push(character);
+    usedBytes += characterBytes;
+  }
+  return `${output.join("").trimEnd()}${LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER}`;
 }

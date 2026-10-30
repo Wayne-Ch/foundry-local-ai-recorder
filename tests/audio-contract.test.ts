@@ -7,8 +7,11 @@ import {
   createTranscriptDraftUpdate,
   encodePcm16Wav,
   extractPcm16FromWav,
+  LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
+  LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER,
   reduceAudioRecorderState,
   StreamingTranscriptAccumulator,
+  sanitizeLiveCaptionFailure,
   validateAudioCapturePayload,
   validateAudioStreamCancel,
   validateAudioStreamChunk,
@@ -107,7 +110,7 @@ describe("audio IPC validation", () => {
     }
   });
 
-  it("validates bounded live-caption failure metadata for the developer trace", () => {
+  it("sanitizes live-caption failure metadata without invalidating valid audio", () => {
     expect(
       validateAudioCapturePayload({
         ...validPayload(),
@@ -123,9 +126,41 @@ describe("audio IPC validation", () => {
         liveCaptionFailure: " ".repeat(2),
       }),
     ).toMatchObject({
-      ok: false,
-      error: { code: "INVALID_LIVE_CAPTION_FAILURE" },
+      ok: true,
+      value: { liveCaptionFailure: "Live captions failed without safe diagnostic details." },
     });
+  });
+
+  it.each([999, 1_000])("preserves a %i-byte live-caption diagnostic", (length) => {
+    const diagnostic = "x".repeat(length);
+    expect(sanitizeLiveCaptionFailure(diagnostic)).toBe(diagnostic);
+  });
+
+  it.each([1_001, 100_000])("truncates a %i-byte live-caption diagnostic with a marker", (length) => {
+    const diagnostic = sanitizeLiveCaptionFailure("x".repeat(length));
+    expect(diagnostic).not.toBeNull();
+    expect(new TextEncoder().encode(diagnostic ?? "").byteLength).toBeLessThanOrEqual(
+      LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
+    );
+    expect(diagnostic?.endsWith(LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER)).toBe(true);
+    expect(
+      validateAudioCapturePayload({ ...validPayload(), liveCaptionFailure: "x".repeat(length) }).ok,
+    ).toBe(true);
+  });
+
+  it("redacts path and credential-like Unicode diagnostics without splitting characters", () => {
+    const diagnostic = sanitizeLiveCaptionFailure(
+      `音声🔥 failed at C:\\Users\\person\\private.wav token=super-secret ${"東京".repeat(1_000)}`,
+    );
+    expect(diagnostic).not.toContain("C:\\Users\\person\\private.wav");
+    expect(diagnostic).not.toContain("super-secret");
+    expect(diagnostic).toContain("[path redacted]");
+    expect(diagnostic).toContain("token=[redacted]");
+    expect(diagnostic?.endsWith(LIVE_CAPTION_DIAGNOSTIC_TRUNCATION_MARKER)).toBe(true);
+    expect(diagnostic?.includes("\uFFFD")).toBe(false);
+    expect(new TextEncoder().encode(diagnostic ?? "").byteLength).toBeLessThanOrEqual(
+      LIVE_CAPTION_DIAGNOSTIC_MAX_BYTES,
+    );
   });
 
   it.each([
@@ -451,7 +486,7 @@ describe("live transcript and backpressure", () => {
       },
     });
 
-    expect(result.liveCaptionError).toBe(callbackFailure);
+    expect(result.liveCaptionError).toBe("async live callback failed");
     expect(result.pcmBytes.byteLength).toBe(AUDIO_STREAM_CHUNK_BYTES * 2);
     expect(cancel).toHaveBeenCalledWith(STREAM_ID);
     failureState.clear();
@@ -480,7 +515,10 @@ describe("live transcript and backpressure", () => {
     });
 
     expect(result.liveCaptionError).toBeInstanceOf(AggregateError);
-    expect((result.liveCaptionError as AggregateError).errors).toEqual([callbackFailure, cancelFailure]);
+    expect((result.liveCaptionError as AggregateError).errors).toEqual([
+      "async live callback failed",
+      cancelFailure,
+    ]);
   });
 
   it("contains an asynchronous pump rejection after recording the callback failure", async () => {
@@ -496,11 +534,11 @@ describe("live transcript and backpressure", () => {
       );
 
       pump.enqueue(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES));
-      await vi.waitFor(() => expect(failureState.error).toBeInstanceOf(Error));
+      await vi.waitFor(() => expect(failureState.error).toBe("background pump failed"));
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(unhandled).not.toHaveBeenCalled();
-      expect((failureState.error as Error).message).toBe("background pump failed");
+      expect(failureState.error).toBe("background pump failed");
     } finally {
       process.off("unhandledRejection", unhandled);
     }

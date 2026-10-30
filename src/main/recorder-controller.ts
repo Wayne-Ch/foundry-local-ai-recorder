@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import {
   audioDurationMsFromPcmBytes,
   extractPcm16FromWav,
+  sanitizeLiveCaptionFailure,
   validateAudioCapturePayload,
   validateAudioStreamChunk,
   validateAudioStreamFinish,
@@ -45,6 +46,7 @@ const TRACE_LIMIT = 250;
 
 export interface RecorderRuntime {
   readonly readiness: RuntimeReadiness;
+  readonly cleanupCompletion: Promise<void> | null;
   prepare(
     enableLiveCaptions: boolean,
     onProgress?: (event: ProgressEvent) => void,
@@ -112,18 +114,19 @@ export class RecorderController {
       });
       this.#assertCurrent(generation);
       this.#traceRecoveryWarning();
-      if (result.liveCaptionsFailure !== null) {
+      const liveCaptionsFailure = sanitizeLiveCaptionFailure(result.liveCaptionsFailure);
+      if (liveCaptionsFailure !== null) {
         this.#traceEvent(
           "Application",
           "live-fallback",
-          `Nemotron is unavailable; Whisper-only recording remains ready. ${result.liveCaptionsFailure}`,
+          `Nemotron is unavailable; Whisper-only recording remains ready. ${liveCaptionsFailure}`,
           "warning",
         );
       }
       return {
         snapshot: this.#snapshot(),
         liveCaptionsAvailable: result.liveCaptionsAvailable,
-        liveCaptionsFailure: result.liveCaptionsFailure,
+        liveCaptionsFailure,
       };
     } catch (error) {
       this.#traceRecoveryWarning();
@@ -200,7 +203,17 @@ export class RecorderController {
 
   async transcribeCapture(payload: AudioCapturePayload): Promise<TranscriptionResponse> {
     const generation = this.#operationGeneration;
-    const validation = validateAudioCapturePayload(payload);
+    const input: unknown = payload;
+    const sanitizedInput =
+      typeof input === "object" && input !== null && !Array.isArray(input)
+        ? {
+            ...input,
+            liveCaptionFailure: sanitizeLiveCaptionFailure(
+              (input as { readonly liveCaptionFailure?: unknown }).liveCaptionFailure,
+            ),
+          }
+        : input;
+    const validation = validateAudioCapturePayload(sanitizedInput);
     if (!validation.ok) {
       throw new Error(validation.error.message);
     }
@@ -352,6 +365,10 @@ export class RecorderController {
   shutdown(): Promise<void> {
     this.#operationGeneration += 1;
     return this.#runtime.shutdown();
+  }
+
+  get cleanupCompletion(): Promise<void> | null {
+    return this.#runtime.cleanupCompletion;
   }
 
   #snapshot(): RecorderSnapshot {

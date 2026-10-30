@@ -152,9 +152,12 @@ Show:
 
 - endpoint validation before manager acceptance and every Prepare retry;
 - tracked Nemotron, Whisper, and Qwen cancellation/settlement;
-- queue/session disposal only after settlement;
+- timeout-triggered draining status and completion promise;
+- queue/session disposal only after settlement, with temp/model/manager teardown behind the same
+  barrier;
 - model unload order;
-- manager shutdown/disposal;
+- rejected-manager quarantine until shutdown and disposal are both confirmed;
+- bounded/redacted live-caption diagnostics that cannot invalidate Whisper audio;
 - reset clearing derived state without processing captured audio;
 - startup `capture-*.wav` orphan recovery and locked-file warning.
 

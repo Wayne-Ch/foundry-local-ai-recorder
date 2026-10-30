@@ -56,6 +56,19 @@ export interface ModelReadiness {
   readonly loaded: boolean;
 }
 
+export type RuntimeCleanupState =
+  | "none"
+  | "draining"
+  | "native_cleanup_required"
+  | "manager_cleanup_required";
+
+export interface RuntimeCleanupReadiness {
+  readonly state: RuntimeCleanupState;
+  readonly required: boolean;
+  readonly completionPending: boolean;
+  readonly detail: string;
+}
+
 export interface RuntimeReadiness {
   readonly sdkVersion: "2.2.1";
   readonly provider: "Foundry Local in-process SDK";
@@ -63,6 +76,7 @@ export interface RuntimeReadiness {
   readonly inProcessModeValidated: boolean;
   readonly embeddedWebServiceRunning: boolean;
   readonly embeddedWebServiceUrls: readonly string[];
+  readonly cleanup: RuntimeCleanupReadiness;
   readonly nonessentialTelemetryDisabled: true;
   readonly modelCachePath: string;
   readonly audioRecovery: AudioRecoveryReadiness;

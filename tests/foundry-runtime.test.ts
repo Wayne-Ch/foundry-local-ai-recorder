@@ -83,7 +83,8 @@ describe("FoundryRecorderRuntime", () => {
     const accepted = new FakeManager(models);
     const runtime = createRuntime(root, [rejected, accepted]);
 
-    await expect(runtime.prepare(false)).rejects.toThrow("endpoint guard");
+    const firstFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(firstFailure)).toContainEqual(expect.stringContaining("endpoint guard"));
     expect(rejected.shutdown).toHaveBeenCalledOnce();
     expect(rejected.dispose).toHaveBeenCalledOnce();
     expect(rejected.catalog.getModelVariant).not.toHaveBeenCalled();
@@ -102,12 +103,114 @@ describe("FoundryRecorderRuntime", () => {
     const rejected = new FakeManager(createModels(), { isWebServiceRunning: true });
     const runtime = createRuntime(root, [rejected]);
 
-    await expect(runtime.prepare(false)).rejects.toThrow("endpoint guard");
+    const firstFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(firstFailure)).toContainEqual(expect.stringContaining("endpoint guard"));
 
     expect(rejected.shutdown).toHaveBeenCalledOnce();
     expect(rejected.dispose).toHaveBeenCalledOnce();
     expect(runtime.readiness.inProcessModeValidated).toBe(false);
     expect(runtime.readiness.embeddedWebServiceRunning).toBe(true);
+  });
+
+  it("quarantines a guard-rejected manager while shutdown and disposal keep failing", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const rejected = new FakeManager(models, { urls: ["http://127.0.0.1:5272"] });
+    const accepted = new FakeManager(models);
+    vi.mocked(rejected.shutdown).mockImplementation(() => {
+      throw new Error("manager shutdown failed");
+    });
+    vi.mocked(rejected.dispose).mockImplementation(() => {
+      throw new Error("manager dispose failed");
+    });
+    const runtime = createRuntime(root, [rejected, accepted]);
+
+    const firstFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(firstFailure)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("endpoint guard"),
+        "manager shutdown failed",
+        "manager dispose failed",
+      ]),
+    );
+    expect(runtime.readiness).toMatchObject({
+      inProcessModeValidated: false,
+      cleanup: {
+        state: "manager_cleanup_required",
+        required: true,
+        completionPending: false,
+      },
+    });
+
+    const retryFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(retryFailure)).toEqual(
+      expect.arrayContaining(["manager shutdown failed", "manager dispose failed"]),
+    );
+    expect(rejected.shutdown).toHaveBeenCalledTimes(2);
+    expect(rejected.dispose).toHaveBeenCalledTimes(2);
+    expect(accepted.catalog.getModelVariant).not.toHaveBeenCalled();
+    expect(runtime.readiness.inProcessModeValidated).toBe(false);
+  });
+
+  it("retries quarantined manager cleanup once for concurrent Prepare calls before creating a manager", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const rejected = new FakeManager(models, { urls: ["http://127.0.0.1:5272"] });
+    const accepted = new FakeManager(models);
+    vi.mocked(rejected.shutdown)
+      .mockImplementationOnce(() => {
+        throw new Error("manager shutdown failed once");
+      })
+      .mockImplementation(() => {});
+    vi.mocked(rejected.dispose)
+      .mockImplementationOnce(() => {
+        throw new Error("manager dispose failed once");
+      })
+      .mockImplementation(() => {});
+    const runtime = createRuntime(root, [rejected, accepted]);
+
+    const firstFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(firstFailure)).toContainEqual(expect.stringContaining("endpoint guard"));
+    const firstRetry = runtime.prepare(false);
+    const concurrentRetry = runtime.prepare(false);
+
+    expect(concurrentRetry).toBe(firstRetry);
+    const [first, second] = await Promise.all([firstRetry, concurrentRetry]);
+    expect(first).toBe(second);
+    expect(first.readiness).toMatchObject({
+      inProcessModeValidated: true,
+      cleanup: { state: "none", required: false },
+    });
+    expect(rejected.shutdown).toHaveBeenCalledTimes(2);
+    expect(rejected.dispose).toHaveBeenCalledTimes(2);
+    expect(accepted.catalog.getModelVariant).toHaveBeenCalledWith(WHISPER_AUDIO_MODEL_ID);
+    await runtime.shutdown();
+  });
+
+  it("retries and confirms quarantined manager cleanup during shutdown without creating a replacement", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const rejected = new FakeManager(models, { urls: ["http://127.0.0.1:5272"] });
+    const accepted = new FakeManager(models);
+    vi.mocked(rejected.shutdown).mockImplementationOnce(() => {
+      throw new Error("manager shutdown failed once");
+    });
+    vi.mocked(rejected.dispose).mockImplementationOnce(() => {
+      throw new Error("manager dispose failed once");
+    });
+    const runtime = createRuntime(root, [rejected, accepted]);
+
+    const firstFailure = await captureFailure(runtime.prepare(false));
+    expect(errorMessages(firstFailure)).toContainEqual(expect.stringContaining("endpoint guard"));
+    await runtime.shutdown();
+
+    expect(rejected.shutdown).toHaveBeenCalledTimes(2);
+    expect(rejected.dispose).toHaveBeenCalledTimes(2);
+    expect(accepted.catalog.getModelVariant).not.toHaveBeenCalled();
+    expect(runtime.readiness).toMatchObject({
+      inProcessModeValidated: false,
+      cleanup: { state: "none", required: false, completionPending: false },
+    });
   });
 
   it("blocks new inference when an embedded service becomes active", async () => {
@@ -627,6 +730,265 @@ describe("FoundryRecorderRuntime", () => {
       order.findIndex((entry) => entry.startsWith("model-unload:")),
     );
     expect(order.indexOf("manager-dispose")).toBeGreaterThan(order.indexOf("manager-shutdown"));
+  });
+
+  it("keeps Whisper temp, model, and manager resources until a timed-out native request settles", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const store = new TempAudioStore(root, {
+      remove: async (filePath) => {
+        order.push("temp-remove");
+        await unlink(filePath);
+      },
+    });
+    const responseDeferred = deferred<Response>();
+    const requestReady = deferred<void>();
+    const dispose = vi.fn(() => {
+      order.push("whisper-session-dispose");
+    });
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager: () => manager,
+      createAudioSession: () =>
+        fakeAudioSession({
+          processRequest: async () => {
+            order.push("whisper-request-start");
+            requestReady.resolve();
+            return responseDeferred.promise;
+          },
+          dispose,
+        }),
+      createChatSession: () => fakeChatSession(),
+      tempAudioStore: store,
+      settlementTimeoutMs: 10,
+    });
+    await runtime.prepare(false);
+    order.length = 0;
+
+    const transcription = runtime.transcribeCapture(validatedCapture());
+    await requestReady.promise;
+    const shutdownFailure = await captureFailure(runtime.shutdown());
+    const cleanupCompletion = runtime.cleanupCompletion;
+
+    expect(errorMessages(shutdownFailure)).toContain(
+      "Foundry Local shutdown cleanup did not settle within 10 ms.",
+    );
+    expect(cleanupCompletion).not.toBeNull();
+    expect(runtime.readiness).toMatchObject({
+      inProcessModeValidated: false,
+      cleanup: { state: "draining", required: true, completionPending: true },
+    });
+    expect(dispose).not.toHaveBeenCalled();
+    expect(order).not.toContain("temp-remove");
+    expect(order.some((entry) => entry.startsWith("model-unload:"))).toBe(false);
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+    expect(store.activeCount).toBe(1);
+
+    order.push("whisper-request-settled");
+    responseDeferred.resolve(speechResponse("stale transcript"));
+    await expect(transcription).rejects.toThrow("cancelled");
+    await cleanupCompletion;
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(order.indexOf("whisper-session-dispose")).toBeGreaterThan(
+      order.indexOf("whisper-request-settled"),
+    );
+    expect(order.indexOf("temp-remove")).toBeGreaterThan(order.indexOf("whisper-session-dispose"));
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
+    expect(store.activeCount).toBe(0);
+    expect(runtime.readiness.cleanup).toMatchObject({ state: "none", required: false });
+  });
+
+  it("keeps reset fail-closed while delayed Whisper cleanup drains in the background", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const store = new TempAudioStore(root, {
+      remove: async (filePath) => {
+        order.push("temp-remove");
+        await unlink(filePath);
+      },
+    });
+    const responseDeferred = deferred<Response>();
+    const requestReady = deferred<void>();
+    const dispose = vi.fn(() => {
+      order.push("whisper-session-dispose");
+    });
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager: () => manager,
+      createAudioSession: () =>
+        fakeAudioSession({
+          processRequest: async () => {
+            requestReady.resolve();
+            return responseDeferred.promise;
+          },
+          dispose,
+        }),
+      createChatSession: () => fakeChatSession(),
+      tempAudioStore: store,
+      settlementTimeoutMs: 10,
+    });
+    await runtime.prepare(false);
+    order.length = 0;
+
+    const transcription = runtime.transcribeCapture(validatedCapture());
+    await requestReady.promise;
+    const resetFailure = await captureFailure(runtime.reset());
+    const cleanupCompletion = runtime.cleanupCompletion;
+
+    expect(errorMessages(resetFailure)).toContain("Recorder reset cleanup did not settle within 10 ms.");
+    expect(runtime.readiness.cleanup).toMatchObject({
+      state: "draining",
+      required: true,
+      completionPending: true,
+    });
+    await expect(runtime.summarize("blocked")).rejects.toThrow("blocked for cleanup");
+    expect(dispose).not.toHaveBeenCalled();
+    expect(order).not.toContain("temp-remove");
+    expect(store.activeCount).toBe(1);
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+
+    responseDeferred.resolve(speechResponse("stale transcript"));
+    await expect(transcription).rejects.toThrow("cancelled");
+    await cleanupCompletion;
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(order.indexOf("temp-remove")).toBeGreaterThan(order.indexOf("whisper-session-dispose"));
+    expect(store.activeCount).toBe(0);
+    expect(order.some((entry) => entry.startsWith("model-unload:"))).toBe(false);
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+    expect(runtime.readiness).toMatchObject({
+      inProcessModeValidated: true,
+      cleanup: { state: "none", required: false, completionPending: false },
+    });
+    await runtime.shutdown();
+  });
+
+  it("keeps Qwen models and manager resources until a timed-out native request settles", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const responseDeferred = deferred<Response>();
+    const requestReady = deferred<void>();
+    const dispose = vi.fn(() => {
+      order.push("qwen-session-dispose");
+    });
+    const runtime = createRuntime(root, [manager], {
+      models,
+      settlementTimeoutMs: 10,
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async () => {
+            order.push("qwen-request-start");
+            requestReady.resolve();
+            return responseDeferred.promise;
+          },
+          dispose,
+        }),
+    });
+    await runtime.prepare(false);
+    order.length = 0;
+
+    const summary = runtime.summarize("Exact transcript");
+    await requestReady.promise;
+    const shutdownFailure = await captureFailure(runtime.shutdown());
+    const cleanupCompletion = runtime.cleanupCompletion;
+
+    expect(errorMessages(shutdownFailure)).toContain(
+      "Foundry Local shutdown cleanup did not settle within 10 ms.",
+    );
+    expect(cleanupCompletion).not.toBeNull();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(order.some((entry) => entry.startsWith("model-unload:"))).toBe(false);
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+
+    order.push("qwen-request-settled");
+    responseDeferred.resolve(textResponse("stale summary"));
+    await expect(summary).rejects.toThrow("cancelled");
+    await cleanupCompletion;
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(order.indexOf("qwen-session-dispose")).toBeGreaterThan(order.indexOf("qwen-request-settled"));
+    expect(order.findIndex((entry) => entry.startsWith("model-unload:"))).toBeGreaterThan(
+      order.indexOf("qwen-session-dispose"),
+    );
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Nemotron session, models, and manager until a timed-out stream settles", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const streamSettled = deferred<void>();
+    const dispose = vi.fn(() => {
+      order.push("nemotron-session-dispose");
+    });
+    const stream: StreamingResponse = {
+      response: streamSettled.promise.then(() => speechResponse("stale live transcript")),
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            await streamSettled.promise;
+            return { done: true, value: undefined };
+          },
+        };
+      },
+    };
+    const runtime = createRuntime(root, [manager], {
+      models,
+      settlementTimeoutMs: 10,
+      createAudioSession: (model) =>
+        model.id === NEMOTRON_AUDIO_MODEL_ID
+          ? fakeAudioSession({
+              processStreamingRequest: () => stream,
+              dispose,
+            })
+          : fakeAudioSession(),
+    });
+    await runtime.prepare(true);
+    await runtime.startLiveStream(() => {});
+    order.length = 0;
+
+    const shutdownFailure = await captureFailure(runtime.shutdown());
+    const cleanupCompletion = runtime.cleanupCompletion;
+
+    expect(errorMessages(shutdownFailure)).toContain(
+      "Foundry Local shutdown cleanup did not settle within 10 ms.",
+    );
+    expect(cleanupCompletion).not.toBeNull();
+    expect(dispose).not.toHaveBeenCalled();
+    expect(order.some((entry) => entry.startsWith("model-unload:"))).toBe(false);
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+
+    order.push("nemotron-stream-settled");
+    streamSettled.resolve();
+    await cleanupCompletion;
+
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(order.indexOf("nemotron-session-dispose")).toBeGreaterThan(
+      order.indexOf("nemotron-stream-settled"),
+    );
+    expect(order.findIndex((entry) => entry.startsWith("model-unload:"))).toBeGreaterThan(
+      order.indexOf("nemotron-session-dispose"),
+    );
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(3);
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
   });
 });
 

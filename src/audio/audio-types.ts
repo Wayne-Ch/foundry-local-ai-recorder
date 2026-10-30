@@ -151,8 +151,7 @@ export type AudioCaptureValidationErrorCode =
   | "DURATION_OUT_OF_RANGE"
   | "PAYLOAD_TOO_LARGE"
   | "INVALID_PCM_LENGTH"
-  | "DURATION_SIZE_MISMATCH"
-  | "INVALID_LIVE_CAPTION_FAILURE";
+  | "DURATION_SIZE_MISMATCH";
 
 export interface AudioCaptureValidationError {
   readonly code: AudioCaptureValidationErrorCode;
