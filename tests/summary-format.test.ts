@@ -70,6 +70,16 @@ describe("formatSummaryForDisplay", () => {
     });
   });
 
+  it.each(["Keep $ x + /a/b $ literal.", "Keep $ x + $5 fee $ literal."])(
+    "does not scan explicit math delimiters across protected path or currency tokens in %s",
+    (text) => {
+      expect(formatSummaryForDisplay(text)).toEqual({
+        text,
+        formattingApplied: false,
+      });
+    },
+  );
+
   it("preserves quoted commands while formatting adjacent explicit math", () => {
     const raw = String.raw`The literal commands "\\times" and '\\cdot' stay quoted; $ a \times b $ does not.`;
     expect(formatSummaryForDisplay(raw).text).toBe(
@@ -154,8 +164,37 @@ describe("formatSummaryForDisplay", () => {
     ["Use f(e^(−2t)).", "Use f(e^(−2t))."],
     ["Use f(e^{-2t}}).", "Use f(e^(−2t))."],
     ["$ e^{-2t}} $", "e^(−2t)"],
-  ])("removes only closers proven unmatched by the local delimiter stack in %s", (raw, expected) => {
+  ])("removes only closers proven unmatched inside a math token in %s", (raw, expected) => {
     expect(formatSummaryForDisplay(raw).text).toBe(expected);
+  });
+
+  it.each([
+    ['The pair ("rate", e^{-2t}) is used.', 'The pair ("rate", e^(−2t)) is used.'],
+    ['The pair ("rate)", e^{-2t}) is used.', 'The pair ("rate)", e^(−2t)) is used.'],
+    ["The pair (`rate)`, e^{-2t}) is used.", "The pair (`rate)`, e^(−2t)) is used."],
+    [
+      "<section><code>rate)</code></section>",
+      "The pair (<section><code>rate)</code></section>, e^(−2t)) is used.",
+    ],
+    ['The pair (\n"rate)",\ne^{-2t}) is used.', 'The pair (\n"rate)",\ne^(−2t)) is used.'],
+  ])("carries outer delimiter context across protected content in %s", (rawOrProtected, expected) => {
+    const raw = rawOrProtected.startsWith("<")
+      ? `The pair (${rawOrProtected}, e^{-2t}) is used.`
+      : rawOrProtected;
+    expect(formatSummaryForDisplay(raw).text).toBe(expected);
+  });
+
+  it.each([
+    ["$ x^{2t} $}", "x^(2t)"],
+    ["$ {e^{-2t}} $}", "{e^(−2t)}"],
+    ["($ x^{2t} $)", "(x^(2t))"],
+    ["[ $ e^{-2t} $ ]", "[ e^(−2t) ]"],
+    ["({[ $ e^{-2t} $ ]})", "({[ e^(−2t) ]})"],
+    ["[$ e^{-2t} $}]", "[e^(−2t)]"],
+  ])("repairs explicit math trailing closers idempotently in %s", (raw, expected) => {
+    const once = formatSummaryForDisplay(raw).text;
+    expect(once).toBe(expected);
+    expect(formatSummaryForDisplay(once).text).toBe(once);
   });
 
   it.each([
@@ -298,6 +337,65 @@ describe("formatSummaryForDisplay", () => {
         expect(once).toBe(`${prefix}Result: ${formatted}.`);
         expect(formatSummaryForDisplay(once).text).toBe(once);
       }
+    }
+  });
+
+  it("keeps a generated outer, protected, currency, path, and multi-math corpus stable", () => {
+    const outerPairs = [
+      ["", ""],
+      ["(", ")"],
+      ["[", "]"],
+      ["{", "}"],
+      ["([", "])"],
+      ["{[(", ")]}"],
+    ] as const;
+    const protectedPrefixes = [
+      "",
+      '"literal )", ',
+      '"literal )",\n',
+      "`literal ]`, ",
+      "<code>literal }</code>, ",
+      String.raw`C:\times\reports, `,
+      "$5, ",
+    ];
+    const mathPairs = [
+      ["$ x^{2t} $", "x^(2t)"],
+      ["$ {e^{-2t}} $", "{e^(−2t)}"],
+      ["$ y' = -2y $", "y′ = −2y"],
+    ] as const;
+
+    for (const [opening, closing] of outerPairs) {
+      for (const protectedPrefix of protectedPrefixes) {
+        for (const [firstRaw, firstExpected] of mathPairs) {
+          for (const [secondRaw, secondExpected] of mathPairs) {
+            const raw = `${opening}${protectedPrefix}${firstRaw}; ${secondRaw}${closing}`;
+            const expected = `${opening}${protectedPrefix}${firstExpected}; ${secondExpected}${closing}`;
+            const once = formatSummaryForDisplay(raw).text;
+            expect(once).toBe(expected);
+            expect(formatSummaryForDisplay(once).text).toBe(once);
+          }
+        }
+      }
+    }
+  });
+
+  it("removes generated globally unmatched math-adjacent closers without consuming outer closers", () => {
+    const cases = [
+      ["", "", "}"],
+      ["(", ")", "}"],
+      ["(", ")", "]"],
+      ["[", "]", "}"],
+      ["[", "]", ")"],
+      ["{", "}", ")"],
+      ["{", "}", "]"],
+    ] as const;
+
+    for (const [opening, closing, unmatched] of cases) {
+      const raw = `The fee is $5. ${opening}$ x^{2t} $${unmatched}${closing} Then $ e^{-2t} $}.`;
+      const expected = `The fee is $5. ${opening}x^(2t)${closing} Then e^(−2t).`;
+      const once = formatSummaryForDisplay(raw).text;
+      expect(once).toBe(expected);
+      expect(formatSummaryForDisplay(once).text).toBe(once);
     }
   });
 });

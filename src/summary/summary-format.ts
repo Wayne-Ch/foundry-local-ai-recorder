@@ -12,6 +12,15 @@ interface SummarySpan extends TextRange {
   readonly kind: "plain" | "protected";
 }
 
+interface SummaryMathSpan extends TextRange {
+  readonly kind: "math";
+  readonly contentStart: number;
+  readonly contentEnd: number;
+  readonly trim: boolean;
+}
+
+type SummaryFormatSpan = SummarySpan | SummaryMathSpan;
+
 interface HtmlTagToken {
   readonly name: string | null;
   readonly kind: "opening" | "closing" | "self-closing" | "declaration" | "malformed";
@@ -69,12 +78,207 @@ export function formatSummaryForDisplay(rawText: string): SummaryDisplayFormatRe
 }
 
 function formatOutsideProtectedRegions(value: string): string {
-  return tokenizeProtectedRegions(value)
-    .map((span) => {
-      const text = value.slice(span.start, span.end);
-      return span.kind === "protected" ? text : formatUnprotectedText(text);
-    })
-    .join("");
+  const delimiterStack: MathOpeningDelimiter[] = [];
+  let output = "";
+  let repairingMathAdjacentClosers = false;
+
+  for (const span of tokenizeFormattingSpans(value)) {
+    if (span.kind === "math") {
+      const formatted = formatMathTokens(value.slice(span.contentStart, span.contentEnd));
+      output += span.trim ? formatted.trim() : formatted;
+      repairingMathAdjacentClosers = true;
+      continue;
+    }
+
+    if (span.kind === "protected") {
+      output += value.slice(span.start, span.end);
+      repairingMathAdjacentClosers = false;
+      continue;
+    }
+
+    for (let index = span.start; index < span.end; index += 1) {
+      const character = value[index] ?? "";
+      if (repairingMathAdjacentClosers && /\s/u.test(character)) {
+        output += character;
+        continue;
+      }
+
+      const opening = openingDelimiterFor(character);
+      if (repairingMathAdjacentClosers && opening !== null && !isEscaped(value, index)) {
+        if (delimiterStack.at(-1) === opening) {
+          delimiterStack.pop();
+          output += character;
+        } else if (delimiterStack.includes(opening)) {
+          output += character;
+        }
+        continue;
+      }
+
+      repairingMathAdjacentClosers = false;
+      if (!isEscaped(value, index)) {
+        if (isMathOpeningDelimiter(character)) {
+          delimiterStack.push(character);
+        } else if (opening !== null && delimiterStack.at(-1) === opening) {
+          delimiterStack.pop();
+        }
+      }
+      output += character;
+    }
+  }
+
+  return output;
+}
+
+function tokenizeFormattingSpans(value: string): readonly SummaryFormatSpan[] {
+  const spans: SummaryFormatSpan[] = [];
+  for (const span of tokenizeProtectedRegions(value)) {
+    if (span.kind === "protected") {
+      spans.push(span);
+      continue;
+    }
+    spans.push(...tokenizePlainFormattingSpans(value, span.start, span.end));
+  }
+  return spans;
+}
+
+function tokenizePlainFormattingSpans(
+  value: string,
+  start: number,
+  end: number,
+): readonly SummaryFormatSpan[] {
+  const text = value.slice(start, end);
+  const opaqueRanges = mergeRanges([...findCurrencyRanges(text), ...findPathRanges(text)]);
+  const explicitMathRanges = findExplicitMathRanges(text, opaqueRanges);
+  const fixedSpans: SummaryFormatSpan[] = [
+    ...opaqueRanges.map(
+      (range): SummarySpan => ({
+        kind: "protected",
+        start: range.start,
+        end: range.end,
+      }),
+    ),
+    ...explicitMathRanges,
+  ].sort((left, right) => left.start - right.start || left.end - right.end);
+
+  const spans: SummaryFormatSpan[] = [];
+  let cursor = 0;
+  for (const fixedSpan of fixedSpans) {
+    appendImplicitFormattingSpans(text, cursor, fixedSpan.start, start, spans);
+    spans.push(offsetFormattingSpan(fixedSpan, start));
+    cursor = fixedSpan.end;
+  }
+  appendImplicitFormattingSpans(text, cursor, text.length, start, spans);
+  return spans;
+}
+
+function findExplicitMathRanges(
+  value: string,
+  opaqueRanges: readonly TextRange[],
+): readonly SummaryMathSpan[] {
+  const ranges: SummaryMathSpan[] = [];
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const opaque = rangeStartingAt(opaqueRanges, cursor);
+    if (opaque !== null) {
+      cursor = opaque.end;
+      continue;
+    }
+    if (value[cursor] !== "$" || isEscaped(value, cursor)) {
+      cursor += 1;
+      continue;
+    }
+
+    const delimiterLength = value[cursor + 1] === "$" ? 2 : 1;
+    if (!canOpenMathDelimiter(value, cursor, delimiterLength)) {
+      cursor += delimiterLength;
+      continue;
+    }
+
+    const closingIndex = findClosingDelimiter(value, cursor + delimiterLength, delimiterLength, opaqueRanges);
+    if (closingIndex === -1) {
+      cursor += delimiterLength;
+      continue;
+    }
+
+    const contentStart = cursor + delimiterLength;
+    if (!isValidDelimitedMath(value.slice(contentStart, closingIndex))) {
+      cursor += delimiterLength;
+      continue;
+    }
+
+    const end = closingIndex + delimiterLength;
+    ranges.push({
+      kind: "math",
+      start: cursor,
+      end,
+      contentStart,
+      contentEnd: closingIndex,
+      trim: true,
+    });
+    cursor = end;
+  }
+
+  return ranges;
+}
+
+function appendImplicitFormattingSpans(
+  value: string,
+  start: number,
+  end: number,
+  offset: number,
+  spans: SummaryFormatSpan[],
+): void {
+  if (start >= end) {
+    return;
+  }
+
+  const text = value.slice(start, end);
+  const mathRanges = mergeRanges([...findImplicitEquationRanges(text), ...findStructuredMathRanges(text)]);
+  let cursor = 0;
+  for (const range of mathRanges) {
+    if (cursor < range.start) {
+      spans.push({
+        kind: "plain",
+        start: offset + start + cursor,
+        end: offset + start + range.start,
+      });
+    }
+    spans.push({
+      kind: "math",
+      start: offset + start + range.start,
+      end: offset + start + range.end,
+      contentStart: offset + start + range.start,
+      contentEnd: offset + start + range.end,
+      trim: false,
+    });
+    cursor = range.end;
+  }
+  if (cursor < text.length) {
+    spans.push({
+      kind: "plain",
+      start: offset + start + cursor,
+      end: offset + end,
+    });
+  }
+}
+
+function offsetFormattingSpan(span: SummaryFormatSpan, offset: number): SummaryFormatSpan {
+  if (span.kind !== "math") {
+    return {
+      kind: span.kind,
+      start: span.start + offset,
+      end: span.end + offset,
+    };
+  }
+  return {
+    kind: "math",
+    start: span.start + offset,
+    end: span.end + offset,
+    contentStart: span.contentStart + offset,
+    contentEnd: span.contentEnd + offset,
+    trim: span.trim,
+  };
 }
 
 function tokenizeProtectedRegions(value: string): readonly SummarySpan[] {
@@ -311,55 +515,6 @@ function findRawTextElementEnd(value: string, start: number, name: string): numb
   return value.length;
 }
 
-function formatUnprotectedText(value: string): string {
-  const currencyRanges = findCurrencyRanges(value);
-  let output = "";
-  let plainStart = 0;
-  let cursor = 0;
-
-  while (cursor < value.length) {
-    const currency = rangeStartingAt(currencyRanges, cursor);
-    if (currency !== null) {
-      cursor = currency.end;
-      continue;
-    }
-    if (value[cursor] !== "$" || isEscaped(value, cursor)) {
-      cursor += 1;
-      continue;
-    }
-
-    const delimiterLength = value[cursor + 1] === "$" ? 2 : 1;
-    if (!canOpenMathDelimiter(value, cursor, delimiterLength)) {
-      cursor += delimiterLength;
-      continue;
-    }
-
-    const closingIndex = findClosingDelimiter(
-      value,
-      cursor + delimiterLength,
-      delimiterLength,
-      currencyRanges,
-    );
-    if (closingIndex === -1) {
-      cursor += delimiterLength;
-      continue;
-    }
-
-    const math = value.slice(cursor + delimiterLength, closingIndex);
-    if (!isValidDelimitedMath(math)) {
-      cursor += delimiterLength;
-      continue;
-    }
-
-    output += formatImplicitText(value.slice(plainStart, cursor));
-    output += formatMathTokens(math).trim();
-    cursor = closingIndex + delimiterLength;
-    plainStart = cursor;
-  }
-
-  return output + formatImplicitText(value.slice(plainStart));
-}
-
 function findCurrencyRanges(value: string): readonly TextRange[] {
   const ranges: TextRange[] = [];
   for (let index = 0; index < value.length; index += 1) {
@@ -372,13 +527,85 @@ function findCurrencyRanges(value: string): readonly TextRange[] {
     }
 
     const closing = findFirstInlineClosing(value, amountEnd);
-    if (closing !== -1 && isValidDelimitedMath(value.slice(index + 1, closing))) {
+    if (closing !== -1 && isCompleteDelimitedMath(value.slice(index + 1, closing))) {
       continue;
     }
     ranges.push({ start: index, end: amountEnd });
     index = amountEnd - 1;
   }
   return ranges;
+}
+
+function findPathRanges(value: string): readonly TextRange[] {
+  const ranges: TextRange[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (!isPathStartBoundary(value, index)) {
+      continue;
+    }
+    const end = findPathEnd(value, index);
+    if (end === null) {
+      continue;
+    }
+    ranges.push({ start: index, end });
+    index = end - 1;
+  }
+  return ranges;
+}
+
+function isPathStartBoundary(value: string, index: number): boolean {
+  const previous = value[index - 1];
+  return previous === undefined || /[\s([{:;,=]/u.test(previous);
+}
+
+function findPathEnd(value: string, index: number): number | null {
+  let cursor: number;
+  if (
+    /[A-Za-z]/.test(value[index] ?? "") &&
+    value[index + 1] === ":" &&
+    (value[index + 2] === "\\" || value[index + 2] === "/")
+  ) {
+    cursor = index + 3;
+  } else if (value.startsWith("\\\\", index)) {
+    cursor = index + 2;
+    const serverStart = cursor;
+    while (cursor < value.length && value[cursor] !== "\\" && value[cursor] !== "/") {
+      if (isPathTerminator(value[cursor])) {
+        return null;
+      }
+      cursor += 1;
+    }
+    if (cursor === serverStart || (value[cursor] !== "\\" && value[cursor] !== "/")) {
+      return null;
+    }
+    cursor += 1;
+  } else if (value[index] === "/") {
+    const nextSeparator = value.indexOf("/", index + 1);
+    if (
+      nextSeparator === -1 ||
+      nextSeparator === index + 1 ||
+      value
+        .slice(index + 1, nextSeparator)
+        .split("")
+        .some(isPathTerminator)
+    ) {
+      return null;
+    }
+    cursor = index + 1;
+  } else {
+    return null;
+  }
+
+  while (cursor < value.length && !isPathTerminator(value[cursor])) {
+    cursor += 1;
+  }
+  while (cursor > index && /[.,;:!?)}\]]/u.test(value[cursor - 1] ?? "")) {
+    cursor -= 1;
+  }
+  return cursor > index ? cursor : null;
+}
+
+function isPathTerminator(character: string | undefined): boolean {
+  return character === undefined || /[\s<>"'`]/u.test(character);
 }
 
 function consumeCurrencyAmount(value: string, start: number): number | null {
@@ -431,14 +658,13 @@ function findClosingDelimiter(
   value: string,
   start: number,
   delimiterLength: number,
-  currencyRanges: readonly TextRange[],
+  opaqueRanges: readonly TextRange[],
 ): number {
   const delimiter = "$".repeat(delimiterLength);
   for (let index = start; index <= value.length - delimiterLength; index += 1) {
-    const currency = rangeStartingAt(currencyRanges, index);
-    if (currency !== null) {
-      index = currency.end - 1;
-      continue;
+    const opaque = rangeStartingAt(opaqueRanges, index);
+    if (opaque !== null) {
+      return -1;
     }
     if (!value.startsWith(delimiter, index) || isEscaped(value, index)) {
       continue;
@@ -477,20 +703,33 @@ function looksLikeMath(value: string): boolean {
 }
 
 function isValidDelimitedMath(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed || containsUnescapedDollar(trimmed)) {
-    return false;
-  }
-
-  const repaired = repairUnmatchedMathClosers(trimmed, []);
-  const unwrapped = unwrapBalancedMathGroups(repaired);
-  if (!unwrapped || containsProseWord(unwrapped)) {
+  const unwrapped = prepareDelimitedMathForValidation(value);
+  if (unwrapped === null) {
     return false;
   }
   if (isCompleteMathExpression(unwrapped) || isCompleteEquation(unwrapped)) {
     return true;
   }
   return looksLikeMath(unwrapped);
+}
+
+function isCompleteDelimitedMath(value: string): boolean {
+  const unwrapped = prepareDelimitedMathForValidation(value);
+  return unwrapped !== null && (isCompleteMathExpression(unwrapped) || isCompleteEquation(unwrapped));
+}
+
+function prepareDelimitedMathForValidation(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || containsUnescapedDollar(trimmed)) {
+    return null;
+  }
+
+  const repaired = repairUnmatchedMathClosers(trimmed);
+  const unwrapped = unwrapBalancedMathGroups(repaired);
+  if (!unwrapped || containsProseWord(unwrapped)) {
+    return null;
+  }
+  return unwrapped;
 }
 
 function containsUnescapedDollar(value: string): boolean {
@@ -561,27 +800,6 @@ function isCompleteEquation(value: string): boolean {
   return Boolean(left && right && isCompleteMathExpression(left) && isCompleteMathExpression(right));
 }
 
-function formatImplicitText(value: string): string {
-  let output = "";
-  let plainStart = 0;
-  let cursor = 0;
-
-  while (cursor < value.length) {
-    const quotedEnd = findQuotedRegionEnd(value, cursor);
-    if (quotedEnd === null) {
-      cursor += 1;
-      continue;
-    }
-
-    output += formatImplicitUnquoted(value.slice(plainStart, cursor));
-    output += value.slice(cursor, quotedEnd);
-    cursor = quotedEnd;
-    plainStart = cursor;
-  }
-
-  return output + formatImplicitUnquoted(value.slice(plainStart));
-}
-
 function findQuotedRegionEnd(value: string, index: number): number | null {
   const opening = value[index] ?? "";
   const closing =
@@ -601,22 +819,6 @@ function findQuotedRegionEnd(value: string, index: number): number | null {
   return value.length;
 }
 
-function formatImplicitUnquoted(value: string): string {
-  const ranges = mergeRanges([...findImplicitEquationRanges(value), ...findStructuredMathRanges(value)]);
-  if (ranges.length === 0) {
-    return value;
-  }
-
-  let output = "";
-  let cursor = 0;
-  for (const range of ranges) {
-    output += value.slice(cursor, range.start);
-    output += formatMathTokens(value.slice(range.start, range.end), delimiterStackBefore(value, range.start));
-    cursor = range.end;
-  }
-  return output + value.slice(cursor);
-}
-
 function findImplicitEquationRanges(value: string): readonly TextRange[] {
   const ranges: TextRange[] = [];
   for (let equalsIndex = 0; equalsIndex < value.length; equalsIndex += 1) {
@@ -634,7 +836,7 @@ function findImplicitEquationRanges(value: string): readonly TextRange[] {
       continue;
     }
 
-    ranges.push({ start, end: extendRangeThroughAdjacentClosers(value, end) });
+    ranges.push({ start, end });
     equalsIndex = end - 1;
   }
   return ranges;
@@ -835,20 +1037,14 @@ function findStructuredMathRanges(value: string): readonly TextRange[] {
     if (value[exponentStart] === "{") {
       const closing = findMatchingDelimiter(value, exponentStart, "{", "}");
       if (closing !== null) {
-        ranges.push({
-          start: index,
-          end: extendRangeThroughAdjacentClosers(value, closing + 1),
-        });
+        ranges.push({ start: index, end: closing + 1 });
       }
       continue;
     }
     if (value[exponentStart] === "(") {
       const closing = findMatchingDelimiter(value, exponentStart, "(", ")");
       if (closing !== null) {
-        ranges.push({
-          start: index,
-          end: extendRangeThroughAdjacentClosers(value, closing + 1),
-        });
+        ranges.push({ start: index, end: closing + 1 });
       }
       continue;
     }
@@ -893,11 +1089,8 @@ function mergeRanges(ranges: readonly TextRange[]): readonly TextRange[] {
   return merged;
 }
 
-function formatMathTokens(
-  value: string,
-  initialDelimiterStack: readonly MathOpeningDelimiter[] = [],
-): string {
-  const prepared = repairUnmatchedMathClosers(value, initialDelimiterStack)
+function formatMathTokens(value: string): string {
+  const prepared = repairUnmatchedMathClosers(value)
     .replace(/\^\s*\{\s*\\+prime\s*\}/g, "′")
     .replace(/\^\s*\\+prime\b/g, "′")
     .replace(/\\+prime\b/g, "′")
@@ -1002,62 +1195,31 @@ function normalizeMathMinus(value: string): string {
   return value.replace(/^-(?=\s*[\p{L}\d])/u, "−").replace(/([=^(+\s])-(?=\s*[\p{L}\d])/gu, "$1−");
 }
 
-function extendRangeThroughAdjacentClosers(value: string, start: number): number {
-  let cursor = start;
-  while (value[cursor] === "}" || value[cursor] === ")" || value[cursor] === "]") {
-    cursor += 1;
-  }
-  return cursor;
-}
-
-function delimiterStackBefore(value: string, end: number): readonly MathOpeningDelimiter[] {
-  const lineStart = value.lastIndexOf("\n", end - 1) + 1;
+function repairUnmatchedMathClosers(value: string): string {
   const stack: MathOpeningDelimiter[] = [];
-  updateDelimiterStack(value.slice(lineStart, end), stack, false);
-  return stack;
-}
-
-function repairUnmatchedMathClosers(value: string, initialStack: readonly MathOpeningDelimiter[]): string {
-  const stack = [...initialStack];
-  return updateDelimiterStack(value, stack, true);
-}
-
-function updateDelimiterStack(
-  value: string,
-  stack: MathOpeningDelimiter[],
-  removeProvenUnmatched: boolean,
-): string {
   let output = "";
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index] ?? "";
     if (isMathOpeningDelimiter(character) && !isEscaped(value, index)) {
       stack.push(character);
-      if (removeProvenUnmatched) {
-        output += character;
-      }
+      output += character;
       continue;
     }
 
     const opening = openingDelimiterFor(character);
     if (opening === null || isEscaped(value, index)) {
-      if (removeProvenUnmatched) {
-        output += character;
-      }
+      output += character;
       continue;
     }
 
     if (stack.at(-1) === opening) {
       stack.pop();
-      if (removeProvenUnmatched) {
-        output += character;
-      }
+      output += character;
       continue;
     }
 
     if (stack.includes(opening)) {
-      if (removeProvenUnmatched) {
-        output += character;
-      }
+      output += character;
     }
   }
   return output;

@@ -26,7 +26,7 @@ Runtime log evidence:
 |---|---|
 | `npm run lint` | Pass; 48 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 11 files, 175 tests |
+| `npm test` | Pass; 11 files, 190 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
 
@@ -42,12 +42,14 @@ Unit coverage includes:
   outputs, tight/spaced inline and display math, independent currency tokens, escaped/unmatched
   dollars, bounded implicit equations, `\cdot`, `\times`, primes, braced exponents, safe
   single-token superscripts, and multiple equations;
-- delimiter-stack repair that removes only locally proven unmatched closers while preserving
-  balanced outer braces/parentheses such as `{e^(−2t)}` and `f(e^(−2t))`;
+- one full-string delimiter/token pass that carries outer context across protected content, removes
+  only globally unmatched math-adjacent closers, and preserves balanced/nested outer delimiters such
+  as `{e^(−2t)}`, `f(e^(−2t))`, and `("rate", e^(−2t))`;
 - no invented grouping for unbraced multi-token exponents, plus idempotent preservation of
   Windows/UNC/POSIX paths, literal and quoted commands, currency, inline/fenced code, complete
   generic HTML/XML-like elements, malformed tags, script/style/code/pre content, nested or
-  unmatched braces, ordinary prose, Unicode, and intentional bullets;
+  unmatched braces, ordinary prose, Unicode, intentional bullets, and a generated cross-product of
+  protected spans, outer delimiters, multiple math spans, currency, paths, and malformed closers;
 - pathological whitespace normalization outside protected code/HTML regions, exact raw Qwen trace
   evidence, textarea/textContent-only rendering, the formatted editable-summary split, the shared
   recording/import summary path, and the deterministic populated-summary capture fixture;
