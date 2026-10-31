@@ -105,6 +105,28 @@ describe("formatSummaryForDisplay", () => {
     expect(formatSummaryForDisplay(raw).text).toBe("The fee is $5 and the result is x².");
   });
 
+  it.each([
+    ["The fee is $5 and the result is $ x^2 $.", "The fee is $5 and the result is x²."],
+    ["Keep $5 + tax literal, then solve $ x^2 $ and $y^2$.", "Keep $5 + tax literal, then solve x² and y²."],
+    [
+      "Prices are $5, $10.50, and $1,200.00; solve $2x = 4$ and $ y' = -2y $.",
+      "Prices are $5, $10.50, and $1,200.00; solve 2x = 4 and y′ = −2y.",
+    ],
+  ])("keeps currency tokens independent from later math delimiters in %s", (raw, expected) => {
+    expect(formatSummaryForDisplay(raw).text).toBe(expected);
+  });
+
+  it("supports tight, spaced, and display math without consuming escaped or unmatched dollars", () => {
+    const raw = String.raw`Escaped \$x\$ and \$5 stay literal; solve $x^2$, $ y' = -2y $, and $$ a \times b $$. Unmatched $ stays.`;
+    expect(formatSummaryForDisplay(raw).text).toBe(
+      String.raw`Escaped \$x\$ and \$5 stay literal; solve x², y′ = −2y, and a × b. Unmatched $ stays.`,
+    );
+  });
+
+  it("treats a digit-leading delimited expression as math only when the full pair is valid", () => {
+    expect(formatSummaryForDisplay("$5 + 2$ versus $5 + tax").text).toBe("5 + 2 versus $5 + tax");
+  });
+
   it("removes unmatched math braces without changing ordinary prose braces", () => {
     const raw = "Keep {ordinary prose} intact, but fix $ x^{2}} + e^{-2t}} $.";
     expect(formatSummaryForDisplay(raw).text).toBe("Keep {ordinary prose} intact, but fix x² + e^(−2t).");
@@ -123,6 +145,16 @@ describe("formatSummaryForDisplay", () => {
     ["The set is {x^2}.", "The set is {x^2}."],
     ["The set is $ {x^2} $.", "The set is {x²}."],
   ])("preserves balanced outer math delimiters in %s", (raw, expected) => {
+    expect(formatSummaryForDisplay(raw).text).toBe(expected);
+  });
+
+  it.each([
+    ["$ {e^{-2t}} $", "{e^(−2t)}"],
+    ["$ ({e^{-2t}}) $", "({e^(−2t)})"],
+    ["Use f(e^(−2t)).", "Use f(e^(−2t))."],
+    ["Use f(e^{-2t}}).", "Use f(e^(−2t))."],
+    ["$ e^{-2t}} $", "e^(−2t)"],
+  ])("removes only closers proven unmatched by the local delimiter stack in %s", (raw, expected) => {
     expect(formatSummaryForDisplay(raw).text).toBe(expected);
   });
 
@@ -191,6 +223,29 @@ describe("formatSummaryForDisplay", () => {
     );
   });
 
+  it.each([
+    [
+      String.raw`<span>x = a \times b</span> Outside: $ x^2 $.`,
+      String.raw`<span>x = a \times b</span> Outside: x².`,
+    ],
+    ["<span>$ x^2 $</span>", "<span>$ x^2 $</span>"],
+    [
+      String.raw`<section><span>y' = a \times b</span><code>$ x^2 $</code></section> $ y' = -2y $`,
+      String.raw`<section><span>y' = a \times b</span><code>$ x^2 $</code></section> y′ = −2y`,
+    ],
+    ["Use<br>then solve $ x^2 $.", "Use<br>then solve x²."],
+    ["<span>$ x^2 $", "<span>$ x^2 $"],
+  ])("protects generic well-formed and malformed HTML-like literals in %s", (raw, expected) => {
+    expect(formatSummaryForDisplay(raw).text).toBe(expected);
+  });
+
+  it("preserves quoted literal math and command examples", () => {
+    const raw = String.raw`Examples "$ x^2 $" and '\times' stay literal; solve $ x^2 $.`;
+    expect(formatSummaryForDisplay(raw).text).toBe(
+      String.raw`Examples "$ x^2 $" and '\times' stay literal; solve x².`,
+    );
+  });
+
   it("normalizes pathological whitespace while preserving bullets and paragraphs", () => {
     const raw =
       "  Overview. \r\n\r\n\r\n  -   First   point \r\n - Second\tpoint \n\n\n Final   paragraph.  ";
@@ -216,12 +271,33 @@ describe("formatSummaryForDisplay", () => {
       String.raw`Read C:\times\reports, then solve y' = -2y.`,
       'Use "\\times", `x = a \\cdot b`, and $x^2t$.',
       '<script>const x = "e^{-2t}}";</script> $x^{2t}$',
+      "<span>$ x^2 $</span> $ {e^{-2t}} $",
+      "The fee is $5 + tax and the result is $ x^2 $.",
+      "Use f(e^(−2t)).",
       "• Unicode y′ = −2y\n\n• Plain prose",
     ];
 
     for (const raw of cases) {
       const once = formatSummaryForDisplay(raw).text;
       expect(formatSummaryForDisplay(once).text).toBe(once);
+    }
+  });
+
+  it("satisfies currency-prefix and delimiter-style pairs with stable second passes", () => {
+    const prefixes = ["", "The fee is $5. ", "The fees are $5 and $10. "];
+    const mathPairs = [
+      ["$x^2$", "x²"],
+      ["$ x^2 $", "x²"],
+      ["$$ x^2 $$", "x²"],
+      ["$ y' = -2y $", "y′ = −2y"],
+    ] as const;
+
+    for (const prefix of prefixes) {
+      for (const [math, formatted] of mathPairs) {
+        const once = formatSummaryForDisplay(`${prefix}Result: ${math}.`).text;
+        expect(once).toBe(`${prefix}Result: ${formatted}.`);
+        expect(formatSummaryForDisplay(once).text).toBe(once);
+      }
     }
   });
 });

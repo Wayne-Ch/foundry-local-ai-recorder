@@ -33,6 +33,7 @@ import {
   permissionOriginForDocument,
 } from "./microphone-permission";
 import { RecorderController } from "./recorder-controller";
+import { createPopulatedSummaryCaptureSnapshot } from "./ui-capture-fixture";
 
 let mainWindow: BrowserWindow | null = null;
 let mainWebContents: WebContents | null = null;
@@ -41,7 +42,17 @@ let shutdownStarted = false;
 const controller = new RecorderController();
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const rendererFilePath = path.join(currentDirectory, "..", "renderer", "index.html");
-const rendererDocumentUrl = pathToFileURL(rendererFilePath).href;
+const populatedSummaryCaptureEnabled =
+  process.env.SMART_RECORDER_CAPTURE_FIXTURE === "populated-summary" &&
+  process.env.SMART_RECORDER_CAPTURE_AND_EXIT === "1" &&
+  Boolean(process.env.SMART_RECORDER_CAPTURE_PATH?.trim());
+const rendererDocumentUrl = (() => {
+  const url = pathToFileURL(rendererFilePath);
+  if (populatedSummaryCaptureEnabled) {
+    url.searchParams.set("capture", "populated-summary");
+  }
+  return url.href;
+})();
 const rendererPermissionOrigin = permissionOriginForDocument(rendererDocumentUrl);
 const microphonePermissionProbeEnabled = process.env.SMART_RECORDER_MIC_PERMISSION_PROBE === "1";
 const streamOwnerProbeEnabled = process.env.SMART_RECORDER_STREAM_OWNER_PROBE === "1";
@@ -207,7 +218,8 @@ function createWindow(): BrowserWindow {
 function registerIpc(): void {
   ipcMain.handle(ipcChannels.bootstrap, (event) => {
     assertTrustedRendererIpc(event);
-    return controller.bootstrap();
+    const snapshot = controller.bootstrap();
+    return populatedSummaryCaptureEnabled ? createPopulatedSummaryCaptureSnapshot(snapshot) : snapshot;
   });
   ipcMain.handle(ipcChannels.prepare, (event, request: PrepareRecorderRequest) => {
     const renderer = assertTrustedRendererIpc(event);

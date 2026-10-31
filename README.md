@@ -82,6 +82,10 @@ npm run test:chain-integration
 npm audit --audit-level=low
 ```
 
+`npm run capture:ui` uses a capture-only populated snapshot so the 1600×900 screenshot includes a
+final transcript, formatted summary, and exact raw-summary trace evidence. It writes the ignored,
+reproducible artifact to `artifacts\smart-ai-recorder-populated-summary.png`.
+
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
 Synthesis from original ODE teaching text. No copyrighted lecture material is included.
 

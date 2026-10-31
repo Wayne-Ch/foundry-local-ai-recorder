@@ -4,7 +4,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import electronPath from "electron";
 
-const capturePath = path.resolve("artifacts", "smart-ai-recorder-stage.png");
+const capturePath = path.resolve("artifacts", "smart-ai-recorder-populated-summary.png");
 await mkdir(path.dirname(capturePath), { recursive: true });
 const child = spawn(electronPath, ["."], {
   cwd: process.cwd(),
@@ -12,6 +12,7 @@ const child = spawn(electronPath, ["."], {
     ...process.env,
     SMART_RECORDER_CAPTURE_PATH: capturePath,
     SMART_RECORDER_CAPTURE_AND_EXIT: "1",
+    SMART_RECORDER_CAPTURE_FIXTURE: "populated-summary",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

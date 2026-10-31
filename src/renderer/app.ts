@@ -228,11 +228,13 @@ const elements = {
   },
 };
 
+const populatedSummaryCapture =
+  new URLSearchParams(window.location.search).get("capture") === "populated-summary";
 let snapshot: RecorderSnapshot = await api.getBootstrap();
 let recording: RecordingOperation | null = null;
 let operationGeneration = 0;
-let prepared = false;
-let liveAvailable = false;
+let prepared = populatedSummaryCapture;
+let liveAvailable = populatedSummaryCapture;
 let busy = false;
 let resetting = false;
 let summaryDraft = "";
@@ -240,6 +242,13 @@ let progressDetail = "";
 let transcriptEditorDirty = false;
 
 render(snapshot);
+if (populatedSummaryCapture) {
+  elements.traceToggle.setAttribute("aria-expanded", "true");
+  elements.traceToggle.textContent = "Hide trace";
+  elements.traceContent.hidden = false;
+  setStatus("Deterministic populated summary capture.", "success");
+  requestAnimationFrame(() => window.scrollTo(0, 170));
+}
 
 api.onProgress((event) => {
   progressDetail = event.detail;

@@ -676,8 +676,12 @@ describe("audio recorder state and draft behavior", () => {
     expect(renderer).toContain("LiveCaptionFailureState");
     expect(renderer).toContain("Whisper final succeeded; live captions failed");
     expect(renderer).toContain("formatSafeDiagnostic(toSafeDiagnostic(error");
+    expect(renderer).toContain("elements.summaryOutput.value = summaryDraft");
+    expect(renderer).toContain("detailText.textContent = entry.detail");
     expect(renderer).not.toContain("error instanceof Error ? error.message");
     expect(renderer).not.toContain("finalTranscript.value.trim()");
+    expect(renderer).not.toContain("summaryOutput.innerHTML");
+    expect(renderer).not.toContain("detail.innerHTML");
     expect(preload).toContain("invokeSafely");
     expect(preload).toContain("throw toSafeDiagnostic(error, fallbackCode)");
   });

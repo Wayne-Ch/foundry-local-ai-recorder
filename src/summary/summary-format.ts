@@ -8,10 +8,22 @@ interface TextRange {
   readonly end: number;
 }
 
+interface SummarySpan extends TextRange {
+  readonly kind: "plain" | "protected";
+}
+
+interface HtmlTagToken {
+  readonly name: string | null;
+  readonly kind: "opening" | "closing" | "self-closing" | "declaration" | "malformed";
+  readonly end: number;
+}
+
 interface ExponentReplacement {
   readonly end: number;
   readonly text: string;
 }
+
+type MathOpeningDelimiter = "{" | "(" | "[";
 
 const superscriptCharacters: Readonly<Record<string, string>> = {
   "0": "⁰",
@@ -29,6 +41,22 @@ const superscriptCharacters: Readonly<Record<string, string>> = {
 };
 
 const primeCharacters = ["", "′", "″", "‴"] as const;
+const htmlVoidElements = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
 
 export function formatSummaryForDisplay(rawText: string): SummaryDisplayFormatResult {
   const normalizedLineEndings = rawText.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
@@ -41,7 +69,16 @@ export function formatSummaryForDisplay(rawText: string): SummaryDisplayFormatRe
 }
 
 function formatOutsideProtectedRegions(value: string): string {
-  let output = "";
+  return tokenizeProtectedRegions(value)
+    .map((span) => {
+      const text = value.slice(span.start, span.end);
+      return span.kind === "protected" ? text : formatUnprotectedText(text);
+    })
+    .join("");
+}
+
+function tokenizeProtectedRegions(value: string): readonly SummarySpan[] {
+  const spans: SummarySpan[] = [];
   let plainStart = 0;
   let cursor = 0;
 
@@ -52,13 +89,18 @@ function formatOutsideProtectedRegions(value: string): string {
       continue;
     }
 
-    output += formatUnprotectedText(value.slice(plainStart, cursor));
-    output += value.slice(cursor, protectedEnd);
+    if (plainStart < cursor) {
+      spans.push({ kind: "plain", start: plainStart, end: cursor });
+    }
+    spans.push({ kind: "protected", start: cursor, end: protectedEnd });
     cursor = protectedEnd;
     plainStart = cursor;
   }
 
-  return output + formatUnprotectedText(value.slice(plainStart));
+  if (plainStart < value.length) {
+    spans.push({ kind: "plain", start: plainStart, end: value.length });
+  }
+  return spans;
 }
 
 function findProtectedRegionEnd(value: string, index: number): number | null {
@@ -69,6 +111,9 @@ function findProtectedRegionEnd(value: string, index: number): number | null {
   if (character === "~" && isLinePrefixWhitespace(value, index)) {
     return findCodeDelimiterEnd(value, index, "~", true);
   }
+  if (character === '"' || character === "'" || character === "“" || character === "‘") {
+    return findQuotedRegionEnd(value, index);
+  }
   if (character !== "<") {
     return null;
   }
@@ -76,26 +121,14 @@ function findProtectedRegionEnd(value: string, index: number): number | null {
     const end = value.indexOf("-->", index + 4);
     return end === -1 ? value.length : end + 3;
   }
-
-  const remainder = value.slice(index);
-  const blockTag = remainder.match(/^<\s*(script|style|code|pre)\b/i)?.[1];
-  if (blockTag !== undefined) {
-    const openingEnd = findHtmlTagEnd(value, index);
-    if (openingEnd === null) {
-      return value.length;
-    }
-    const lowerValue = value.toLowerCase();
-    const closingStart = lowerValue.indexOf(`</${blockTag.toLowerCase()}`, openingEnd);
-    if (closingStart === -1) {
-      return value.length;
-    }
-    return findHtmlTagEnd(value, closingStart) ?? value.length;
-  }
-
-  if (!/^<(?:\/?[A-Za-z]|![A-Za-z]|\?)/.test(remainder)) {
+  const tag = readHtmlTag(value, index);
+  if (tag === null) {
     return null;
   }
-  return findHtmlTagEnd(value, index);
+  if (tag.kind !== "opening" || tag.name === null) {
+    return tag.end;
+  }
+  return findHtmlElementEnd(value, tag);
 }
 
 function findCodeDelimiterEnd(
@@ -141,32 +174,180 @@ function findHtmlTagEnd(value: string, index: number): number | null {
   return null;
 }
 
+function readHtmlTag(value: string, index: number): HtmlTagToken | null {
+  if (value[index] !== "<") {
+    return null;
+  }
+
+  let cursor = index + 1;
+  while (/[ \t\r\n]/.test(value[cursor] ?? "")) {
+    cursor += 1;
+  }
+
+  if (value[cursor] === "!" || value[cursor] === "?") {
+    const end = findHtmlTagEnd(value, index);
+    return {
+      name: null,
+      kind: end === null ? "malformed" : "declaration",
+      end: end ?? value.length,
+    };
+  }
+
+  let closing = false;
+  if (value[cursor] === "/") {
+    closing = true;
+    cursor += 1;
+    while (/[ \t\r\n]/.test(value[cursor] ?? "")) {
+      cursor += 1;
+    }
+  }
+
+  if (!isHtmlNameStart(value[cursor])) {
+    return null;
+  }
+  const nameStart = cursor;
+  cursor += 1;
+  while (isHtmlNameCharacter(value[cursor])) {
+    cursor += 1;
+  }
+  const name = value.slice(nameStart, cursor);
+  const end = findHtmlTagEnd(value, index);
+  if (end === null) {
+    return { name, kind: "malformed", end: value.length };
+  }
+
+  let suffix = end - 2;
+  while (suffix > index && /[ \t\r\n]/.test(value[suffix] ?? "")) {
+    suffix -= 1;
+  }
+  return {
+    name,
+    kind: closing
+      ? "closing"
+      : value[suffix] === "/" || htmlVoidElements.has(name.toLowerCase())
+        ? "self-closing"
+        : "opening",
+    end,
+  };
+}
+
+function isHtmlNameStart(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z_]/.test(character);
+}
+
+function isHtmlNameCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9:._-]/.test(character);
+}
+
+function findHtmlElementEnd(value: string, opening: HtmlTagToken): number {
+  const openingName = opening.name?.toLowerCase();
+  if (openingName === undefined) {
+    return opening.end;
+  }
+  if (
+    openingName === "script" ||
+    openingName === "style" ||
+    openingName === "code" ||
+    openingName === "pre"
+  ) {
+    return findRawTextElementEnd(value, opening.end, openingName);
+  }
+
+  const stack = [openingName];
+  let cursor = opening.end;
+  while (cursor < value.length) {
+    const nextTagStart = value.indexOf("<", cursor);
+    if (nextTagStart === -1) {
+      return value.length;
+    }
+    if (value.startsWith("<!--", nextTagStart)) {
+      const commentEnd = value.indexOf("-->", nextTagStart + 4);
+      if (commentEnd === -1) {
+        return value.length;
+      }
+      cursor = commentEnd + 3;
+      continue;
+    }
+
+    const tag = readHtmlTag(value, nextTagStart);
+    if (tag === null) {
+      cursor = nextTagStart + 1;
+      continue;
+    }
+    if (tag.kind === "malformed") {
+      return value.length;
+    }
+    if (tag.kind === "opening" && tag.name !== null) {
+      stack.push(tag.name.toLowerCase());
+    } else if (tag.kind === "closing" && tag.name !== null) {
+      const closingName = tag.name.toLowerCase();
+      if (stack.at(-1) !== closingName) {
+        return value.length;
+      }
+      stack.pop();
+      if (stack.length === 0) {
+        return tag.end;
+      }
+    }
+    cursor = tag.end;
+  }
+  return value.length;
+}
+
+function findRawTextElementEnd(value: string, start: number, name: string): number {
+  const lowerValue = value.toLowerCase();
+  let cursor = start;
+  while (cursor < value.length) {
+    const closingStart = lowerValue.indexOf(`</${name}`, cursor);
+    if (closingStart === -1) {
+      return value.length;
+    }
+    const closing = readHtmlTag(value, closingStart);
+    if (closing?.kind === "closing" && closing.name?.toLowerCase() === name) {
+      return closing.end;
+    }
+    cursor = closingStart + 2;
+  }
+  return value.length;
+}
+
 function formatUnprotectedText(value: string): string {
+  const currencyRanges = findCurrencyRanges(value);
   let output = "";
   let plainStart = 0;
   let cursor = 0;
 
   while (cursor < value.length) {
+    const currency = rangeStartingAt(currencyRanges, cursor);
+    if (currency !== null) {
+      cursor = currency.end;
+      continue;
+    }
     if (value[cursor] !== "$" || isEscaped(value, cursor)) {
       cursor += 1;
       continue;
     }
 
     const delimiterLength = value[cursor + 1] === "$" ? 2 : 1;
-    if (delimiterLength === 1 && !canOpenInlineMath(value, cursor)) {
-      cursor += 1;
+    if (!canOpenMathDelimiter(value, cursor, delimiterLength)) {
+      cursor += delimiterLength;
       continue;
     }
 
-    const closingIndex = findClosingDelimiter(value, cursor + delimiterLength, delimiterLength);
+    const closingIndex = findClosingDelimiter(
+      value,
+      cursor + delimiterLength,
+      delimiterLength,
+      currencyRanges,
+    );
     if (closingIndex === -1) {
       cursor += delimiterLength;
       continue;
     }
 
     const math = value.slice(cursor + delimiterLength, closingIndex);
-    if (!looksLikeMath(math)) {
-      cursor = closingIndex + delimiterLength;
+    if (!isValidDelimitedMath(math)) {
+      cursor += delimiterLength;
       continue;
     }
 
@@ -179,27 +360,96 @@ function formatUnprotectedText(value: string): string {
   return output + formatImplicitText(value.slice(plainStart));
 }
 
-function canOpenInlineMath(value: string, index: number): boolean {
-  const next = value[index + 1];
-  return next !== undefined && /[\s\d\p{L}([{\\+\-−]/u.test(next);
+function findCurrencyRanges(value: string): readonly TextRange[] {
+  const ranges: TextRange[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "$" || value[index + 1] === "$" || isEscaped(value, index)) {
+      continue;
+    }
+    const amountEnd = consumeCurrencyAmount(value, index + 1);
+    if (amountEnd === null) {
+      continue;
+    }
+
+    const closing = findFirstInlineClosing(value, amountEnd);
+    if (closing !== -1 && isValidDelimitedMath(value.slice(index + 1, closing))) {
+      continue;
+    }
+    ranges.push({ start: index, end: amountEnd });
+    index = amountEnd - 1;
+  }
+  return ranges;
 }
 
-function findClosingDelimiter(value: string, start: number, delimiterLength: number): number {
+function consumeCurrencyAmount(value: string, start: number): number | null {
+  if (!/\d/.test(value[start] ?? "")) {
+    return null;
+  }
+
+  let cursor = start;
+  while (/\d/.test(value[cursor] ?? "")) {
+    cursor += 1;
+  }
+  while ((value[cursor] === "," || value[cursor] === ".") && /\d/.test(value[cursor + 1] ?? "")) {
+    cursor += 1;
+    while (/\d/.test(value[cursor] ?? "")) {
+      cursor += 1;
+    }
+  }
+  return cursor;
+}
+
+function findFirstInlineClosing(value: string, start: number): number {
+  for (let index = start; index < value.length; index += 1) {
+    if (
+      value[index] === "$" &&
+      value[index + 1] !== "$" &&
+      !isEscaped(value, index) &&
+      canCloseMathDelimiter(value, index, 1)
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function rangeStartingAt(ranges: readonly TextRange[], index: number): TextRange | null {
+  return ranges.find((range) => range.start === index) ?? null;
+}
+
+function canOpenMathDelimiter(value: string, index: number, delimiterLength: number): boolean {
+  const next = value[index + delimiterLength];
+  return next !== undefined && next !== "\r" && next !== "\n" && next !== "$";
+}
+
+function canCloseMathDelimiter(value: string, index: number, delimiterLength: number): boolean {
+  const next = value[index + delimiterLength];
+  return next === undefined || /[\s.,;:!?)}\]>'"]/u.test(next);
+}
+
+function findClosingDelimiter(
+  value: string,
+  start: number,
+  delimiterLength: number,
+  currencyRanges: readonly TextRange[],
+): number {
   const delimiter = "$".repeat(delimiterLength);
   for (let index = start; index <= value.length - delimiterLength; index += 1) {
+    const currency = rangeStartingAt(currencyRanges, index);
+    if (currency !== null) {
+      index = currency.end - 1;
+      continue;
+    }
     if (!value.startsWith(delimiter, index) || isEscaped(value, index)) {
       continue;
     }
     if (delimiterLength === 1 && value[index + 1] === "$") {
-      continue;
-    }
-    const next = value[index + delimiterLength];
-    if (next === undefined || /[\s.,;:!?)}\]]/.test(next)) {
-      return index;
-    }
-    if (delimiterLength === 1) {
       return -1;
     }
+    if (canCloseMathDelimiter(value, index, delimiterLength)) {
+      return index;
+    }
+    return -1;
   }
   return -1;
 }
@@ -224,6 +474,91 @@ function looksLikeMath(value: string): boolean {
     return true;
   }
   return /(?:\\+(?:cdot|times|prime)\b|[=^{}]|[+\-−*/×·]|[\p{L}\d]\s*′)/u.test(trimmed);
+}
+
+function isValidDelimitedMath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || containsUnescapedDollar(trimmed)) {
+    return false;
+  }
+
+  const repaired = repairUnmatchedMathClosers(trimmed, []);
+  const unwrapped = unwrapBalancedMathGroups(repaired);
+  if (!unwrapped || containsProseWord(unwrapped)) {
+    return false;
+  }
+  if (isCompleteMathExpression(unwrapped) || isCompleteEquation(unwrapped)) {
+    return true;
+  }
+  return looksLikeMath(unwrapped);
+}
+
+function containsUnescapedDollar(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "$" && !isEscaped(value, index)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function unwrapBalancedMathGroups(value: string): string {
+  let unwrapped = value.trim();
+  while (unwrapped.length >= 2) {
+    const opening = unwrapped[0] as MathOpeningDelimiter;
+    const closing = closingDelimiterFor(opening);
+    if (closing === null) {
+      break;
+    }
+    const closingIndex = findMatchingDelimiter(unwrapped, 0, opening, closing);
+    if (closingIndex !== unwrapped.length - 1) {
+      break;
+    }
+    unwrapped = unwrapped.slice(1, -1).trim();
+  }
+  return unwrapped;
+}
+
+function containsProseWord(value: string): boolean {
+  const mathWords = new Set(["cos", "exp", "ln", "log", "sin", "sqrt", "tan"]);
+  for (const match of value.matchAll(/\p{L}+/gu)) {
+    const word = match[0];
+    if (Array.from(word).length <= 1 || mathWords.has(word.toLowerCase())) {
+      continue;
+    }
+    const start = match.index;
+    if (start > 0 && value[start - 1] === "\\") {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+function isCompleteMathExpression(value: string): boolean {
+  const start = skipHorizontalWhitespace(value, 0);
+  const end = consumeMathExpression(value, start);
+  return end !== null && skipHorizontalWhitespace(value, end) === value.length;
+}
+
+function isCompleteEquation(value: string): boolean {
+  let equalsIndex = -1;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== "=" || isComparisonOperator(value, index)) {
+      continue;
+    }
+    if (equalsIndex !== -1) {
+      return false;
+    }
+    equalsIndex = index;
+  }
+  if (equalsIndex === -1) {
+    return false;
+  }
+
+  const left = value.slice(0, equalsIndex).trim();
+  const right = value.slice(equalsIndex + 1).trim();
+  return Boolean(left && right && isCompleteMathExpression(left) && isCompleteMathExpression(right));
 }
 
 function formatImplicitText(value: string): string {
@@ -276,7 +611,7 @@ function formatImplicitUnquoted(value: string): string {
   let cursor = 0;
   for (const range of ranges) {
     output += value.slice(cursor, range.start);
-    output += formatMathTokens(value.slice(range.start, range.end));
+    output += formatMathTokens(value.slice(range.start, range.end), delimiterStackBefore(value, range.start));
     cursor = range.end;
   }
   return output + value.slice(cursor);
@@ -299,7 +634,7 @@ function findImplicitEquationRanges(value: string): readonly TextRange[] {
       continue;
     }
 
-    ranges.push({ start, end });
+    ranges.push({ start, end: extendRangeThroughAdjacentClosers(value, end) });
     equalsIndex = end - 1;
   }
   return ranges;
@@ -425,16 +760,14 @@ function consumeExponentSuffix(value: string, factorEnd: number): number {
     if (closing === null) {
       return factorEnd;
     }
-    cursor = closing + 1;
-    return value[cursor] === "}" ? cursor + 1 : cursor;
+    return closing + 1;
   }
   if (value[cursor] === "(") {
     const closing = findMatchingDelimiter(value, cursor, "(", ")");
     if (closing === null) {
       return factorEnd;
     }
-    cursor = closing + 1;
-    return value[cursor] === ")" ? cursor + 1 : cursor;
+    return closing + 1;
   }
 
   const prime = value.slice(cursor).match(/^\\+prime\b/);
@@ -504,7 +837,7 @@ function findStructuredMathRanges(value: string): readonly TextRange[] {
       if (closing !== null) {
         ranges.push({
           start: index,
-          end: value[closing + 1] === "}" ? closing + 2 : closing + 1,
+          end: extendRangeThroughAdjacentClosers(value, closing + 1),
         });
       }
       continue;
@@ -514,7 +847,7 @@ function findStructuredMathRanges(value: string): readonly TextRange[] {
       if (closing !== null) {
         ranges.push({
           start: index,
-          end: value[closing + 1] === ")" ? closing + 2 : closing + 1,
+          end: extendRangeThroughAdjacentClosers(value, closing + 1),
         });
       }
       continue;
@@ -560,8 +893,11 @@ function mergeRanges(ranges: readonly TextRange[]): readonly TextRange[] {
   return merged;
 }
 
-function formatMathTokens(value: string): string {
-  const prepared = value
+function formatMathTokens(
+  value: string,
+  initialDelimiterStack: readonly MathOpeningDelimiter[] = [],
+): string {
+  const prepared = repairUnmatchedMathClosers(value, initialDelimiterStack)
     .replace(/\^\s*\{\s*\\+prime\s*\}/g, "′")
     .replace(/\^\s*\\+prime\b/g, "′")
     .replace(/\\+prime\b/g, "′")
@@ -613,8 +949,7 @@ function formatExponentAt(value: string, caretIndex: number): ExponentReplacemen
     if (formatted === null) {
       return null;
     }
-    const end = value[closing + 1] === "}" ? closing + 2 : closing + 1;
-    return { text: formatted, end };
+    return { text: formatted, end: closing + 1 };
   }
   if (value[exponentStart] === "(") {
     const closing = findMatchingDelimiter(value, exponentStart, "(", ")");
@@ -629,8 +964,7 @@ function formatExponentAt(value: string, caretIndex: number): ExponentReplacemen
     if (!normalized) {
       return null;
     }
-    const end = value[closing + 1] === ")" ? closing + 2 : closing + 1;
-    return { text: `^(${normalized})`, end };
+    return { text: `^(${normalized})`, end: closing + 1 };
   }
 
   if (/[+\-−]/.test(value[exponentStart] ?? "")) {
@@ -668,6 +1002,79 @@ function normalizeMathMinus(value: string): string {
   return value.replace(/^-(?=\s*[\p{L}\d])/u, "−").replace(/([=^(+\s])-(?=\s*[\p{L}\d])/gu, "$1−");
 }
 
+function extendRangeThroughAdjacentClosers(value: string, start: number): number {
+  let cursor = start;
+  while (value[cursor] === "}" || value[cursor] === ")" || value[cursor] === "]") {
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function delimiterStackBefore(value: string, end: number): readonly MathOpeningDelimiter[] {
+  const lineStart = value.lastIndexOf("\n", end - 1) + 1;
+  const stack: MathOpeningDelimiter[] = [];
+  updateDelimiterStack(value.slice(lineStart, end), stack, false);
+  return stack;
+}
+
+function repairUnmatchedMathClosers(value: string, initialStack: readonly MathOpeningDelimiter[]): string {
+  const stack = [...initialStack];
+  return updateDelimiterStack(value, stack, true);
+}
+
+function updateDelimiterStack(
+  value: string,
+  stack: MathOpeningDelimiter[],
+  removeProvenUnmatched: boolean,
+): string {
+  let output = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] ?? "";
+    if (isMathOpeningDelimiter(character) && !isEscaped(value, index)) {
+      stack.push(character);
+      if (removeProvenUnmatched) {
+        output += character;
+      }
+      continue;
+    }
+
+    const opening = openingDelimiterFor(character);
+    if (opening === null || isEscaped(value, index)) {
+      if (removeProvenUnmatched) {
+        output += character;
+      }
+      continue;
+    }
+
+    if (stack.at(-1) === opening) {
+      stack.pop();
+      if (removeProvenUnmatched) {
+        output += character;
+      }
+      continue;
+    }
+
+    if (stack.includes(opening)) {
+      if (removeProvenUnmatched) {
+        output += character;
+      }
+    }
+  }
+  return output;
+}
+
+function isMathOpeningDelimiter(character: string): character is MathOpeningDelimiter {
+  return character === "{" || character === "(" || character === "[";
+}
+
+function openingDelimiterFor(character: string): MathOpeningDelimiter | null {
+  return character === "}" ? "{" : character === ")" ? "(" : character === "]" ? "[" : null;
+}
+
+function closingDelimiterFor(opening: MathOpeningDelimiter): string | null {
+  return opening === "{" ? "}" : opening === "(" ? ")" : opening === "[" ? "]" : null;
+}
+
 function findMatchingDelimiter(
   value: string,
   openingIndex: number,
@@ -691,31 +1098,24 @@ function findMatchingDelimiter(
 function normalizeWhitespacePreservingProtectedRegions(value: string): string {
   const protectedRegions: { readonly placeholder: string; readonly text: string }[] = [];
   let masked = "";
-  let plainStart = 0;
-  let cursor = 0;
-
-  while (cursor < value.length) {
-    const protectedEnd = findProtectedRegionEnd(value, cursor);
-    if (protectedEnd === null) {
-      cursor += 1;
+  for (const span of tokenizeProtectedRegions(value)) {
+    const text = value.slice(span.start, span.end);
+    if (span.kind === "plain") {
+      masked += text;
       continue;
     }
-
     let placeholder = `\uE000summary-protected-${protectedRegions.length}\uE001`;
     while (value.includes(placeholder)) {
       placeholder += "\uE002";
     }
-    masked += value.slice(plainStart, cursor);
     masked += placeholder;
     protectedRegions.push({
       placeholder,
-      text: value.slice(cursor, protectedEnd),
+      text,
     });
-    cursor = protectedEnd;
-    plainStart = cursor;
   }
 
-  let normalized = normalizeWhitespace(masked + value.slice(plainStart));
+  let normalized = normalizeWhitespace(masked);
   for (const region of protectedRegions) {
     normalized = normalized.replaceAll(region.placeholder, region.text);
   }

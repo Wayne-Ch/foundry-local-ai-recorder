@@ -20,8 +20,14 @@ import {
   SUMMARY_MODEL_ID,
 } from "../src/foundry/runtime-config";
 import { RecorderController, type RecorderRuntime } from "../src/main/recorder-controller";
+import {
+  createPopulatedSummaryCaptureSnapshot,
+  POPULATED_SUMMARY_CAPTURE_FORMATTED,
+  POPULATED_SUMMARY_CAPTURE_RAW,
+} from "../src/main/ui-capture-fixture";
 import type { RuntimeReadiness } from "../src/shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../src/shared/safe-diagnostic";
+import { formatSummaryForDisplay } from "../src/summary/summary-format";
 
 const targets = resolveRuntimeTargets({});
 
@@ -195,6 +201,28 @@ describe("RecorderController", () => {
       detail: raw,
       summaryDisplayFormattingApplied: true,
     });
+  });
+
+  it("builds deterministic populated-summary UI evidence from the exact raw and formatted pair", () => {
+    const snapshot = createPopulatedSummaryCaptureSnapshot(
+      new RecorderController(new FakeRuntime()).bootstrap(),
+    );
+
+    expect(formatSummaryForDisplay(POPULATED_SUMMARY_CAPTURE_RAW)).toEqual({
+      text: POPULATED_SUMMARY_CAPTURE_FORMATTED,
+      formattingApplied: true,
+    });
+    expect(snapshot.transcript.finalText).toContain("Today we derived");
+    expect(snapshot.transcript.summary?.text).toBe(POPULATED_SUMMARY_CAPTURE_FORMATTED);
+    expect(snapshot.transcript.summary?.text).toContain("y′ = −2y");
+    expect(snapshot.transcript.summary?.text).toContain("e^(−2t)");
+    expect(snapshot.trace).toEqual([
+      expect.objectContaining({
+        phase: "summary-raw",
+        detail: POPULATED_SUMMARY_CAPTURE_RAW,
+        summaryDisplayFormattingApplied: true,
+      }),
+    ]);
   });
 
   it("uses the same summary formatter after imported WAV transcription", async () => {

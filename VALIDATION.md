@@ -24,9 +24,9 @@ Runtime log evidence:
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 47 files checked |
+| `npm run lint` | Pass; 48 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 11 files, 157 tests |
+| `npm test` | Pass; 11 files, 175 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
 
@@ -38,14 +38,19 @@ Unit coverage includes:
 - exact newlines, repeated spaces, Unicode, and punctuation preserved through runtime, controller,
   durable snapshot, submitted snapshot, and Qwen prompt construction;
 - summary prompt enforcement for concise plain text and readable Unicode notation;
-- span-aware summary display formatting for both observed malformed ODE outputs, inline/display
-  dollar delimiters, bounded implicit equations, `\cdot`, `\times`, primes, braced exponents,
-  safe single-token superscripts, multiple equations, and one simple extra exponent closer;
+- left-to-right protected-span and dollar-delimiter scanning for both observed malformed ODE
+  outputs, tight/spaced inline and display math, independent currency tokens, escaped/unmatched
+  dollars, bounded implicit equations, `\cdot`, `\times`, primes, braced exponents, safe
+  single-token superscripts, and multiple equations;
+- delimiter-stack repair that removes only locally proven unmatched closers while preserving
+  balanced outer braces/parentheses such as `{e^(−2t)}` and `f(e^(−2t))`;
 - no invented grouping for unbraced multi-token exponents, plus idempotent preservation of
-  Windows/UNC/POSIX paths, literal and quoted commands, currency, inline/fenced code, HTML/script
-  literals, nested or unmatched braces, ordinary prose, Unicode, and intentional bullets;
+  Windows/UNC/POSIX paths, literal and quoted commands, currency, inline/fenced code, complete
+  generic HTML/XML-like elements, malformed tags, script/style/code/pre content, nested or
+  unmatched braces, ordinary prose, Unicode, and intentional bullets;
 - pathological whitespace normalization outside protected code/HTML regions, exact raw Qwen trace
-  evidence, the formatted editable-summary split, and the shared recording/import summary path;
+  evidence, textarea/textContent-only rendering, the formatted editable-summary split, the shared
+  recording/import summary path, and the deterministic populated-summary capture fixture;
 - audio format, byte, duration, queue, and sequence bounds;
 - exact 30-second accumulation, one-frame overflow trimming, multi-chunk boundary crossing, and
   automatic/manual Stop race;
@@ -96,10 +101,10 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,300 ms |
-| Stop to Whisper final | 523 ms |
-| Transcript final to summary | 4,254 ms |
-| Qwen generation | 4,249 ms |
+| First live caption | 1,289 ms |
+| Stop to Whisper final | 486 ms |
+| Transcript final to summary | 2,875 ms |
+| Qwen generation | 2,872 ms |
 | Qwen prompt/completion tokens | 277 / 52 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
@@ -164,9 +169,9 @@ Result: `SUMMARY_INTEGRATION_OK`
 
 | Prompt | Latency | Prompt tokens | Completion tokens |
 |---|---:|---:|---:|
-| ODE solution | 3,944 ms | 262 | 44 |
-| Euler comparison | 17,200 ms | 248 | 33 |
-| Solution procedure | 11,617 ms | 246 | 56 |
+| ODE solution | 2,633 ms | 262 | 44 |
+| Euler comparison | 2,520 ms | 248 | 33 |
+| Solution procedure | 3,000 ms | 246 | 56 |
 
 All three runs returned nonempty bounded user-visible output. Each run asserts exact submitted
 transcript input, no raw math dollar delimiter, and formatter stability on a second pass. This
@@ -184,19 +189,26 @@ reasoning mode exhausting the 260-token output budget.
 | `npm run smoke:electron` | `ELECTRON_SMOKE_OK` |
 | `npm run probe:microphone-permission` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
 | `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
-| `npm run capture:ui` | `UI_CAPTURE_OK`; captured stage inspected successfully |
+| `npm run capture:ui` | `UI_CAPTURE_OK`; deterministic populated-summary capture inspected successfully |
 
 No Electron or recorder process started by these validation commands remained. The shared machine
 already had an OS-installed `foundrylocald` listener started on 2026-10-29, before this worktree
 session; it was not used by the in-process runtime and was not terminated because it is not owned by
 this validation run.
 
-Stage screenshot:
+Populated-summary screenshot:
 
-`artifacts\smart-ai-recorder-stage.png`
+`artifacts\smart-ai-recorder-populated-summary.png`
 
-The screenshot is intentionally untracked and remains available in the local worktree artifact
-directory.
+The capture-only bootstrap fixture renders a final transcript, the formatted summary text
+`y′ = −2y` and `e^(−2t)`, and an expanded `summary-raw` trace row containing the exact Qwen-like
+source `$ y' = -2y $` and `$ e^{-2t}} $` with **Summary display formatting applied**. The
+`BrowserWindow` is 1600×900; the deterministic capture scroll position keeps the final transcript,
+summary, raw trace, and flag visible together. Inspection found no horizontal overflow, clipped
+textarea content, or clipped trace text.
+
+The PNG is intentionally untracked under the repository's ignored `artifacts\` directory. The
+tracked `npm run capture:ui` path rebuilds the app and reproduces it at the path above.
 
 ## Local inference boundary
 
