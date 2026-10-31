@@ -37,10 +37,12 @@ Thinking is disabled through `chat_template_kwargs` so the small model spends it
 budget on the summary. The prompt requests concise plain text with readable Unicode notation, but
 the application does not trust prompt compliance: the controller retains the exact raw Qwen text
 in Developer Trace, applies one deterministic display formatter, and stores only that formatted
-text in the editable Summary state. The formatter removes math delimiters, converts the narrow
-supported token set (for example `\cdot`, primes, and simple exponents), removes unmatched math
-braces, and normalizes pathological whitespace without parsing HTML or Markdown. A non-`stop`,
-empty, stale-version, or oversized result fails visibly.
+text in the editable Summary state. The formatter converts a narrow token set only inside explicit
+dollar-delimited math or confidently bounded equation-like spans. It protects code and HTML
+literals, leaves paths and quoted or prose backslash commands intact, preserves ambiguous
+unbraced exponents, repairs only simple attached exponent closers, and normalizes pathological
+whitespace outside protected regions. A non-`stop`, empty, stale-version, or oversized result
+fails visibly.
 
 ## Windows setup
 
@@ -167,9 +169,10 @@ Other paths:
 - 30-second bounded capture; this is a classroom demo bound, not a lecture-length stability claim.
 - Imported WAV files must already be PCM16LE, 16 kHz, mono.
 - The small Qwen model is concise and fast on this machine, but its raw response can render
-  mathematical notation imperfectly. The narrow display formatter repairs known delimiter,
-  command, exponent, brace, and whitespace artifacts; model wording remains explicitly
-  AI-generated and editable.
+  mathematical notation imperfectly. The narrow display formatter repairs known artifacts only in
+  explicit or strongly signaled math spans; ambiguous prose, paths, literal commands, and
+  unbraced multi-token exponents remain unchanged. Model wording remains explicitly AI-generated
+  and editable.
 - Physical network-disconnect rehearsal remains a manual release gate. Passing integration tests
   proves in-process local inference and no application cloud endpoint, not that every machine-level
   network path was physically disconnected.

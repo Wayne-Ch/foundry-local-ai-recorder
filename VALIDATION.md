@@ -26,7 +26,7 @@ Runtime log evidence:
 |---|---|
 | `npm run lint` | Pass; 47 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 11 files, 132 tests |
+| `npm test` | Pass; 11 files, 157 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
 
@@ -38,12 +38,14 @@ Unit coverage includes:
 - exact newlines, repeated spaces, Unicode, and punctuation preserved through runtime, controller,
   durable snapshot, submitted snapshot, and Qwen prompt construction;
 - summary prompt enforcement for concise plain text and readable Unicode notation;
-- deterministic summary display formatting for both observed malformed ODE outputs, inline/display
-  dollar delimiters, `\cdot`, `\times`, primes, simple superscripts/exponents, unmatched math
-  braces, multiple equations, and pathological whitespace;
-- unchanged correct plain text and Unicode, preserved currency dollar signs and ordinary prose
-  braces, literal script-like text, intentional bullets/paragraphs, exact raw Qwen trace evidence,
-  and the shared recording/import summary path;
+- span-aware summary display formatting for both observed malformed ODE outputs, inline/display
+  dollar delimiters, bounded implicit equations, `\cdot`, `\times`, primes, braced exponents,
+  safe single-token superscripts, multiple equations, and one simple extra exponent closer;
+- no invented grouping for unbraced multi-token exponents, plus idempotent preservation of
+  Windows/UNC/POSIX paths, literal and quoted commands, currency, inline/fenced code, HTML/script
+  literals, nested or unmatched braces, ordinary prose, Unicode, and intentional bullets;
+- pathological whitespace normalization outside protected code/HTML regions, exact raw Qwen trace
+  evidence, the formatted editable-summary split, and the shared recording/import summary path;
 - audio format, byte, duration, queue, and sequence bounds;
 - exact 30-second accumulation, one-frame overflow trimming, multi-chunk boundary crossing, and
   automatic/manual Stop race;
@@ -94,10 +96,10 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,281 ms |
-| Stop to Whisper final | 595 ms |
-| Transcript final to summary | 3,829 ms |
-| Qwen generation | 3,824 ms |
+| First live caption | 1,300 ms |
+| Stop to Whisper final | 523 ms |
+| Transcript final to summary | 4,254 ms |
+| Qwen generation | 4,249 ms |
 | Qwen prompt/completion tokens | 277 / 52 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
@@ -162,17 +164,18 @@ Result: `SUMMARY_INTEGRATION_OK`
 
 | Prompt | Latency | Prompt tokens | Completion tokens |
 |---|---:|---:|---:|
-| ODE solution | 2,967 ms | 262 | 44 |
-| Euler comparison | 3,931 ms | 248 | 33 |
-| Solution procedure | 3,405 ms | 246 | 56 |
+| ODE solution | 3,944 ms | 262 | 44 |
+| Euler comparison | 17,200 ms | 248 | 33 |
+| Solution procedure | 11,617 ms | 246 | 56 |
 
 All three runs returned nonempty bounded user-visible output. Each run asserts exact submitted
-transcript input, no raw math dollar delimiter, no `\cdot`/`\times`/`\prime`, no braced exponent,
-no malformed exponent, and no unmatched brace. In the ODE run, raw Qwen emitted `y'` and
-`e^(−2t))`; the display result was `y′` and `e^(−2t)`. The integration evidence logs both the exact
-raw Qwen response and the formatted display text plus the trace flag that says whether formatting
-was applied. Qwen thinking was disabled via `chat_template_kwargs` after an initial validation run
-showed the default reasoning mode exhausting the 260-token output budget.
+transcript input, no raw math dollar delimiter, and formatter stability on a second pass. This
+allows intentional literal commands outside math while still proving that every supported display
+repair was completed. In the ODE run, raw Qwen emitted `y'` and `e^(−2t))`; the display result was
+`y′` and `e^(−2t)`. The integration evidence logs both the exact raw Qwen response and the
+formatted display text plus the trace flag that says whether formatting was applied. Qwen thinking
+was disabled via `chat_template_kwargs` after an initial validation run showed the default
+reasoning mode exhausting the 260-token output budget.
 
 ## Electron validation
 
@@ -182,7 +185,6 @@ showed the default reasoning mode exhausting the 260-token output budget.
 | `npm run probe:microphone-permission` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
 | `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
 | `npm run capture:ui` | `UI_CAPTURE_OK`; captured stage inspected successfully |
-| Validation-only DevTools summary capture | `SUMMARY_UI_CAPTURE_OK`; populated Summary showed `y′ = −2y` and `e^(−2t)`, while Developer Trace preserved the raw response and displayed `Summary display formatting applied` |
 
 No Electron or recorder process started by these validation commands remained. The shared machine
 already had an OS-installed `foundrylocald` listener started on 2026-10-29, before this worktree
@@ -193,11 +195,7 @@ Stage screenshot:
 
 `artifacts\smart-ai-recorder-stage.png`
 
-Populated summary screenshot:
-
-`artifacts\smart-ai-recorder-summary.png`
-
-The screenshots are intentionally untracked and remain available in the local worktree artifact
+The screenshot is intentionally untracked and remains available in the local worktree artifact
 directory.
 
 ## Local inference boundary
@@ -240,6 +238,8 @@ cloud endpoint**, not as a completed physically offline rehearsal.
 - English only.
 - PCM16LE/16 kHz/mono WAV import only.
 - The Qwen 0.6B model can format equations imperfectly. Known notation artifacts are repaired only
-  for display; raw text remains trace evidence, and the editable summary is not a citation source.
+  in explicit or strongly signaled math spans for display; ambiguous notation and literal commands
+  remain unchanged, raw text remains trace evidence, and the editable summary is not a citation
+  source.
 - No transcript/summary export or persistence.
 - No image processing.

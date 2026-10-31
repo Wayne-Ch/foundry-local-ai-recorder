@@ -4,6 +4,7 @@ import path from "node:path";
 import { extractPcm16FromWav } from "../src/audio/audio-contract";
 import { AUDIO_STREAM_CHUNK_BYTES } from "../src/audio/audio-types";
 import { resolveRecorderPaths } from "../src/foundry/paths";
+import { formatSummaryForDisplay } from "../src/summary/summary-format";
 
 export const fixturePath = path.resolve("fixtures", "ode-lesson.wav");
 export const expectedWords = [
@@ -40,10 +41,11 @@ export function assertSummaryDisplayText(text: string): void {
   assert.ok(text.length > 20, "Summary must be nonempty and substantive.");
   assert.ok(text.length <= 2_500, "Summary must remain bounded.");
   assert.equal(hasRawMathDollarDelimiter(text), false, `Summary retained a raw math $ delimiter: ${text}`);
-  assert.doesNotMatch(text, /\\+(?:cdot|times|prime)\b/, `Summary retained a LaTeX command: ${text}`);
-  assert.doesNotMatch(text, /[A-Za-z0-9)\]]\s*\^\s*\{/, `Summary retained a braced exponent: ${text}`);
-  assert.equal(hasUnmatchedExponentCloser(text), false, `Summary retained a malformed exponent: ${text}`);
-  assert.equal(hasUnmatchedBraces(text), false, `Summary retained unmatched braces: ${text}`);
+  assert.equal(
+    formatSummaryForDisplay(text).text,
+    text,
+    "Summary display text must be stable under a second formatting pass.",
+  );
 }
 
 export async function listOwnedTempFiles(): Promise<readonly string[]> {
@@ -81,37 +83,6 @@ function hasRawMathDollarDelimiter(value: string): boolean {
       (next === undefined || /[\s.,;:!?]/.test(next))
     ) {
       return true;
-    }
-  }
-  return false;
-}
-
-function hasUnmatchedBraces(value: string): boolean {
-  let depth = 0;
-  for (const character of value) {
-    if (character === "{") {
-      depth += 1;
-    } else if (character === "}") {
-      depth -= 1;
-      if (depth < 0) {
-        return true;
-      }
-    }
-  }
-  return depth !== 0;
-}
-
-function hasUnmatchedExponentCloser(value: string): boolean {
-  const characters = Array.from(value);
-  const parentheses: number[] = [];
-  for (const [index, character] of characters.entries()) {
-    if (character === "(") {
-      parentheses.push(index);
-    } else if (character === ")" && parentheses.pop() === undefined) {
-      const before = characters.slice(Math.max(0, index - 120), index).join("");
-      if (/\^\([^()\r\n]*\)\)*$/.test(before)) {
-        return true;
-      }
     }
   }
   return false;

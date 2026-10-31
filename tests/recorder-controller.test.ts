@@ -175,7 +175,7 @@ describe("RecorderController", () => {
   });
 
   it("stores formatted summary text and preserves the exact raw Qwen response in trace evidence", async () => {
-    const raw = String.raw`The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`;
+    const raw = String.raw`Keep C:\times\reports and \cdot literal. The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`;
     const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
     const controller = new RecorderController(runtime);
 
@@ -189,7 +189,7 @@ describe("RecorderController", () => {
     const summary = await controller.generateSummary();
 
     expect(summary.snapshot.transcript.summary?.text).toBe(
-      "The solution is expressed as y(t) = c · e^(−2t), where c is the initial constant.",
+      String.raw`Keep C:\times\reports and \cdot literal. The solution is expressed as y(t) = c · e^(−2t), where c is the initial constant.`,
     );
     expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
       detail: raw,
