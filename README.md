@@ -34,7 +34,13 @@ that returned string without trimming or whitespace normalization, and removes t
 
 Qwen uses `ChatSession`, system/user messages, `preflightRequest()`, and `processRequest()`.
 Thinking is disabled through `chat_template_kwargs` so the small model spends its bounded output
-budget on the summary. A non-`stop`, empty, stale-version, or oversized result fails visibly.
+budget on the summary. The prompt requests concise plain text with readable Unicode notation, but
+the application does not trust prompt compliance: the controller retains the exact raw Qwen text
+in Developer Trace, applies one deterministic display formatter, and stores only that formatted
+text in the editable Summary state. The formatter removes math delimiters, converts the narrow
+supported token set (for example `\cdot`, primes, and simple exponents), removes unmatched math
+braces, and normalizes pathological whitespace without parsing HTML or Markdown. A non-`stop`,
+empty, stale-version, or oversized result fails visibly.
 
 ## Windows setup
 
@@ -90,7 +96,11 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
   Stop races have one winner, and the final PCM cannot exceed exactly 30 seconds.
 - The final transcript is editable. A correction increments its version and invalidates a prior
   summary.
-- **Generate summary** submits only the current final transcript version.
+- **Generate summary** submits only the current final transcript version. Recorded audio and
+  imported WAV files converge on this same summary path.
+- Developer Trace keeps the exact raw Qwen response and records whether display formatting was
+  applied. The editable Summary textarea receives the formatted text, and user edits continue from
+  that formatted value.
 - **Delete / reset** cancels and discards an active recording without calling Nemotron finish,
   Whisper, or Qwen; it then removes owned temporary audio and clears transcript, summary, timing,
   and trace state.
@@ -156,8 +166,10 @@ Other paths:
 - English speech only.
 - 30-second bounded capture; this is a classroom demo bound, not a lecture-length stability claim.
 - Imported WAV files must already be PCM16LE, 16 kHz, mono.
-- The small Qwen model is concise and fast on this machine, but can render mathematical notation
-  imperfectly; the summary is explicitly AI-generated and editable.
+- The small Qwen model is concise and fast on this machine, but its raw response can render
+  mathematical notation imperfectly. The narrow display formatter repairs known delimiter,
+  command, exponent, brace, and whitespace artifacts; model wording remains explicitly
+  AI-generated and editable.
 - Physical network-disconnect rehearsal remains a manual release gate. Passing integration tests
   proves in-process local inference and no application cloud endpoint, not that every machine-level
   network path was physically disconnected.

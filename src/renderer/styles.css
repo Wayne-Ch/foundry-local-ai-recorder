@@ -559,6 +559,18 @@ textarea:disabled {
 
 .trace-row p {
   line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.trace-detail {
+  min-width: 0;
+}
+
+.trace-formatting {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
 }
 
 .trace-warning strong {

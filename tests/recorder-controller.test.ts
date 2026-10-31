@@ -1,5 +1,6 @@
 import type { RequestPreflightResult, Response } from "foundry-local-sdk";
 import { describe, expect, it } from "vitest";
+import { encodePcm16Wav } from "../src/audio/audio-contract";
 import {
   AUDIO_CHANNELS,
   AUDIO_EXECUTION_PROVIDER,
@@ -59,6 +60,7 @@ class FakeRuntime implements RecorderRuntime {
   constructor(
     readonly finalTranscript = "Whisper authoritative final transcript.",
     readonly transcriptionError: Error | null = null,
+    readonly summaryText = "Overview.\n\n- Key point.",
   ) {}
 
   async prepare(): Promise<PrepareRuntimeResult> {
@@ -116,7 +118,7 @@ class FakeRuntime implements RecorderRuntime {
   async summarize(transcript: string): Promise<SummaryGenerationResult> {
     this.summaryInput = transcript;
     return {
-      text: "Overview.\n\n- Key point.",
+      text: this.summaryText,
       durationMs: 800,
       model: {
         role: "summary",
@@ -127,7 +129,7 @@ class FakeRuntime implements RecorderRuntime {
         fileSizeMb: 600,
       },
       preflight: preflight(),
-      response: response(),
+      response: response(this.summaryText),
     };
   }
 
@@ -170,6 +172,42 @@ describe("RecorderController", () => {
     expect(runtime.summaryInput).not.toContain("Nemotron terminal");
     expect(summary.summaryInput).toBe(runtime.summaryInput);
     expect(summary.snapshot.transcript.summary?.transcriptVersion).toBe(1);
+  });
+
+  it("stores formatted summary text and preserves the exact raw Qwen response in trace evidence", async () => {
+    const raw = String.raw`The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`;
+    const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
+    const controller = new RecorderController(runtime);
+
+    await controller.transcribeCapture({
+      format: AUDIO_FORMAT,
+      sampleRate: AUDIO_SAMPLE_RATE,
+      channels: AUDIO_CHANNELS,
+      durationMs: 1_000,
+      data: new ArrayBuffer(32_000),
+    });
+    const summary = await controller.generateSummary();
+
+    expect(summary.snapshot.transcript.summary?.text).toBe(
+      "The solution is expressed as y(t) = c · e^(−2t), where c is the initial constant.",
+    );
+    expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
+      detail: raw,
+      summaryDisplayFormattingApplied: true,
+    });
+  });
+
+  it("uses the same summary formatter after imported WAV transcription", async () => {
+    const raw = String.raw`It describes $ y' = -2y $ and $ y(t) = c \cdot e^{-2t}} $.`;
+    const runtime = new FakeRuntime("Imported Whisper final.", null, raw);
+    const controller = new RecorderController(runtime);
+    const wav = encodePcm16Wav(new Uint8Array(32_000));
+
+    await controller.transcribeImportedWav("fixture.wav", wav);
+    const summary = await controller.generateSummary();
+
+    expect(runtime.summaryInput).toBe("Imported Whisper final.");
+    expect(summary.snapshot.transcript.summary?.text).toBe("It describes y′ = −2y and y(t) = c · e^(−2t).");
   });
 
   it("invalidates the summary when the final transcript is corrected", async () => {
@@ -372,9 +410,9 @@ function preflight(): RequestPreflightResult {
   };
 }
 
-function response(): Response {
+function response(text = "Overview.\n\n- Key point."): Response {
   return {
-    output: [{ type: "text", text: "Overview.\n\n- Key point." }],
+    output: [{ type: "text", text }],
     finishReason: "stop",
     usage: { promptTokens: 50, completionTokens: 20, totalTokens: 70 },
   };

@@ -760,8 +760,19 @@ function renderTrace(trace: readonly TraceEntry[]): void {
         responsibility.textContent = entry.responsibility;
         const phase = document.createElement("span");
         phase.textContent = entry.phase;
-        const detail = document.createElement("p");
-        detail.textContent = entry.detail;
+        const detail = document.createElement("div");
+        detail.className = "trace-detail";
+        const detailText = document.createElement("p");
+        detailText.textContent = entry.detail;
+        detail.append(detailText);
+        if (entry.summaryDisplayFormattingApplied !== undefined) {
+          const formatting = document.createElement("span");
+          formatting.className = "trace-formatting";
+          formatting.textContent = entry.summaryDisplayFormattingApplied
+            ? "Summary display formatting applied"
+            : "Summary display formatting not needed";
+          detail.append(formatting);
+        }
         const timing = document.createElement("time");
         timing.textContent = `${new Date(entry.at).toLocaleTimeString()}${
           entry.durationMs === undefined ? "" : ` · ${entry.durationMs} ms`

@@ -8,7 +8,14 @@ import {
 } from "../src/audio/audio-types";
 import { RecorderController } from "../src/main/recorder-controller";
 import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
-import { chunks, keywordRecall, listOwnedTempFiles, loadFixturePcm, sleep } from "./integration-utils";
+import {
+  assertSummaryDisplayText,
+  chunks,
+  keywordRecall,
+  listOwnedTempFiles,
+  loadFixturePcm,
+  sleep,
+} from "./integration-utils";
 
 const controller = new RecorderController();
 const before = await listOwnedTempFiles();
@@ -71,6 +78,9 @@ try {
   assert.equal(live.result.externalEndpointUsed, false);
   assert.equal(final.result.externalEndpointUsed, false);
   assert.equal(summary.snapshot.transcript.summary?.transcriptVersion, final.snapshot.transcript.version);
+  assertSummaryDisplayText(summary.snapshot.transcript.summary?.text ?? "");
+  const rawSummaryTrace = summary.snapshot.trace.findLast((entry) => entry.phase === "summary-raw");
+  assert.ok(rawSummaryTrace !== undefined, "Developer Trace must retain the raw Qwen response.");
   assert.deepEqual(await listOwnedTempFiles(), before);
   console.log(
     `CHAIN_INTEGRATION_OK ${JSON.stringify({
@@ -81,6 +91,8 @@ try {
       nemotronTerminal: live.result.transcript,
       whisperFinal: final.result.transcript,
       summary: summary.snapshot.transcript.summary,
+      rawSummary: rawSummaryTrace.detail,
+      summaryDisplayFormattingApplied: rawSummaryTrace.summaryDisplayFormattingApplied,
       summaryInputEqualsWhisperFinal: summary.summaryInput === final.result.transcript,
       summaryInputLength: summary.summaryInput.length,
       inProcessModeValidated: summary.snapshot.readiness.inProcessModeValidated,

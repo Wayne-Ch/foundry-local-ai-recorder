@@ -102,6 +102,7 @@ export interface TraceEntry {
   readonly detail: string;
   readonly severity: "info" | "warning" | "error";
   readonly durationMs?: number;
+  readonly summaryDisplayFormattingApplied?: boolean;
 }
 
 export interface PipelineTiming {

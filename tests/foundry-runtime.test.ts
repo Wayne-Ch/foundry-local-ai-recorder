@@ -41,6 +41,7 @@ describe("FoundryRecorderRuntime", () => {
   it("preserves exact Whisper text through the controller and exact Qwen prompt input", async () => {
     const root = await createTempRoot();
     const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
+    const rawSummary = "\n  Summary with exact outer whitespace.  \n";
     let summaryPrompt = "";
     const manager = new FakeManager(createModels());
     const runtime = createRuntime(root, [manager], {
@@ -56,7 +57,7 @@ describe("FoundryRecorderRuntime", () => {
               throw new Error("Expected a text user message.");
             }
             summaryPrompt = userMessage.content;
-            return textResponse("Summary.");
+            return textResponse(rawSummary);
           },
         }),
     });
@@ -71,6 +72,11 @@ describe("FoundryRecorderRuntime", () => {
       expect(final.snapshot.transcript.finalText).toBe(exact);
       expect(summary.summaryInput).toBe(exact);
       expect(summaryPrompt).toBe(summaryUserPrompt(exact));
+      expect(summary.snapshot.transcript.summary?.text).toBe("Summary with exact outer whitespace.");
+      expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
+        detail: rawSummary,
+        summaryDisplayFormattingApplied: true,
+      });
       expect(await ownedTempFiles(root)).toEqual([]);
     } finally {
       await controller.shutdown();

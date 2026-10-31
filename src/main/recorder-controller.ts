@@ -41,6 +41,7 @@ import type {
   TranscriptionResponse,
 } from "../shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
+import { formatSummaryForDisplay } from "../summary/summary-format";
 import { TranscriptStore } from "../transcript/transcript-store";
 
 const TRACE_LIMIT = 250;
@@ -318,8 +319,17 @@ export class RecorderController {
     try {
       const result = await this.#runtime.summarize(submitted.text);
       this.#assertCurrent(generation);
+      const displaySummary = formatSummaryForDisplay(result.text);
+      this.#traceEvent(
+        "Foundry Local",
+        "summary-raw",
+        result.text,
+        "info",
+        undefined,
+        displaySummary.formattingApplied,
+      );
       this.#transcript.applySummary({
-        text: result.text,
+        text: displaySummary.text,
         transcriptVersion: submitted.version,
         generatedAt: new Date().toISOString(),
         modelId: result.model.id,
@@ -336,7 +346,9 @@ export class RecorderController {
       this.#traceEvent(
         "Foundry Local",
         "summary-final",
-        `${result.model.id} produced a bounded summary from transcript version ${submitted.version}.`,
+        `${result.model.id} produced a bounded summary from transcript version ${submitted.version}; display formatting ${
+          displaySummary.formattingApplied ? "was applied" : "was not needed"
+        }.`,
         "info",
         result.durationMs,
       );
@@ -458,6 +470,7 @@ export class RecorderController {
     detail: string,
     severity: TraceEntry["severity"] = "info",
     durationMs?: number,
+    summaryDisplayFormattingApplied?: boolean,
   ): void {
     this.#trace.push({
       at: new Date().toISOString(),
@@ -466,6 +479,7 @@ export class RecorderController {
       detail,
       severity,
       ...(durationMs === undefined ? {} : { durationMs }),
+      ...(summaryDisplayFormattingApplied === undefined ? {} : { summaryDisplayFormattingApplied }),
     });
     if (this.#trace.length > TRACE_LIMIT) {
       this.#trace.splice(0, this.#trace.length - TRACE_LIMIT);

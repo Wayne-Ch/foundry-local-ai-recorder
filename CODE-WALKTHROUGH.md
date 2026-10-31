@@ -108,7 +108,8 @@ Message:
 ## 8:00-9:30 — Summary preflight and exact input
 
 **Files:** `src/main/recorder-controller.ts`, `src/summary/summary-prompt.ts`,
-`src/foundry/foundry-runtime.ts`
+`src/summary/summary-format.ts`, `src/foundry/foundry-runtime.ts`,
+`src/renderer/app.ts`
 
 Show:
 
@@ -116,12 +117,17 @@ Show:
 - the trace line stating live captions are excluded;
 - `preflightRequest`;
 - Qwen's `enable_thinking: false`;
+- the raw `summary-raw` trace entry and `summaryDisplayFormattingApplied` field;
+- the single controller-side display formatter used after either recorded or imported audio;
+- literal textarea/`textContent` rendering rather than HTML or Markdown interpretation;
 - non-`stop` and empty-output failures.
 
 Message:
 
 > The controller passes the exact submitted Whisper string. The model cannot reach live draft
-> state, and a stale transcript version prevents the result from being attached.
+> state, and a stale transcript version prevents the result from being attached. Qwen's exact raw
+> response remains in Developer Trace; only the deterministic plain-text display form enters the
+> editable Summary state.
 
 ## 9:30-10:45 — Model preparation preserves working slots
 
@@ -174,6 +180,9 @@ The key regression asserts:
 expect(summary.summaryInput).toBe(final.result.transcript);
 expect(summary.summaryInput).not.toContain("live partial");
 expect(summary.summaryInput).not.toContain("Nemotron terminal");
+expect(summary.snapshot.transcript.summary?.text).not.toContain("\\cdot");
+expect(summary.snapshot.trace.findLast((entry) => entry.phase === "summary-raw")?.detail)
+  .toBe(rawQwenResponse);
 ```
 
 Close with the measured exact-model chain and the still-open physical network-disconnect gate.

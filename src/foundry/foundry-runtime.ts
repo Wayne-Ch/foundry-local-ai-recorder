@@ -534,7 +534,7 @@ export class FoundryRecorderRuntime {
             throw new Error(`Summary generation ended with ${response.finishReason}.`);
           }
           const text = extractDefaultText(response);
-          if (!text) {
+          if (!text.trim()) {
             throw new Error("The local summary model returned no text.");
           }
           if (text.length > 2_500) {
@@ -1720,5 +1720,5 @@ function extractDefaultText(response: Response): string {
       }
     }
   }
-  return parts.join("").trim();
+  return parts.join("");
 }
