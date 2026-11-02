@@ -1,5 +1,10 @@
+import { Buffer } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
 import type { AssistantLaneSnapshot } from "../src/assistant/assistant-types";
+import type {
+  AssistantImageByteLifecycle,
+  AssistantImageBytePurpose,
+} from "../src/assistant/image-byte-lifecycle";
 import {
   type AssistantImagePickerDependencies,
   type AssistantImagePickerGuard,
@@ -49,7 +54,8 @@ describe("assistant image picker ownership", () => {
 
   it("zeroes file and validated copies when Reset wins during delayed decode/thumbnail", async () => {
     const thumbnail = deferred<string>();
-    const fileBytes = pngHeader();
+    const fileBytes = Buffer.from(pngHeader());
+    const lifecycle = new TrackingImageByteLifecycle();
     let validatedBytes: Uint8Array | null = null;
     let current = true;
     const commit = vi.fn();
@@ -61,6 +67,7 @@ describe("assistant image picker ownership", () => {
           thumbnail.markStarted();
           return thumbnail.promise;
         },
+        imageByteLifecycle: lifecycle,
       }),
       guard(() => current, commit),
     );
@@ -73,6 +80,11 @@ describe("assistant image picker ownership", () => {
     expect(fileBytes.every((value) => value === 0)).toBe(true);
     expect(validatedBytes).not.toBeNull();
     expect((validatedBytes as unknown as Uint8Array).every((value) => value === 0)).toBe(true);
+    expect(lifecycle.releases).toEqual([
+      { bytes: fileBytes, purpose: "picker-file" },
+      { bytes: validatedBytes, purpose: "validated-image" },
+    ]);
+    expect(new Set(lifecycle.releases.map((release) => release.bytes)).size).toBe(2);
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -135,6 +147,22 @@ function pngHeader(): Uint8Array {
   bytes.set([0x49, 0x48, 0x44, 0x52], 12);
   bytes.set([0, 0, 0, 1, 0, 0, 0, 1], 16);
   return bytes;
+}
+
+class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {
+  readonly releases: Array<{
+    readonly bytes: Uint8Array;
+    readonly purpose: AssistantImageBytePurpose;
+  }> = [];
+
+  copy(source: Uint8Array): Uint8Array {
+    return Uint8Array.from(source);
+  }
+
+  release(bytes: Uint8Array, purpose: AssistantImageBytePurpose): void {
+    this.releases.push({ bytes, purpose });
+    bytes.fill(0);
+  }
 }
 
 function deferred<T>(): {

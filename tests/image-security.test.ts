@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -50,6 +51,23 @@ describe("image security", () => {
       width: 1_280,
       height: 720,
     });
+  });
+
+  it("returns detached plain Uint8Array bytes from a Node readFile-like Buffer", () => {
+    const source = Buffer.from(pngHeader(640, 480));
+    const expected = Uint8Array.from(source);
+    const image = validateImage({
+      basename: "lesson.png",
+      declaredMimeType: "image/png",
+      bytes: source,
+    });
+
+    expect(Buffer.isBuffer(image.bytes)).toBe(false);
+    expect(image.bytes.constructor).toBe(Uint8Array);
+    expect(image.bytes.buffer).not.toBe(source.buffer);
+
+    source.fill(0);
+    expect(image.bytes).toEqual(expected);
   });
 
   it.each(["lesson.svg", "lesson.html", "lesson.pdf", "lesson.pptx"])(

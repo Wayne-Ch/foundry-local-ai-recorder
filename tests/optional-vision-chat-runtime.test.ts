@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type {
   AudioClient,
   ChatClient,
@@ -10,6 +11,10 @@ import type {
 } from "foundry-local-sdk";
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
+import type {
+  AssistantImageByteLifecycle,
+  AssistantImageBytePurpose,
+} from "../src/assistant/image-byte-lifecycle";
 import {
   AssistantTurnCleanupError,
   inspectVisionChatModel,
@@ -49,49 +54,63 @@ describe("optional vision/chat adapter", () => {
     });
   });
 
-  it("uses exact mixed text/image parts, retains bytes through settlement, then zeroes them", async () => {
-    const response = deferred<Response>();
-    let copiedImageBytes: Uint8Array | undefined;
-    const session = fakeSession({
-      processRequest: async (request) => {
-        const message = request.getItem(1);
-        if (message.type !== "message") {
-          throw new Error("Expected user message.");
-        }
-        const image = message.parts?.find((part) => part.type === "image");
-        if (image?.type !== "image" || image.data === undefined) {
-          throw new Error("Expected image bytes.");
-        }
-        copiedImageBytes = image.data;
-        return response.promise;
-      },
-    });
-    const source = new Uint8Array([1, 2, 3]);
-    const turn = processAssistantTurn(
-      new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID),
-      visionIdentity(),
-      {
-        systemPrompt: "Classroom safety.",
-        prompt: "Describe the ODE slide.",
-        images: [{ kind: "data", format: "png", data: source }],
-      },
-      {
-        createChatSession: () => session,
-        requestOptions: {
-          search: { doSample: false, maxOutputTokens: 64 },
-          toolChoice: "none",
+  it.each([
+    ["image analysis", "Analyze the ODE slide."],
+    ["direct-image chat", "Explain the selected image."],
+  ] as const)(
+    "uses and zeroes one detached native request copy exactly once for %s",
+    async (_flow, prompt) => {
+      const response = deferred<Response>();
+      const lifecycle = new TrackingImageByteLifecycle();
+      let copiedImageBytes: Uint8Array | undefined;
+      const session = fakeSession({
+        processRequest: async (request) => {
+          const message = request.getItem(1);
+          if (message.type !== "message") {
+            throw new Error("Expected user message.");
+          }
+          const image = message.parts?.find((part) => part.type === "image");
+          if (image?.type !== "image" || image.data === undefined) {
+            throw new Error("Expected image bytes.");
+          }
+          copiedImageBytes = image.data;
+          return response.promise;
         },
-      },
-    );
-    await vi.waitFor(() => expect(copiedImageBytes).toBeDefined());
-    source.fill(9);
+      });
+      const source = Buffer.from([1, 2, 3]);
+      const turn = processAssistantTurn(
+        new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID),
+        visionIdentity(),
+        {
+          systemPrompt: "Classroom safety.",
+          prompt,
+          images: [{ kind: "data", format: "png", data: source }],
+        },
+        {
+          createChatSession: () => session,
+          requestOptions: {
+            search: { doSample: false, maxOutputTokens: 64 },
+            toolChoice: "none",
+          },
+          imageByteLifecycle: lifecycle,
+        },
+      );
+      await vi.waitFor(() => expect(copiedImageBytes).toBeDefined());
+      const nativeCopy = lifecycle.copies("native-request")[0];
+      expect(lifecycle.copies("native-request")).toHaveLength(1);
+      expect(Buffer.isBuffer(nativeCopy)).toBe(false);
+      expect(nativeCopy?.constructor).toBe(Uint8Array);
+      source.fill(9);
 
-    expect(copiedImageBytes).toEqual(new Uint8Array([1, 2, 3]));
-    response.resolve(textResponse("The slide shows exponential decay."));
-    await expect(turn).resolves.toMatchObject({ text: "The slide shows exponential decay." });
-    expect(copiedImageBytes).toEqual(new Uint8Array([0, 0, 0]));
-    expect(session.dispose).toHaveBeenCalledOnce();
-  });
+      expect(copiedImageBytes).toEqual(new Uint8Array([1, 2, 3]));
+      response.resolve(textResponse("The slide shows exponential decay."));
+      await expect(turn).resolves.toMatchObject({ text: "The slide shows exponential decay." });
+      expect(copiedImageBytes).toEqual(new Uint8Array([0, 0, 0]));
+      expect(nativeCopy).toEqual(new Uint8Array([0, 0, 0]));
+      expect(lifecycle.releaseCount(nativeCopy as Uint8Array, "native-request")).toBe(1);
+      expect(session.dispose).toHaveBeenCalledOnce();
+    },
+  );
 
   it("creates and disposes a separate session with the system prompt on every turn", async () => {
     const sessions = [fakeSession(), fakeSession()];
@@ -236,7 +255,7 @@ describe("optional vision/chat adapter", () => {
           },
           imageByteLifecycle: {
             copy: (source) => {
-              const copied = source.slice();
+              const copied = Uint8Array.from(source);
               liveBytes.add(copied);
               return copied;
             },
@@ -255,6 +274,34 @@ describe("optional vision/chat adapter", () => {
     expect(releasedBytes[0]).toEqual(new Uint8Array([0, 0, 0]));
   });
 });
+
+class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {
+  readonly #copies = new Map<AssistantImageBytePurpose, Uint8Array[]>();
+  readonly #releaseCounts = new Map<Uint8Array, Map<AssistantImageBytePurpose, number>>();
+
+  copy(source: Uint8Array, purpose: AssistantImageBytePurpose): Uint8Array {
+    const copied = Uint8Array.from(source);
+    const copies = this.#copies.get(purpose) ?? [];
+    copies.push(copied);
+    this.#copies.set(purpose, copies);
+    return copied;
+  }
+
+  release(bytes: Uint8Array, purpose: AssistantImageBytePurpose): void {
+    const counts = this.#releaseCounts.get(bytes) ?? new Map<AssistantImageBytePurpose, number>();
+    counts.set(purpose, (counts.get(purpose) ?? 0) + 1);
+    this.#releaseCounts.set(bytes, counts);
+    bytes.fill(0);
+  }
+
+  copies(purpose: AssistantImageBytePurpose): readonly Uint8Array[] {
+    return this.#copies.get(purpose) ?? [];
+  }
+
+  releaseCount(bytes: Uint8Array, purpose: AssistantImageBytePurpose): number {
+    return this.#releaseCounts.get(bytes)?.get(purpose) ?? 0;
+  }
+}
 
 interface FakeModelOptions {
   readonly task?: string;

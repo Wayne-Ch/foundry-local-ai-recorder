@@ -10,7 +10,11 @@ export interface AssistantImageByteLifecycle {
   release(bytes: Uint8Array, purpose: AssistantImageBytePurpose): void;
 }
 
+export function copyToDetachedUint8Array(source: Uint8Array): Uint8Array {
+  return Uint8Array.from(source);
+}
+
 export const secureAssistantImageByteLifecycle: AssistantImageByteLifecycle = {
-  copy: (source) => source.slice(),
+  copy: (source) => copyToDetachedUint8Array(source),
   release: (bytes) => bytes.fill(0),
 };

@@ -1,3 +1,6 @@
+import { Buffer } from "node:buffer";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import type { RequestOptions } from "foundry-local-sdk";
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
@@ -10,6 +13,7 @@ import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
 import type { VisionChatTurnInput, VisionChatTurnResult } from "../src/foundry/optional-vision-chat-runtime";
 import type { AssistantRuntime } from "../src/main/assistant-controller";
 import { AssistantController, parseImageAnalysisNote } from "../src/main/assistant-controller";
+import { pickAssistantImage } from "../src/main/assistant-image-picker";
 import type { TranscriptSnapshot } from "../src/transcript/transcript-store";
 
 describe("AssistantController", () => {
@@ -390,6 +394,69 @@ describe("AssistantController", () => {
     expect(runtime.imagePayloads[0]).toEqual(new Uint8Array([1, 2, 3]));
   });
 
+  it("zeroes the selected copy exactly once without mutating its Buffer source", () => {
+    const source = Buffer.from([1, 2, 3]);
+    const lifecycle = new TrackingImageByteLifecycle();
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({}),
+      runtime: new FakeRuntime("answer"),
+      imageByteLifecycle: lifecycle,
+    });
+    controller.selectImage({ ...image(), bytes: source }, "data:image/png;base64,abc");
+    const selectedCopy = lifecycle.copies("selected-image")[0] as Uint8Array;
+
+    source.fill(9);
+    expect(selectedCopy).toEqual(new Uint8Array([1, 2, 3]));
+
+    controller.removeImage();
+    controller.shutdown();
+
+    expect(selectedCopy).toEqual(new Uint8Array([0, 0, 0]));
+    expect(lifecycle.releaseCount(selectedCopy, "selected-image")).toBe(1);
+    expect(source).toEqual(Buffer.from([9, 9, 9]));
+  });
+
+  it("keeps the committed controller copy after picker cleanup zeroes Node Buffer inputs", async () => {
+    const filePath = path.resolve("fixtures", "ode-slide.png");
+    const fileBytes = await readFile(filePath);
+    const pngSignature = Uint8Array.from(fileBytes.subarray(0, 8));
+    let validatedBytes: Uint8Array | null = null;
+    const runtime = new FakeRuntime(
+      "Visible text/objects: ODE slide\nRelation to lesson: Equation\nUncertainty: None",
+    );
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime,
+    });
+
+    const selected = await pickAssistantImage(
+      {
+        showDialog: async () => ({ canceled: false, filePaths: [filePath] }),
+        stat: async () => ({ size: fileBytes.byteLength }),
+        readFile: async () => fileBytes,
+        createThumbnail: async (image) => {
+          validatedBytes = image.bytes;
+          return "data:image/png;base64,abc";
+        },
+      },
+      {
+        assertCurrent: () => {},
+        commit: (image, thumbnailDataUrl) => controller.selectImage(image, thumbnailDataUrl),
+      },
+    );
+
+    expect(Buffer.isBuffer(fileBytes)).toBe(true);
+    expect(selected?.image?.basename).toBe("ode-slide.png");
+    expect(fileBytes.every((value) => value === 0)).toBe(true);
+    expect(validatedBytes).not.toBeNull();
+    expect((validatedBytes as unknown as Uint8Array).every((value) => value === 0)).toBe(true);
+
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
+
+    expect(runtime.imagePayloads[0]?.subarray(0, 8)).toEqual(pngSignature);
+  });
+
   it("reset clears visible optional state immediately while native cleanup drains", async () => {
     let release = () => {};
     const runtime = new FakeRuntime(
@@ -547,6 +614,28 @@ describe("AssistantController", () => {
     await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
     expect(operationCopy).toEqual(new Uint8Array([0, 0, 0]));
     expect(lifecycle.isLive(operationCopy as Uint8Array)).toBe(false);
+    expect(lifecycle.releaseCount(operationCopy as Uint8Array, "assistant-operation")).toBe(1);
+  });
+
+  it("releases a direct-image chat operation copy exactly once", async () => {
+    const lifecycle = new TrackingImageByteLifecycle();
+    const runtime = new FakeRuntime("The selected image shows an ODE.");
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime,
+      imageByteLifecycle: lifecycle,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+
+    controller.startChat("session-1", "Explain the selected image.", () => {});
+    await vi.waitFor(() =>
+      expect(controller.snapshot().chatMessages.some((message) => message.role === "assistant")).toBe(true),
+    );
+
+    const operationCopy = lifecycle.copies("assistant-operation")[0];
+    expect(operationCopy).toEqual(new Uint8Array([0, 0, 0]));
+    expect(lifecycle.isLive(operationCopy as Uint8Array)).toBe(false);
+    expect(lifecycle.releaseCount(operationCopy as Uint8Array, "assistant-operation")).toBe(1);
   });
 
   it("invalidates transcript-v1 analysis before corrected-v2 chat while reanalysis waits", async () => {
@@ -778,7 +867,7 @@ class FakeRuntime implements AssistantRuntime {
     this.inputs.push(input);
     for (const image of input.images ?? []) {
       if (image.kind === "data") {
-        this.imagePayloads.push(image.data.slice());
+        this.imagePayloads.push(Uint8Array.from(image.data));
       }
     }
     try {
@@ -850,9 +939,10 @@ function image(bytes: readonly number[] = [1, 2, 3]): ValidatedImage {
 class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {
   readonly #copies = new Map<AssistantImageBytePurpose, Uint8Array[]>();
   readonly #live = new Set<Uint8Array>();
+  readonly #releaseCounts = new Map<Uint8Array, Map<AssistantImageBytePurpose, number>>();
 
   copy(source: Uint8Array, purpose: AssistantImageBytePurpose): Uint8Array {
-    const bytes = source.slice();
+    const bytes = Uint8Array.from(source);
     const copies = this.#copies.get(purpose) ?? [];
     copies.push(bytes);
     this.#copies.set(purpose, copies);
@@ -860,7 +950,10 @@ class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {
     return bytes;
   }
 
-  release(bytes: Uint8Array): void {
+  release(bytes: Uint8Array, purpose: AssistantImageBytePurpose): void {
+    const counts = this.#releaseCounts.get(bytes) ?? new Map<AssistantImageBytePurpose, number>();
+    counts.set(purpose, (counts.get(purpose) ?? 0) + 1);
+    this.#releaseCounts.set(bytes, counts);
     bytes.fill(0);
     this.#live.delete(bytes);
   }
@@ -871,5 +964,9 @@ class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {
 
   isLive(bytes: Uint8Array): boolean {
     return this.#live.has(bytes);
+  }
+
+  releaseCount(bytes: Uint8Array, purpose: AssistantImageBytePurpose): number {
+    return this.#releaseCounts.get(bytes)?.get(purpose) ?? 0;
   }
 }

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { copyToDetachedUint8Array } from "./image-byte-lifecycle";
 
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_DIMENSION = 8_192;
@@ -72,7 +73,7 @@ export function validateImage(input: ImageValidationInput): ValidatedImage {
     sizeBytes: input.bytes.byteLength,
     width: detected.width,
     height: detected.height,
-    bytes: input.bytes.slice(),
+    bytes: copyToDetachedUint8Array(input.bytes),
   };
 }
 

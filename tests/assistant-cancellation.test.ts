@@ -208,7 +208,7 @@ class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {
   readonly #live = new Set<Uint8Array>();
 
   copy(source: Uint8Array, purpose: AssistantImageBytePurpose): Uint8Array {
-    const bytes = source.slice();
+    const bytes = Uint8Array.from(source);
     const copies = this.#copies.get(purpose) ?? [];
     copies.push(bytes);
     this.#copies.set(purpose, copies);
