@@ -73,7 +73,7 @@ root.innerHTML = `
       </article>
     </section>
 
-    <section class="workspace">
+    <section id="workspace" class="workspace">
       <aside class="control-panel">
         <div class="panel-heading">
           <div>
@@ -169,6 +169,154 @@ root.innerHTML = `
           </div>
         </article>
       </section>
+
+      <aside id="assistant-panel" class="assistant-panel" aria-label="Local AI assistant">
+        <div class="assistant-heading">
+          <div class="assistant-title">
+            <p class="eyebrow">OPTIONAL · LOCAL</p>
+            <h2>Lesson assistant</h2>
+          </div>
+          <button
+            id="assistant-collapse"
+            class="button button-ghost assistant-collapse"
+            type="button"
+            aria-expanded="true"
+            aria-controls="assistant-body"
+          >
+            Collapse
+          </button>
+        </div>
+        <div id="assistant-body" class="assistant-body">
+          <label class="assistant-mode">
+            <span>Mode</span>
+            <select id="assistant-mode">
+              <option value="classroom">Classroom</option>
+              <option value="clinic">Clinic · educational only</option>
+            </select>
+          </label>
+          <p id="assistant-safety" class="assistant-safety">
+            Classroom explanations use local context and state uncertainty.
+          </p>
+
+          <div class="assistant-tabs" role="tablist" aria-label="Assistant tools">
+            <button
+              id="assistant-chat-tab"
+              class="assistant-tab active"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="assistant-chat-panel"
+            >
+              Ask AI
+            </button>
+            <button
+              id="assistant-image-tab"
+              class="assistant-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="assistant-image-panel"
+              tabindex="-1"
+            >
+              Image
+            </button>
+          </div>
+
+          <section
+            id="assistant-chat-panel"
+            class="assistant-tab-panel"
+            role="tabpanel"
+            aria-labelledby="assistant-chat-tab"
+          >
+            <div id="assistant-history" class="assistant-history" aria-live="polite">
+              <p class="assistant-empty">
+                Ask while recording continues. Live draft context is snapshotted only for that request.
+              </p>
+            </div>
+            <div class="assistant-chips" aria-label="Suggested questions">
+              <button
+                type="button"
+                class="assistant-chip"
+                data-prompt="What is ODE? Answer in one sentence."
+              >
+                What is ODE?
+              </button>
+              <button
+                type="button"
+                class="assistant-chip"
+                data-prompt="Give one practical example."
+              >
+                Practical example
+              </button>
+              <button
+                type="button"
+                class="assistant-chip"
+                data-prompt="Explain the selected image in one sentence."
+              >
+                Explain image
+              </button>
+            </div>
+            <label class="assistant-input-label" for="assistant-input">Question</label>
+            <textarea
+              id="assistant-input"
+              rows="3"
+              maxlength="1000"
+              placeholder="Ask a concise question about the lesson…"
+            ></textarea>
+            <div class="assistant-actions">
+              <button id="assistant-ask" class="button button-primary" type="button" disabled>
+                Ask
+              </button>
+              <button id="assistant-cancel" class="button button-danger" type="button" disabled>
+                Cancel
+              </button>
+              <button id="assistant-clear" class="button button-ghost" type="button" disabled>
+                Clear
+              </button>
+            </div>
+            <div id="assistant-status" class="assistant-status" role="status">
+              Optional assistant lane is not prepared.
+            </div>
+          </section>
+
+          <section
+            id="assistant-image-panel"
+            class="assistant-tab-panel"
+            role="tabpanel"
+            aria-labelledby="assistant-image-tab"
+            hidden
+          >
+            <button
+              id="image-select"
+              class="button button-secondary button-wide"
+              type="button"
+              disabled
+            >
+              Choose PNG, JPEG, or WebP
+            </button>
+            <p class="assistant-limit">
+              Main-process picker · 10 MiB · bounded dimensions · no file path exposed
+            </p>
+            <div id="image-preview" class="image-preview empty">
+              <span>No lesson image selected.</span>
+            </div>
+            <dl id="image-metadata" class="image-metadata"></dl>
+            <div class="assistant-actions">
+              <button id="image-analyze" class="button button-primary" type="button" disabled>
+                Analyze image
+              </button>
+              <button id="image-remove" class="button button-ghost" type="button" disabled>
+                Remove
+              </button>
+            </div>
+            <article id="image-analysis" class="image-analysis" aria-live="polite">
+              <p class="assistant-empty">
+                Analysis will show visible text/objects, lesson relation, and uncertainty.
+              </p>
+            </article>
+          </section>
+        </div>
+      </aside>
     </section>
 
     <section class="trace-panel">
@@ -188,6 +336,7 @@ root.innerHTML = `
 `;
 
 const elements = {
+  workspace: required("#workspace"),
   clock: required("#clock"),
   privacyState: required("#privacy-state"),
   consent: required<HTMLInputElement>("#consent"),
@@ -212,6 +361,27 @@ const elements = {
   reset: required<HTMLButtonElement>("#reset-button"),
   traceToggle: required<HTMLButtonElement>("#trace-toggle"),
   traceContent: required("#trace-content"),
+  assistantPanel: required("#assistant-panel"),
+  assistantBody: required("#assistant-body"),
+  assistantCollapse: required<HTMLButtonElement>("#assistant-collapse"),
+  assistantMode: required<HTMLSelectElement>("#assistant-mode"),
+  assistantSafety: required("#assistant-safety"),
+  assistantChatTab: required<HTMLButtonElement>("#assistant-chat-tab"),
+  assistantImageTab: required<HTMLButtonElement>("#assistant-image-tab"),
+  assistantChatPanel: required("#assistant-chat-panel"),
+  assistantImagePanel: required("#assistant-image-panel"),
+  assistantHistory: required("#assistant-history"),
+  assistantInput: required<HTMLTextAreaElement>("#assistant-input"),
+  assistantAsk: required<HTMLButtonElement>("#assistant-ask"),
+  assistantCancel: required<HTMLButtonElement>("#assistant-cancel"),
+  assistantClear: required<HTMLButtonElement>("#assistant-clear"),
+  assistantStatus: required("#assistant-status"),
+  imageSelect: required<HTMLButtonElement>("#image-select"),
+  imagePreview: required("#image-preview"),
+  imageMetadata: required("#image-metadata"),
+  imageAnalyze: required<HTMLButtonElement>("#image-analyze"),
+  imageRemove: required<HTMLButtonElement>("#image-remove"),
+  imageAnalysis: required("#image-analysis"),
   model: {
     whisper: {
       id: required("#whisper-id"),
@@ -270,6 +440,40 @@ elements.import.addEventListener("click", () => void importWav());
 elements.saveTranscript.addEventListener("click", () => void saveTranscript());
 elements.summary.addEventListener("click", () => void generateSummary());
 elements.reset.addEventListener("click", () => void resetRecorder());
+elements.assistantCollapse.addEventListener("click", () => {
+  const expanded = elements.assistantCollapse.getAttribute("aria-expanded") === "true";
+  elements.assistantCollapse.setAttribute("aria-expanded", String(!expanded));
+  elements.assistantCollapse.textContent = expanded ? "Open" : "Collapse";
+  elements.assistantBody.hidden = expanded;
+  elements.workspace.classList.toggle("assistant-collapsed", expanded);
+});
+elements.assistantChatTab.addEventListener("click", () => selectAssistantTab("chat"));
+elements.assistantImageTab.addEventListener("click", () => selectAssistantTab("image"));
+for (const tab of [elements.assistantChatTab, elements.assistantImageTab]) {
+  tab.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+    event.preventDefault();
+    const next = tab === elements.assistantChatTab ? "image" : "chat";
+    selectAssistantTab(next);
+    (next === "chat" ? elements.assistantChatTab : elements.assistantImageTab).focus();
+  });
+}
+for (const chip of document.querySelectorAll<HTMLButtonElement>(".assistant-chip")) {
+  chip.addEventListener("click", () => {
+    elements.assistantInput.value = chip.dataset.prompt ?? "";
+    elements.assistantInput.focus();
+    updateControls();
+  });
+}
+elements.assistantMode.addEventListener("change", () => {
+  elements.assistantSafety.textContent =
+    elements.assistantMode.value === "clinic"
+      ? "Educational and clinician-led only: no diagnosis, urgency, treatment, or interpreter replacement."
+      : "Classroom explanations use local context and state uncertainty.";
+});
+elements.assistantInput.addEventListener("input", updateControls);
 elements.traceToggle.addEventListener("click", () => {
   const expanded = elements.traceToggle.getAttribute("aria-expanded") === "true";
   elements.traceToggle.setAttribute("aria-expanded", String(!expanded));
@@ -802,6 +1006,12 @@ function updateControls(): void {
   elements.liveToggle.disabled = busy || recording !== null;
   elements.saveTranscript.disabled = busy || !transcriptChanged;
   elements.summary.disabled = busy || !hasFinal;
+  elements.assistantAsk.disabled = true;
+  elements.assistantCancel.disabled = true;
+  elements.assistantClear.disabled = true;
+  elements.imageSelect.disabled = true;
+  elements.imageAnalyze.disabled = true;
+  elements.imageRemove.disabled = true;
   elements.reset.disabled = busy;
   elements.reset.textContent = resetting
     ? "Cancelling / resetting…"
@@ -818,6 +1028,18 @@ function updateControls(): void {
         ? "Finalizing"
         : "Recording";
   elements.recordingIndicator.classList.toggle("active", recording !== null);
+}
+
+function selectAssistantTab(tab: "chat" | "image"): void {
+  const chatSelected = tab === "chat";
+  elements.assistantChatTab.classList.toggle("active", chatSelected);
+  elements.assistantChatTab.setAttribute("aria-selected", String(chatSelected));
+  elements.assistantChatTab.tabIndex = chatSelected ? 0 : -1;
+  elements.assistantImageTab.classList.toggle("active", !chatSelected);
+  elements.assistantImageTab.setAttribute("aria-selected", String(!chatSelected));
+  elements.assistantImageTab.tabIndex = chatSelected ? -1 : 0;
+  elements.assistantChatPanel.hidden = !chatSelected;
+  elements.assistantImagePanel.hidden = chatSelected;
 }
 
 function updateElapsed(): void {
