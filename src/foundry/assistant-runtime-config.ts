@@ -32,6 +32,15 @@ export function resolveAssistantRuntimeTarget(
   const resolvedModelId = modelId || QWEN_VISION_CHAT_CANDIDATE_MODEL_ID;
   const resolvedProvider = canonicalExecutionProvider(provider || ASSISTANT_EXECUTION_PROVIDER);
   const resolvedDevice = parseDeviceType(device || "CPU");
+  if (
+    resolvedModelId !== QWEN_VISION_CHAT_CANDIDATE_MODEL_ID ||
+    resolvedProvider !== ASSISTANT_EXECUTION_PROVIDER ||
+    resolvedDevice !== DeviceType.CPU
+  ) {
+    throw new RuntimeConfigurationError(
+      `The optional assistant must use ${QWEN_VISION_CHAT_CANDIDATE_MODEL_ID} on CPU with ${ASSISTANT_EXECUTION_PROVIDER}.`,
+    );
+  }
   return {
     modelId: resolvedModelId,
     deviceType: resolvedDevice,

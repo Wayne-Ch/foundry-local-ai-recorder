@@ -25,19 +25,26 @@ describe("assistant runtime config", () => {
     ).toThrow("must be set together");
   });
 
-  it("accepts a complete GPU override without treating it as stage validated", () => {
+  it("accepts only a complete override that preserves the exact CPU assistant slot", () => {
     expect(
+      resolveAssistantRuntimeTarget({
+        SMART_RECORDER_VISION_MODEL_ID: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+        SMART_RECORDER_VISION_EXECUTION_PROVIDER: ASSISTANT_EXECUTION_PROVIDER,
+        SMART_RECORDER_VISION_DEVICE_TYPE: "CPU",
+      }),
+    ).toEqual({
+      modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+      deviceType: DeviceType.CPU,
+      executionProvider: ASSISTANT_EXECUTION_PROVIDER,
+      source: "environment_override",
+      stageValidated: false,
+    });
+    expect(() =>
       resolveAssistantRuntimeTarget({
         SMART_RECORDER_VISION_MODEL_ID: "custom-vision-gpu:1",
         SMART_RECORDER_VISION_EXECUTION_PROVIDER: "WebGPUExecutionProvider",
         SMART_RECORDER_VISION_DEVICE_TYPE: "GPU",
       }),
-    ).toEqual({
-      modelId: "custom-vision-gpu:1",
-      deviceType: DeviceType.GPU,
-      executionProvider: "WebGPUExecutionProvider",
-      source: "environment_override",
-      stageValidated: false,
-    });
+    ).toThrow("must use");
   });
 });

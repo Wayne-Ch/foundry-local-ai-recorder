@@ -1240,7 +1240,7 @@ describe("FoundryRecorderRuntime", () => {
     expect(manager.dispose).toHaveBeenCalledOnce();
   });
 
-  it("uses one manager and the loaded summary slot for text assistant turns", async () => {
+  it("uses one manager and the exact CPU vision slot for text assistant turns", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const manager = new FakeManager(models);
@@ -1263,13 +1263,18 @@ describe("FoundryRecorderRuntime", () => {
     });
 
     expect(createManager).toHaveBeenCalledOnce();
-    expect(sessionModels).toEqual([SUMMARY_MODEL_ID]);
+    expect(sessionModels).toEqual([QWEN_VISION_CHAT_CANDIDATE_MODEL_ID]);
     expect(result.model).toMatchObject({
-      modelId: SUMMARY_MODEL_ID,
-      source: "summary_slot",
-      task: "chat-completion",
+      modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+      source: "vision_slot",
+      task: "vision-language-chat",
+      runtime: {
+        deviceType: DeviceType.CPU,
+        executionProvider: AUDIO_EXECUTION_PROVIDER,
+      },
     });
-    expect(manager.catalog.getModelVariant).not.toHaveBeenCalledWith(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
+    expect(manager.catalog.getModelVariant).toHaveBeenCalledWith(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
+    expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
     await runtime.shutdown();
   });
 
@@ -1391,7 +1396,7 @@ describe("FoundryRecorderRuntime", () => {
 
     chatResponse.resolve(textResponse("An ODE relates a function to ordinary derivatives."));
     await expect(chat).resolves.toMatchObject({
-      model: { modelId: SUMMARY_MODEL_ID, source: "summary_slot" },
+      model: { modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID, source: "vision_slot" },
     });
     await expect(
       runtime.finishLiveStream({
@@ -1447,6 +1452,71 @@ describe("FoundryRecorderRuntime", () => {
     expect(runtime.assistantStatus).toMatchObject({ active: false, draining: false });
     expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
     await runtime.shutdown();
+  });
+
+  it("runs core summary while a cancelled assistant request never settles and defers shutdown once", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const models = createModels(order);
+    const manager = new FakeManager(models, { order });
+    const assistantResponse = deferred<Response>();
+    const assistantStarted = deferred<void>();
+    const assistantDispose = vi.fn(() => {
+      order.push("assistant-session-dispose");
+    });
+    const visionModel = models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
+    if (visionModel === undefined) {
+      throw new Error("Expected the optional CPU VLM.");
+    }
+    const visionUnload = vi.spyOn(visionModel, "unload");
+    const runtime = createRuntime(root, [manager], {
+      models,
+      settlementTimeoutMs: 10,
+      createChatSession: (model) =>
+        model.id === QWEN_VISION_CHAT_CANDIDATE_MODEL_ID
+          ? fakeChatSession({
+              processRequest: async () => {
+                assistantStarted.resolve();
+                return assistantResponse.promise;
+              },
+              dispose: assistantDispose,
+            })
+          : fakeChatSession({ processRequest: async () => textResponse("Core summary completed.") }),
+    });
+    await runtime.prepare(false);
+
+    const assistant = runtime.runAssistantTurn({ prompt: "Wait forever." });
+    await assistantStarted.promise;
+    await expect(runtime.reset()).resolves.toBeUndefined();
+    const assistantDrain = runtime.resetAssistant();
+    expect(runtime.assistantStatus).toMatchObject({ active: false, draining: true });
+
+    await expect(runtime.summarize("Exact core transcript.")).resolves.toMatchObject({
+      text: "Core summary completed.",
+      model: { id: SUMMARY_MODEL_ID },
+    });
+    await expect(runtime.runAssistantTurn({ prompt: "Replacement." })).rejects.toThrow(
+      "cleanup is still draining",
+    );
+
+    const shutdownFailure = await captureFailure(runtime.shutdown());
+    const cleanupCompletion = runtime.cleanupCompletion;
+    expect(errorMessages(shutdownFailure)).toContain(
+      "Foundry Local shutdown cleanup did not settle within 10 ms.",
+    );
+    expect(cleanupCompletion).not.toBeNull();
+    expect(manager.shutdown).not.toHaveBeenCalled();
+    expect(manager.dispose).not.toHaveBeenCalled();
+
+    assistantResponse.resolve(textResponse("stale optional answer"));
+    await expect(assistant).rejects.toMatchObject({ name: "AbortError" });
+    await assistantDrain;
+    await cleanupCompletion;
+
+    expect(assistantDispose).toHaveBeenCalledOnce();
+    expect(visionUnload).toHaveBeenCalledOnce();
+    expect(manager.shutdown).toHaveBeenCalledOnce();
+    expect(manager.dispose).toHaveBeenCalledOnce();
   });
 });
 

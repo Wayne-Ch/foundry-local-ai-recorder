@@ -1210,6 +1210,8 @@ function renderAssistant(): void {
       metadataValue(`${(image.sizeBytes / 1024).toFixed(1)} KiB`),
       metadataTerm("Dimensions"),
       metadataValue(`${image.width} × ${image.height}`),
+      metadataTerm("Analysis"),
+      metadataValue(image.analysisStatus === "ready" ? "Ready" : "Unanalyzed"),
     );
   }
 

@@ -40,7 +40,11 @@ describe("assistant context and memory", () => {
       null,
     );
 
-    state.appendUserMessage("request-1", "What is ODE?", context);
+    const token = state.createOperationToken("request-1", "chat", context, {
+      dependsOnImage: false,
+      requiresImageBytes: false,
+    });
+    state.appendUserMessage(token, "What is ODE?", context);
     const serialized = JSON.stringify(state.snapshot());
 
     expect(serialized).toContain("live draft snapshot (may change)");
@@ -58,7 +62,10 @@ describe("assistant context and memory", () => {
       thumbnailDataUrl: "data:image/png;base64,abc",
     });
     const contextV1 = buildAssistantContext(transcript({ finalText: "v1", version: 1 }), null);
-    const token = state.beginOperation("request-1", "image_analysis", contextV1);
+    const token = state.createOperationToken("request-1", "image_analysis", contextV1, {
+      dependsOnImage: true,
+      requiresImageBytes: true,
+    });
     const contextV2 = buildAssistantContext(transcript({ finalText: "v2", version: 2 }), null);
 
     expect(
@@ -90,7 +97,10 @@ describe("assistant context and memory", () => {
       transcript({ liveDraft: "ephemeral lesson words", liveSequence: 4 }),
       null,
     );
-    const token = state.beginOperation("request-1", "image_analysis", context);
+    const token = state.createOperationToken("request-1", "image_analysis", context, {
+      dependsOnImage: true,
+      requiresImageBytes: true,
+    });
 
     expect(
       state.applyImageAnalysis(
@@ -120,7 +130,12 @@ describe("assistant context and memory", () => {
       height: 10,
       thumbnailDataUrl: "data:image/webp;base64,abc",
     });
-    state.appendUserMessage("request-1", "Explain this.", buildAssistantContext(transcript({}), null));
+    const context = buildAssistantContext(transcript({}), null);
+    const token = state.createOperationToken("request-1", "chat", context, {
+      dependsOnImage: false,
+      requiresImageBytes: false,
+    });
+    state.appendUserMessage(token, "Explain this.", context);
 
     state.reset();
 

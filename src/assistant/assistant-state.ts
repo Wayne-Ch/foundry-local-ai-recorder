@@ -59,17 +59,29 @@ export class AssistantMemoryState {
   }
 
   setMode(mode: AssistantMode): void {
-    if (mode !== this.#mode) {
-      this.#generation += 1;
+    if (mode === this.#mode) {
+      return;
     }
+    const previousMode = this.#mode;
+    this.#generation += 1;
+    this.#chatGeneration += 1;
     this.#mode = mode;
+    this.#imageAnalysis = null;
+    this.#markImageUnanalyzed();
+    this.#chatMessages.length = 0;
+    this.#trace.length = 0;
+    this.trace(
+      "mode-isolation",
+      `Switched from ${previousMode} to ${mode}; prior assistant chat and image analysis were cleared, and the selected image requires re-analysis.`,
+    );
   }
 
-  selectImage(input: ImageSelectionInput): AssistantLaneSnapshot["image"] {
+  selectImage(input: ImageSelectionInput): NonNullable<AssistantLaneSnapshot["image"]> {
     this.#imageVersion += 1;
     this.#image = {
       id: randomUUID(),
       version: this.#imageVersion,
+      analysisStatus: "unanalyzed",
       ...input,
       selectedAt: new Date().toISOString(),
     };
@@ -83,17 +95,32 @@ export class AssistantMemoryState {
     this.#imageAnalysis = null;
   }
 
-  beginOperation(
+  createOperationToken(
     requestId: string,
     kind: AssistantOperationKind,
     context: AssistantRequestContext,
+    options: {
+      readonly dependsOnImage: boolean;
+      readonly requiresImageBytes: boolean;
+    },
   ): AssistantOperationToken {
+    if (options.requiresImageBytes && !options.dependsOnImage) {
+      throw new Error("Assistant image bytes require an image-dependent operation token.");
+    }
+    const image = options.dependsOnImage ? this.#image : null;
+    if (options.dependsOnImage && image === null) {
+      throw new Error("Select a current lesson image before starting this assistant request.");
+    }
     return {
       requestId,
       generation: this.#generation,
       laneGeneration: kind === "chat" ? this.#chatGeneration : this.#imageVersion,
       kind,
-      imageVersion: this.#image?.version ?? null,
+      mode: this.#mode,
+      dependsOnImage: options.dependsOnImage,
+      requiresImageBytes: options.requiresImageBytes,
+      imageId: image?.id ?? null,
+      imageVersion: image?.version ?? null,
       contextFingerprint: context.fingerprint,
     };
   }
@@ -106,11 +133,9 @@ export class AssistantMemoryState {
   ): boolean {
     if (
       token.kind !== "image_analysis" ||
-      token.generation !== this.#generation ||
-      token.laneGeneration !== this.#imageVersion ||
-      token.imageVersion === null ||
-      token.imageVersion !== this.#image?.version ||
-      token.contextFingerprint !== currentContext.fingerprint
+      !this.isOperationCurrent(token, currentContext) ||
+      token.imageId === null ||
+      token.imageVersion === null
     ) {
       return false;
     }
@@ -118,26 +143,38 @@ export class AssistantMemoryState {
     this.#imageAnalysis = {
       ...note,
       version: this.#analysisVersion,
+      imageId: token.imageId,
       imageVersion: token.imageVersion,
       contextLabels: durableChatMessageContext(currentContext),
       contextFingerprint: currentContext.fingerprint,
-      mode: this.#mode,
+      mode: token.mode,
       modelId,
       generatedAt: new Date().toISOString(),
     };
+    if (this.#image !== null) {
+      this.#image = { ...this.#image, analysisStatus: "ready" };
+    }
     return true;
   }
 
   appendUserMessage(
-    requestId: string,
+    token: AssistantOperationToken,
     question: string,
     context: AssistantRequestContext,
   ): AssistantChatMessage {
+    if (token.kind !== "chat") {
+      throw new Error("Only chat operation tokens can append chat history.");
+    }
     const message: AssistantChatMessage = {
       id: randomUUID(),
-      requestId,
+      requestId: token.requestId,
       role: "user",
       text: question.trim(),
+      mode: token.mode,
+      contextFingerprint: token.contextFingerprint,
+      dependsOnImage: token.dependsOnImage,
+      imageId: token.imageId,
+      imageVersion: token.imageVersion,
       contextLabels: durableChatMessageContext(context),
       createdAt: new Date().toISOString(),
     };
@@ -145,14 +182,12 @@ export class AssistantMemoryState {
     return message;
   }
 
-  applyChatAnswer(token: AssistantOperationToken, answer: string, context: AssistantRequestContext): boolean {
-    if (
-      token.kind !== "chat" ||
-      token.generation !== this.#generation ||
-      token.laneGeneration !== this.#chatGeneration ||
-      token.imageVersion !== (this.#image?.version ?? null) ||
-      token.contextFingerprint !== context.fingerprint
-    ) {
+  applyChatAnswer(
+    token: AssistantOperationToken,
+    answer: string,
+    currentContext: AssistantRequestContext,
+  ): boolean {
+    if (token.kind !== "chat" || !this.isOperationCurrent(token, currentContext)) {
       return false;
     }
     this.#appendChat({
@@ -160,7 +195,12 @@ export class AssistantMemoryState {
       requestId: token.requestId,
       role: "assistant",
       text: answer,
-      contextLabels: durableChatMessageContext(context),
+      mode: token.mode,
+      contextFingerprint: token.contextFingerprint,
+      dependsOnImage: token.dependsOnImage,
+      imageId: token.imageId,
+      imageVersion: token.imageVersion,
+      contextLabels: durableChatMessageContext(currentContext),
       createdAt: new Date().toISOString(),
     });
     return true;
@@ -204,18 +244,76 @@ export class AssistantMemoryState {
     return this.#imageAnalysis;
   }
 
-  get chatMessages(): readonly AssistantChatMessage[] {
-    return [...this.#chatMessages];
+  get imageVersion(): number {
+    return this.#imageVersion;
+  }
+
+  validImageAnalysis(currentContext: AssistantRequestContext): ImageAnalysisSnapshot | null {
+    const analysis = this.#imageAnalysis;
+    const image = this.#image;
+    return analysis !== null &&
+      image !== null &&
+      analysis.mode === this.#mode &&
+      analysis.imageId === image.id &&
+      analysis.imageVersion === image.version &&
+      analysis.contextFingerprint === currentContext.fingerprint
+      ? analysis
+      : null;
+  }
+
+  invalidateImageAnalysis(currentContext: AssistantRequestContext): boolean {
+    if (this.#imageAnalysis === null || this.validImageAnalysis(currentContext) !== null) {
+      return false;
+    }
+    this.#imageAnalysis = null;
+    this.#markImageUnanalyzed();
+    return true;
+  }
+
+  chatHistoryFor(token: AssistantOperationToken): readonly AssistantChatMessage[] {
+    return this.#chatMessages.filter(
+      (message) =>
+        message.mode === token.mode &&
+        message.contextFingerprint === token.contextFingerprint &&
+        message.dependsOnImage === token.dependsOnImage &&
+        message.imageId === token.imageId &&
+        message.imageVersion === token.imageVersion,
+    );
+  }
+
+  isOperationCurrent(token: AssistantOperationToken, currentContext: AssistantRequestContext): boolean {
+    if (
+      token.generation !== this.#generation ||
+      token.mode !== this.#mode ||
+      token.contextFingerprint !== currentContext.fingerprint ||
+      token.laneGeneration !== (token.kind === "chat" ? this.#chatGeneration : this.#imageVersion)
+    ) {
+      return false;
+    }
+    if (!token.dependsOnImage) {
+      return token.imageId === null && token.imageVersion === null;
+    }
+    return token.imageId === this.#image?.id && token.imageVersion === this.#image.version;
   }
 
   isGenerationCurrent(token: AssistantOperationToken): boolean {
     return token.generation === this.#generation;
   }
 
+  isImagePickerTokenCurrent(generation: number, imageVersion: number): boolean {
+    return generation === this.#generation && imageVersion === this.#imageVersion;
+  }
+
   #appendChat(message: AssistantChatMessage): void {
     this.#chatMessages.push(message);
     if (this.#chatMessages.length > CHAT_LIMIT) {
       this.#chatMessages.splice(0, this.#chatMessages.length - CHAT_LIMIT);
+    }
+  }
+
+  #markImageUnanalyzed(): void {
+    if (this.#image !== null && this.#image.analysisStatus !== "unanalyzed") {
+      this.#image = { ...this.#image, analysisStatus: "unanalyzed" };
     }
   }
 }

@@ -11,6 +11,7 @@ import type {
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
 import {
+  AssistantTurnCleanupError,
   inspectVisionChatModel,
   processAssistantTurn,
   QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
@@ -101,27 +102,12 @@ describe("optional vision/chat adapter", () => {
       }
       return session;
     });
-    const model = new FakeModel("qwen3-0.6b-generic-gpu:2", {
-      task: "chat-completion",
-      deviceType: DeviceType.GPU,
-      executionProvider: "WebGPUExecutionProvider",
-      inputModalities: "text",
-    });
+    const model = new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
 
     for (const prompt of ["First safety prompt.", "Second safety prompt."]) {
       await processAssistantTurn(
         model,
-        {
-          modelId: model.id,
-          source: "summary_slot",
-          task: "chat-completion",
-          runtime: {
-            deviceType: DeviceType.GPU,
-            executionProvider: "WebGPUExecutionProvider",
-          },
-          inputModalities: ["text"],
-          outputModalities: ["text"],
-        },
+        visionIdentity(),
         { systemPrompt: prompt, prompt: "What is ODE?" },
         { createChatSession },
       );
@@ -152,13 +138,8 @@ describe("optional vision/chat adapter", () => {
     });
     const controller = new AbortController();
     const turn = processAssistantTurn(
-      new FakeModel("qwen3-0.6b-generic-gpu:2", {
-        task: "chat-completion",
-        deviceType: DeviceType.GPU,
-        executionProvider: "WebGPUExecutionProvider",
-        inputModalities: "text",
-      }),
-      summaryIdentity(),
+      new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID),
+      visionIdentity(),
       { prompt: "Wait." },
       { signal: controller.signal, createChatSession: () => session },
     );
@@ -175,13 +156,8 @@ describe("optional vision/chat adapter", () => {
   it("rejects non-stop output", async () => {
     await expect(
       processAssistantTurn(
-        new FakeModel("qwen3-0.6b-generic-gpu:2", {
-          task: "chat-completion",
-          deviceType: DeviceType.GPU,
-          executionProvider: "WebGPUExecutionProvider",
-          inputModalities: "text",
-        }),
-        summaryIdentity(),
+        new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID),
+        visionIdentity(),
         { prompt: "Answer." },
         {
           createChatSession: () =>
@@ -191,6 +167,92 @@ describe("optional vision/chat adapter", () => {
         },
       ),
     ).rejects.toThrow("ended with length");
+  });
+
+  it("contains abort-time cancel throws, reports them safely, and still disposes and zeroes", async () => {
+    const response = deferred<Response>();
+    let requestBytes: Uint8Array | undefined;
+    const cleanupErrors: unknown[] = [];
+    const session = fakeSession({
+      processRequest: async (request) => {
+        const message = request.getItem(0);
+        if (message.type !== "message") {
+          throw new Error("Expected user message.");
+        }
+        const image = message.parts?.find((part) => part.type === "image");
+        if (image?.type !== "image" || image.data === undefined) {
+          throw new Error("Expected image bytes.");
+        }
+        requestBytes = image.data;
+        vi.spyOn(request, "cancel").mockImplementation(() => {
+          response.reject(new Error("native request settled after cancel"));
+          throw new Error("native cancel threw");
+        });
+        return response.promise;
+      },
+    });
+    const controller = new AbortController();
+    const removeListener = vi.spyOn(controller.signal, "removeEventListener");
+    const turn = processAssistantTurn(
+      new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID),
+      visionIdentity(),
+      {
+        prompt: "Describe this.",
+        images: [{ kind: "data", format: "png", data: new Uint8Array([3, 2, 1]) }],
+      },
+      {
+        signal: controller.signal,
+        createChatSession: () => session,
+        onCleanupError: (error) => cleanupErrors.push(error),
+      },
+    );
+    await vi.waitFor(() => expect(requestBytes).toBeDefined());
+
+    expect(() => controller.abort()).not.toThrow();
+    await expect(turn).rejects.toBeInstanceOf(AssistantTurnCleanupError);
+
+    expect(cleanupErrors.map(errorMessage)).toContain("native cancel threw");
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(requestBytes).toEqual(new Uint8Array([0, 0, 0]));
+    expect(removeListener).toHaveBeenCalled();
+  });
+
+  it("releases tracked request bytes when image request construction fails", async () => {
+    const liveBytes = new Set<Uint8Array>();
+    const releasedBytes: Uint8Array[] = [];
+
+    await expect(
+      processAssistantTurn(
+        new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID),
+        visionIdentity(),
+        {
+          prompt: "Describe this.",
+          images: [{ kind: "data", format: "png", data: new Uint8Array([4, 5, 6]) }],
+        },
+        {
+          createChatSession: () => fakeSession(),
+          createImageItem: () => {
+            throw new Error("image item construction failed");
+          },
+          imageByteLifecycle: {
+            copy: (source) => {
+              const copied = source.slice();
+              liveBytes.add(copied);
+              return copied;
+            },
+            release: (bytes) => {
+              bytes.fill(0);
+              liveBytes.delete(bytes);
+              releasedBytes.push(bytes);
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow("image item construction failed");
+
+    expect(liveBytes.size).toBe(0);
+    expect(releasedBytes).toHaveLength(1);
+    expect(releasedBytes[0]).toEqual(new Uint8Array([0, 0, 0]));
   });
 });
 
@@ -329,20 +391,6 @@ function visionIdentity() {
   };
 }
 
-function summaryIdentity() {
-  return {
-    modelId: "qwen3-0.6b-generic-gpu:2",
-    source: "summary_slot" as const,
-    task: "chat-completion",
-    runtime: {
-      deviceType: DeviceType.GPU,
-      executionProvider: "WebGPUExecutionProvider",
-    },
-    inputModalities: ["text"],
-    outputModalities: ["text"],
-  };
-}
-
 function textResponse(text: string, finishReason: Response["finishReason"] = "stop"): Response {
   return {
     output: [{ type: "text", text }],
@@ -354,10 +402,17 @@ function textResponse(text: string, finishReason: Response["finishReason"] = "st
 function deferred<T>(): {
   readonly promise: Promise<T>;
   resolve(value: T): void;
+  reject(error: unknown): void;
 } {
   let resolve = (_value: T) => {};
-  const promise = new Promise<T>((settle) => {
+  let reject = (_error: unknown) => {};
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

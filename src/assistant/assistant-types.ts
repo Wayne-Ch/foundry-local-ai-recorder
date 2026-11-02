@@ -21,6 +21,7 @@ export interface AssistantTranscriptContext {
 
 export interface AssistantRequestContext {
   readonly transcript: AssistantTranscriptContext;
+  readonly transcriptFingerprint: string;
   readonly summaryText: string | null;
   readonly summaryVersion: number | null;
   readonly imageAnalysisText: string | null;
@@ -32,6 +33,7 @@ export interface AssistantRequestContext {
 export interface AssistantImageSelection {
   readonly id: string;
   readonly version: number;
+  readonly analysisStatus: "unanalyzed" | "ready";
   readonly basename: string;
   readonly mimeType: "image/png" | "image/jpeg" | "image/webp";
   readonly sizeBytes: number;
@@ -49,6 +51,7 @@ export interface ImageAnalysisNote {
 
 export interface ImageAnalysisSnapshot extends ImageAnalysisNote {
   readonly version: number;
+  readonly imageId: string;
   readonly imageVersion: number;
   readonly contextLabels: readonly AssistantContextLabel[];
   readonly contextFingerprint: string;
@@ -62,6 +65,11 @@ export interface AssistantChatMessage {
   readonly requestId: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  readonly mode: AssistantMode;
+  readonly contextFingerprint: string;
+  readonly dependsOnImage: boolean;
+  readonly imageId: string | null;
+  readonly imageVersion: number | null;
   readonly contextLabels: readonly AssistantContextLabel[];
   readonly createdAt: string;
 }
@@ -94,6 +102,10 @@ export interface AssistantOperationToken {
   readonly generation: number;
   readonly laneGeneration: number;
   readonly kind: AssistantOperationKind;
+  readonly mode: AssistantMode;
+  readonly dependsOnImage: boolean;
+  readonly requiresImageBytes: boolean;
+  readonly imageId: string | null;
   readonly imageVersion: number | null;
   readonly contextFingerprint: string;
 }

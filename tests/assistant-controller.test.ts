@@ -1,6 +1,10 @@
 import type { RequestOptions } from "foundry-local-sdk";
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
+import type {
+  AssistantImageByteLifecycle,
+  AssistantImageBytePurpose,
+} from "../src/assistant/image-byte-lifecycle";
 import type { ValidatedImage } from "../src/assistant/image-security";
 import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
 import type { VisionChatTurnInput, VisionChatTurnResult } from "../src/foundry/optional-vision-chat-runtime";
@@ -70,7 +74,13 @@ describe("AssistantController", () => {
     transcript = snapshot({ finalText: "corrected", version: 2 });
     release();
     await vi.waitFor(() =>
-      expect(controller.snapshot().trace.some((entry) => entry.phase === "image-analysis-stale")).toBe(true),
+      expect(
+        controller
+          .snapshot()
+          .trace.some(
+            (entry) => entry.phase === "image-analysis-stale" || entry.phase === "assistant-context-stale",
+          ),
+      ).toBe(true),
     );
 
     expect(controller.snapshot().imageAnalysis).toBeNull();
@@ -147,6 +157,208 @@ describe("AssistantController", () => {
       "cleanup is still draining",
     );
     release();
+  });
+
+  it("invalidates an open image picker token immediately on Reset or mode change", () => {
+    const runtime = new FakeRuntime("answer");
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({}),
+      runtime,
+    });
+    const resetToken = controller.captureImagePickerToken("session-1");
+
+    controller.reset();
+    expect(() => controller.assertImagePickerToken(resetToken)).toThrow("stale assistant state");
+
+    const modeToken = controller.captureImagePickerToken("session-1");
+    controller.setMode("clinic");
+    expect(() => controller.assertImagePickerToken(modeToken)).toThrow("stale assistant state");
+  });
+
+  it.each(["replace", "remove", "reset"] as const)(
+    "%s cancels a queued image chat before any operation byte copy exists",
+    async (action) => {
+      let release = () => {};
+      const lifecycle = new TrackingImageByteLifecycle();
+      const runtime = new FakeRuntime(
+        ["Text answer.", "Visible text/objects: ODE\nRelation to lesson: Equation\nUncertainty: None"],
+        async (_input, index) => {
+          if (index === 0) {
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+          }
+        },
+      );
+      const controller = new AssistantController({
+        getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+        runtime,
+        imageByteLifecycle: lifecycle,
+      });
+      controller.selectImage(image(), "data:image/png;base64,abc");
+      controller.startChat("session-1", "What is ODE?", () => {});
+      await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+      controller.startChat("session-1", "Explain the selected image.", () => {});
+      expect(controller.snapshot().queuedRequests).toBe(1);
+      expect(lifecycle.copies("assistant-operation")).toHaveLength(0);
+
+      if (action === "replace") {
+        controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+      } else if (action === "remove") {
+        controller.removeImage();
+      } else {
+        controller.reset();
+      }
+
+      release();
+      await vi.waitFor(() => expect(controller.snapshot().queuedRequests).toBe(0));
+      expect(lifecycle.copies("assistant-operation")).toHaveLength(0);
+      expect(runtime.inputs).toHaveLength(1);
+    },
+  );
+
+  it.each(["replace", "remove"] as const)(
+    "%s cancels active image chat and releases its execution copy",
+    async (action) => {
+      let release = () => {};
+      const lifecycle = new TrackingImageByteLifecycle();
+      const runtime = new FakeRuntime(
+        "stale image answer",
+        async () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const controller = new AssistantController({
+        getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+        runtime,
+        imageByteLifecycle: lifecycle,
+      });
+      controller.selectImage(image(), "data:image/png;base64,abc");
+      controller.startChat("session-1", "Explain the selected image.", () => {});
+      await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+      const operationBytes = lifecycle.copies("assistant-operation")[0];
+
+      if (action === "replace") {
+        controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+      } else {
+        controller.removeImage();
+      }
+      expect(controller.snapshot().activeRequestId).toBeNull();
+      expect(controller.snapshot().cleanupPending).toBe(true);
+
+      release();
+      await vi.waitFor(() => expect(controller.snapshot().cleanupPending).toBe(false));
+      expect(operationBytes).toEqual(new Uint8Array([0, 0, 0]));
+      expect(controller.snapshot().chatMessages.some((message) => message.role === "assistant")).toBe(false);
+    },
+  );
+
+  it("copies current image bytes only at execution and releases the operation copy", async () => {
+    let release = () => {};
+    const lifecycle = new TrackingImageByteLifecycle();
+    const runtime = new FakeRuntime(
+      "Visible text/objects: ODE\nRelation to lesson: Equation\nUncertainty: None",
+      async () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime,
+      imageByteLifecycle: lifecycle,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+    const operationCopy = lifecycle.copies("assistant-operation")[0];
+    expect(operationCopy).toEqual(new Uint8Array([1, 2, 3]));
+    expect(lifecycle.isLive(operationCopy as Uint8Array)).toBe(true);
+
+    release();
+    await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
+    expect(operationCopy).toEqual(new Uint8Array([0, 0, 0]));
+    expect(lifecycle.isLive(operationCopy as Uint8Array)).toBe(false);
+  });
+
+  it("invalidates transcript-v1 analysis before corrected-v2 chat while reanalysis waits", async () => {
+    let transcript = snapshot({ finalText: "version one", version: 1 });
+    let releaseV2Chat = () => {};
+    const runtime = new FakeRuntime(
+      [
+        "Visible text/objects: OLD V1 NOTE\nRelation to lesson: Old lesson\nUncertainty: None",
+        "Version two answer.",
+        "Visible text/objects: NEW V2 NOTE\nRelation to lesson: Corrected lesson\nUncertainty: None",
+      ],
+      async (_input, index) => {
+        if (index === 1) {
+          await new Promise<void>((resolve) => {
+            releaseV2Chat = resolve;
+          });
+        }
+      },
+    );
+    const controller = new AssistantController({
+      getTranscript: () => transcript,
+      runtime,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
+
+    transcript = snapshot({ finalText: "corrected version two", version: 2 });
+    controller.startChat("session-1", "Explain the correction.", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(2));
+    controller.startImageAnalysis("session-1", () => {});
+
+    expect(controller.snapshot().imageAnalysis).toBeNull();
+    expect(controller.snapshot().image?.analysisStatus).toBe("unanalyzed");
+    expect(controller.snapshot().queuedRequests).toBe(1);
+    expect(runtime.inputs[1]?.prompt).toContain("corrected version two");
+    expect(runtime.inputs[1]?.prompt).not.toContain("OLD V1 NOTE");
+
+    releaseV2Chat();
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(3));
+    await vi.waitFor(() =>
+      expect(controller.snapshot().imageAnalysis?.visibleTextAndObjects).toBe("NEW V2 NOTE"),
+    );
+  });
+
+  it("clears unsafe classroom output on Clinic switch and requires image reanalysis", async () => {
+    const runtime = new FakeRuntime([
+      "Visible text/objects: UNSAFE CLASSROOM NOTE\nRelation to lesson: Classroom only\nUncertainty: None",
+      "UNSAFE CLASSROOM ANSWER",
+      "Clinic-safe educational answer.",
+    ]);
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "shared lesson", version: 1 }),
+      runtime,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
+    controller.startChat("session-1", "Explain the lesson.", () => {});
+    await vi.waitFor(() =>
+      expect(controller.snapshot().chatMessages.some((message) => message.role === "assistant")).toBe(true),
+    );
+
+    const clinic = controller.setMode("clinic");
+
+    expect(clinic).toMatchObject({
+      mode: "clinic",
+      image: { analysisStatus: "unanalyzed" },
+      imageAnalysis: null,
+      chatMessages: [],
+    });
+    expect(JSON.stringify(clinic.trace)).not.toContain("UNSAFE CLASSROOM");
+    expect(clinic.trace.at(-1)?.phase).toBe("mode-isolation");
+
+    controller.startChat("session-1", "Explain the term.", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(3));
+    expect(runtime.inputs[2]?.systemPrompt).toContain("must not diagnose");
+    expect(runtime.inputs[2]?.prompt).not.toContain("UNSAFE CLASSROOM");
   });
 
   it("parses inline structured image notes", () => {
@@ -263,6 +475,7 @@ class FakeRuntime implements AssistantRuntime {
     active: false,
     draining: false,
     visionModelId: null,
+    cleanupDiagnostic: null,
   };
   readonly inputs: VisionChatTurnInput[] = [];
   readonly imagePayloads: Uint8Array[] = [];
@@ -282,8 +495,8 @@ class FakeRuntime implements AssistantRuntime {
   );
 
   constructor(
-    readonly answer: string,
-    readonly beforeAnswer: () => Promise<void> = async () => {},
+    readonly answer: string | readonly string[],
+    readonly beforeAnswer: (input: VisionChatTurnInput, index: number) => Promise<void> = async () => {},
   ) {}
 
   async runAssistantTurn(
@@ -295,6 +508,7 @@ class FakeRuntime implements AssistantRuntime {
       active: true,
       draining: false,
     };
+    const index = this.inputs.length;
     this.inputs.push(input);
     for (const image of input.images ?? []) {
       if (image.kind === "data") {
@@ -302,18 +516,21 @@ class FakeRuntime implements AssistantRuntime {
       }
     }
     try {
-      await this.beforeAnswer();
+      await this.beforeAnswer(input, index);
+      const answer = Array.isArray(this.answer)
+        ? (this.answer[index] ?? this.answer.at(-1) ?? "")
+        : this.answer;
       return {
-        text: this.answer,
+        text: answer,
         model: {
-          modelId: input.images === undefined ? "summary-model" : "vision-model",
-          source: input.images === undefined ? "summary_slot" : "vision_slot",
-          task: input.images === undefined ? "chat-completion" : "vision-language-chat",
+          modelId: "qwen3.5-0.8b-generic-cpu:3",
+          source: "vision_slot",
+          task: "vision-language-chat",
           runtime: {
             deviceType: DeviceType.CPU,
             executionProvider: "CPUExecutionProvider",
           },
-          inputModalities: input.images === undefined ? ["text"] : ["text", "image"],
+          inputModalities: ["text", "image"],
           outputModalities: ["text"],
         },
         preflight: {
@@ -325,7 +542,7 @@ class FakeRuntime implements AssistantRuntime {
           deficitTokens: 0,
         },
         response: {
-          output: [{ type: "text", text: this.answer }],
+          output: [{ type: "text", text: answer }],
           finishReason: "stop",
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
         },
@@ -353,13 +570,40 @@ function snapshot(overrides: Partial<TranscriptSnapshot>): TranscriptSnapshot {
   };
 }
 
-function image(): ValidatedImage {
+function image(bytes: readonly number[] = [1, 2, 3]): ValidatedImage {
   return {
     basename: "ode.png",
     mimeType: "image/png",
     sizeBytes: 3,
     width: 10,
     height: 10,
-    bytes: new Uint8Array([1, 2, 3]),
+    bytes: new Uint8Array(bytes),
   };
+}
+
+class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {
+  readonly #copies = new Map<AssistantImageBytePurpose, Uint8Array[]>();
+  readonly #live = new Set<Uint8Array>();
+
+  copy(source: Uint8Array, purpose: AssistantImageBytePurpose): Uint8Array {
+    const bytes = source.slice();
+    const copies = this.#copies.get(purpose) ?? [];
+    copies.push(bytes);
+    this.#copies.set(purpose, copies);
+    this.#live.add(bytes);
+    return bytes;
+  }
+
+  release(bytes: Uint8Array): void {
+    bytes.fill(0);
+    this.#live.delete(bytes);
+  }
+
+  copies(purpose: AssistantImageBytePurpose): readonly Uint8Array[] {
+    return this.#copies.get(purpose) ?? [];
+  }
+
+  isLive(bytes: Uint8Array): boolean {
+    return this.#live.has(bytes);
+  }
 }

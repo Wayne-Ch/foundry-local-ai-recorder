@@ -136,9 +136,10 @@ Message:
 
 Show:
 
-- the main-process picker and extension/MIME/signature checks;
+- the generation/session-leased main-process picker and extension/MIME/signature checks;
 - PNG/JPEG/WebP dimension parsing before decode;
-- original-byte zero-fill and PNG thumbnail-only renderer contract;
+- state revalidation after dialog/stat/read/decode boundaries, original-byte zero-fill, and the PNG
+  thumbnail-only renderer contract;
 - final-transcript → ephemeral-live-draft → none context priority;
 - image/context token comparison in `applyImageAnalysis`;
 - automatic re-analysis after Whisper final/import/correction.
@@ -158,22 +159,24 @@ Show:
 
 - the bounded serialized queue and AbortSignal cancellation;
 - per-request live-draft snapshot with durable labels but no durable draft text;
-- explicit memory-only chat history used to build the next prompt;
+- memory-only chat history admitted to prompts only when its mode/image/context provenance still
+  matches;
 - one fresh `ChatSession` per turn;
 - exact `Item.userMessage` text/image parts;
 - one shared validated manager and manager generation;
-- text chat reusing the loaded summary slot, with summary priority on the shared text lane;
-- exact `qwen3.5-0.8b-generic-cpu:3` vision model in a separate optional slot;
+- exact `qwen3.5-0.8b-generic-cpu:3` for both text-only and image turns in a separate optional slot;
+- a core summary lane that never waits for optional assistant cancellation or native settlement;
+- enqueue-time operation tokens and execution-time image-byte copies with deterministic zero-fill;
 - immediate visible Reset plus internal cancellation/draining and vision-only unload;
 - clinic prompt prohibitions.
 
 Message:
 
-> Asking during recording never enters the audio controller. Text chat deliberately reuses the
-> loaded summary model through a fresh session, while image requests use the scoped CPU vision slot.
-> The request captures a temporary context snapshot while audio callbacks continue. Clear cancels
-> queued chat and removes the only chat history. Clinic mode is explanatory and clinician-led,
-> never diagnostic.
+> Asking during recording never enters the audio controller. Text and image turns use the same
+> scoped CPU VLM through fresh sessions, while the core Qwen summary model remains exclusive to
+> transcript summary. Requests capture immutable provenance at enqueue and copy image bytes only at
+> execution. Clear cancels queued chat and removes the only chat history. A mode switch clears all
+> prior assistant output before Clinic prompts can run.
 
 ## 12:15-13:15 — Model preparation preserves working slots
 

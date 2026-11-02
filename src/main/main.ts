@@ -13,12 +13,7 @@ import {
   type WebFrameMain,
 } from "electron";
 import type { AssistantLaneSnapshot } from "../assistant/assistant-types";
-import {
-  declaredImageMimeType,
-  MAX_IMAGE_BYTES,
-  type ValidatedImage,
-  validateImage,
-} from "../assistant/image-security";
+import type { ValidatedImage } from "../assistant/image-security";
 import type {
   AudioCapturePayload,
   AudioStreamCancelRequest,
@@ -41,6 +36,7 @@ import {
 } from "../shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { AssistantController } from "./assistant-controller";
+import { pickAssistantImage } from "./assistant-image-picker";
 import { type AssistantSessionOwnerIdentity, AssistantSessionOwnership } from "./assistant-session-owner";
 import { type AudioStreamOwnerIdentity, AudioStreamOwnership } from "./audio-stream-owner";
 import {
@@ -286,6 +282,7 @@ function registerIpc(): void {
     const lease = audioStreamOwnership.begin(renderer.owner);
     try {
       const response = await controller.startLiveStream(request, (partial) => {
+        synchronizeAssistantTranscript(renderer);
         if (!audioStreamOwnership.canRoute(lease, partial.streamId)) {
           return;
         }
@@ -397,39 +394,31 @@ function registerIpc(): void {
     if (owner === null || owner.isDestroyed()) {
       throw new Error("The application window is not available.");
     }
-    const result = await dialog.showOpenDialog(owner, {
-      title: "Choose a lesson image",
-      properties: ["openFile"],
-      filters: [{ name: "Lesson images", extensions: ["png", "jpg", "jpeg", "webp"] }],
-    });
-    const filePath = result.filePaths[0];
-    if (result.canceled || filePath === undefined) {
-      return null;
-    }
-    let fileBytes: Uint8Array | null = null;
-    let validatedBytes: Uint8Array | null = null;
-    try {
-      const file = await stat(filePath);
-      if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
-        throw new Error("The selected image must be between 1 byte and 10 MiB.");
-      }
-      fileBytes = await readFile(filePath);
-      const basename = path.basename(filePath);
-      const validated = validateImage({
-        basename,
-        declaredMimeType: declaredImageMimeType(basename),
-        bytes: fileBytes,
-      });
-      validatedBytes = validated.bytes;
-      const thumbnailDataUrl = createSafeThumbnail(validated);
-      assertAssistantLease(renderer, request.sessionId);
-      const snapshot = assistantController.selectImage(validated, thumbnailDataUrl);
-      routeAssistantUpdate(renderer, snapshot, request.sessionId);
-      return snapshot;
-    } finally {
-      fileBytes?.fill(0);
-      validatedBytes?.fill(0);
-    }
+    const pickerToken = assistantController.captureImagePickerToken(request.sessionId);
+    return pickAssistantImage(
+      {
+        showDialog: () =>
+          dialog.showOpenDialog(owner, {
+            title: "Choose a lesson image",
+            properties: ["openFile"],
+            filters: [{ name: "Lesson images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+          }),
+        readFile,
+        createThumbnail: async (image) => createSafeThumbnail(image),
+      },
+      {
+        assertCurrent: () => {
+          assertAssistantLease(renderer, pickerToken.ownerSessionId);
+          assistantController.assertImagePickerToken(pickerToken);
+        },
+        commit: (image, thumbnailDataUrl) => {
+          assertAssistantLease(renderer, pickerToken.ownerSessionId);
+          const snapshot = assistantController.selectImage(image, thumbnailDataUrl, pickerToken);
+          routeAssistantUpdate(renderer, snapshot, pickerToken.ownerSessionId);
+          return snapshot;
+        },
+      },
+    );
   });
   ipcMain.handle(ipcChannels.assistantSetMode, (event, request: AssistantSetModeRequest) => {
     const renderer = assertAssistantSession(event, request);
@@ -547,7 +536,11 @@ function routeAssistantUpdate(
 }
 
 function queueCurrentImageReanalysis(renderer: ReturnType<typeof assertTrustedRendererIpc>): void {
-  if (assistantController.snapshot().image === null) {
+  const synchronized = assistantController.synchronizeTranscriptContext();
+  if (synchronized.changed) {
+    routeAssistantUpdate(renderer, synchronized.snapshot);
+  }
+  if (synchronized.snapshot.image === null) {
     return;
   }
   const lease = assistantSessionOwnership.activeFor(renderer.owner);
@@ -567,7 +560,9 @@ function queueCurrentImageReanalysis(renderer: ReturnType<typeof assertTrustedRe
 }
 
 function createSafeThumbnail(image: ValidatedImage): string {
-  const decoded = nativeImage.createFromBuffer(Buffer.from(image.bytes));
+  const decoded = nativeImage.createFromBuffer(
+    Buffer.from(image.bytes.buffer, image.bytes.byteOffset, image.bytes.byteLength),
+  );
   if (decoded.isEmpty()) {
     throw new Error("The selected image could not be decoded safely.");
   }
@@ -585,6 +580,13 @@ function createSafeThumbnail(image: ValidatedImage): string {
     throw new Error("The selected image thumbnail was not encoded as a safe PNG.");
   }
   return dataUrl;
+}
+
+function synchronizeAssistantTranscript(renderer: ReturnType<typeof assertTrustedRendererIpc>): void {
+  const synchronized = assistantController.synchronizeTranscriptContext();
+  if (synchronized.changed) {
+    routeAssistantUpdate(renderer, synchronized.snapshot);
+  }
 }
 
 function sendToFrame(frame: WebFrameMain, channel: string, payload: unknown): boolean {

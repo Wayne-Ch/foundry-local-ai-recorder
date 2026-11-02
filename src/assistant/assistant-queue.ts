@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import type { AssistantOperationKind } from "./assistant-types";
+import type { AssistantOperationKind, AssistantOperationToken } from "./assistant-types";
 
 export const DEFAULT_MAX_ASSISTANT_QUEUE = 3;
 
@@ -13,9 +12,9 @@ export class AssistantCancelledError extends Error {
 interface QueueTask<T> {
   readonly id: string;
   readonly ownerSessionId: string;
-  readonly kind: AssistantOperationKind;
+  readonly token: AssistantOperationToken;
   readonly generation: number;
-  readonly run: (signal: AbortSignal, requestId: string) => Promise<T>;
+  readonly run: (signal: AbortSignal, token: AssistantOperationToken) => Promise<T>;
   readonly resolve: (value: T) => void;
   readonly reject: (error: unknown) => void;
   readonly abortController: AbortController;
@@ -41,7 +40,7 @@ export class AssistantOperationQueue {
 
   get activeOperation(): AssistantOperationKind | null {
     const active = this.#active;
-    return active !== null && !active.abortController.signal.aborted ? active.kind : null;
+    return active !== null && !active.abortController.signal.aborted ? active.token.kind : null;
   }
 
   get draining(): boolean {
@@ -58,8 +57,8 @@ export class AssistantOperationQueue {
 
   enqueue<T>(
     ownerSessionId: string,
-    kind: AssistantOperationKind,
-    run: (signal: AbortSignal, requestId: string) => Promise<T>,
+    token: AssistantOperationToken,
+    run: (signal: AbortSignal, token: AssistantOperationToken) => Promise<T>,
   ): { readonly requestId: string; readonly result: Promise<T> } {
     if (this.draining) {
       throw new Error("Optional assistant cleanup is still draining.");
@@ -67,7 +66,7 @@ export class AssistantOperationQueue {
     if (this.#pending.length >= this.#maxQueuedRequests) {
       throw new Error(`The assistant queue is full (${this.#maxQueuedRequests} waiting requests).`);
     }
-    const requestId = randomUUID();
+    const requestId = token.requestId;
     const generation = this.#generation;
     let resolveTask = (_value: T) => {};
     let rejectTask = (_error: unknown) => {};
@@ -78,7 +77,7 @@ export class AssistantOperationQueue {
     const task: QueueTask<T> = {
       id: requestId,
       ownerSessionId,
-      kind,
+      token,
       generation,
       run,
       resolve: resolveTask,
@@ -121,12 +120,12 @@ export class AssistantOperationQueue {
   }
 
   cancelKind(kind: AssistantOperationKind): void {
-    if (this.#active?.kind === kind) {
+    if (this.#active?.token.kind === kind) {
       this.#active.abortController.abort();
     }
     for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
       const task = this.#pending[index];
-      if (task?.kind !== kind) {
+      if (task?.token.kind !== kind) {
         continue;
       }
       this.#pending.splice(index, 1);
@@ -135,13 +134,36 @@ export class AssistantOperationQueue {
     }
   }
 
-  reset(): void {
+  cancelImageDependent(): boolean {
+    let cancelled = false;
+    if (this.#active?.token.dependsOnImage === true) {
+      this.#active.abortController.abort();
+      cancelled = true;
+    }
+    for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
+      const task = this.#pending[index];
+      if (task?.token.dependsOnImage !== true) {
+        continue;
+      }
+      this.#pending.splice(index, 1);
+      task.abortController.abort();
+      task.reject(new AssistantCancelledError("The selected image or lesson context changed."));
+      cancelled = true;
+    }
+    return cancelled;
+  }
+
+  cancelAll(message = "The assistant request was cancelled."): void {
     this.#generation += 1;
     this.#active?.abortController.abort();
     for (const task of this.#pending.splice(0)) {
       task.abortController.abort();
-      task.reject(new AssistantCancelledError("The assistant state was reset."));
+      task.reject(new AssistantCancelledError(message));
     }
+  }
+
+  reset(): void {
+    this.cancelAll("The assistant state was reset.");
   }
 
   async #drain(): Promise<void> {
@@ -157,14 +179,16 @@ export class AssistantOperationQueue {
       if (next.generation !== this.#generation || next.abortController.signal.aborted) {
         throw new AssistantCancelledError();
       }
-      const value = await next.run(next.abortController.signal, next.id);
+      const value = await next.run(next.abortController.signal, next.token);
       if (next.generation !== this.#generation || next.abortController.signal.aborted) {
         throw new AssistantCancelledError();
       }
       next.resolve(value);
     } catch (error) {
       next.reject(
-        next.abortController.signal.aborted && !(error instanceof AssistantCancelledError)
+        next.abortController.signal.aborted &&
+          !(error instanceof AssistantCancelledError) &&
+          !(error instanceof AggregateError)
           ? new AssistantCancelledError()
           : error,
       );

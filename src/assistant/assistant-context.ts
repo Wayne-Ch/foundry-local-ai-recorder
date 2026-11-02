@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { TranscriptSnapshot } from "../transcript/transcript-store";
 import type {
   AssistantContextLabel,
@@ -9,29 +10,13 @@ export function buildAssistantContext(
   transcript: TranscriptSnapshot,
   imageAnalysis: ImageAnalysisSnapshot | null,
 ): AssistantRequestContext {
-  const transcriptContext = transcript.finalText
-    ? {
-        kind: "final_transcript" as const,
-        text: transcript.finalText,
-        version: transcript.version,
-        liveSequence: null,
-        ephemeral: false,
-      }
-    : transcript.liveDraft
-      ? {
-          kind: "live_draft" as const,
-          text: transcript.liveDraft,
-          version: null,
-          liveSequence: transcript.liveSequence,
-          ephemeral: true,
-        }
-      : {
-          kind: "none" as const,
-          text: "",
-          version: null,
-          liveSequence: null,
-          ephemeral: false,
-        };
+  const transcriptContext = resolveTranscriptContext(transcript);
+  const transcriptFingerprint = fingerprint([
+    transcriptContext.kind,
+    transcriptContext.version,
+    transcriptContext.liveSequence,
+    transcriptContext.text,
+  ]);
   const summary =
     transcript.summary !== null && transcript.summary.transcriptVersion === transcript.version
       ? transcript.summary
@@ -74,36 +59,64 @@ export function buildAssistantContext(
 
   return {
     transcript: transcriptContext,
+    transcriptFingerprint,
     summaryText: summary?.text ?? null,
     summaryVersion: summary?.transcriptVersion ?? null,
     imageAnalysisText: imageAnalysis === null ? null : formatImageAnalysisContext(imageAnalysis),
     imageAnalysisVersion: imageAnalysis?.version ?? null,
     labels,
-    fingerprint: [
-      transcriptContext.kind,
-      transcriptContext.version ?? "-",
-      transcriptContext.liveSequence ?? "-",
-      summary?.transcriptVersion ?? "-",
-      imageAnalysis?.version ?? "-",
-    ].join(":"),
+    fingerprint: fingerprint([
+      "assistant-context",
+      transcriptFingerprint,
+      summary?.transcriptVersion ?? null,
+      summary?.text ?? null,
+      imageAnalysis?.version ?? null,
+      imageAnalysis?.imageId ?? null,
+      imageAnalysis?.imageVersion ?? null,
+      imageAnalysis?.mode ?? null,
+      imageAnalysis?.contextFingerprint ?? null,
+      imageAnalysis === null ? null : formatImageAnalysisContext(imageAnalysis),
+    ]),
   };
 }
 
 export function buildImageAnalysisContext(transcript: TranscriptSnapshot): AssistantRequestContext {
-  const context = buildAssistantContext(transcript, null);
-  const labels = context.labels.filter(
-    (label) => label.kind === "live_draft" || label.kind === "final_transcript" || label.kind === "none",
-  );
+  const transcriptContext = resolveTranscriptContext(transcript);
+  const transcriptFingerprint = fingerprint([
+    transcriptContext.kind,
+    transcriptContext.version,
+    transcriptContext.liveSequence,
+    transcriptContext.text,
+  ]);
+  const labels: AssistantContextLabel[] =
+    transcriptContext.kind === "final_transcript"
+      ? [
+          {
+            kind: "final_transcript",
+            label: `final transcript v${transcriptContext.version}`,
+            version: transcriptContext.version,
+            ephemeral: false,
+          },
+        ]
+      : transcriptContext.kind === "live_draft"
+        ? [
+            {
+              kind: "live_draft",
+              label: "live draft snapshot (may change)",
+              version: null,
+              ephemeral: true,
+            },
+          ]
+        : [{ kind: "none", label: "none", version: null, ephemeral: false }];
   return {
-    ...context,
+    transcript: transcriptContext,
+    transcriptFingerprint,
     summaryText: null,
     summaryVersion: null,
+    imageAnalysisText: null,
+    imageAnalysisVersion: null,
     labels,
-    fingerprint: [
-      context.transcript.kind,
-      context.transcript.version ?? "-",
-      context.transcript.liveSequence ?? "-",
-    ].join(":"),
+    fingerprint: fingerprint(["image-analysis-context", transcriptFingerprint]),
   };
 }
 
@@ -119,4 +132,36 @@ function formatImageAnalysisContext(analysis: ImageAnalysisSnapshot): string {
     `Relation: ${analysis.relationToLesson}`,
     `Uncertainty: ${analysis.uncertainty}`,
   ].join("\n");
+}
+
+function resolveTranscriptContext(transcript: TranscriptSnapshot): AssistantRequestContext["transcript"] {
+  if (transcript.finalText) {
+    return {
+      kind: "final_transcript",
+      text: transcript.finalText,
+      version: transcript.version,
+      liveSequence: null,
+      ephemeral: false,
+    };
+  }
+  if (transcript.liveDraft) {
+    return {
+      kind: "live_draft",
+      text: transcript.liveDraft,
+      version: null,
+      liveSequence: transcript.liveSequence,
+      ephemeral: true,
+    };
+  }
+  return {
+    kind: "none",
+    text: "",
+    version: null,
+    liveSequence: null,
+    ephemeral: false,
+  };
+}
+
+function fingerprint(parts: readonly unknown[]): string {
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }

@@ -1,9 +1,20 @@
+import { randomUUID } from "node:crypto";
 import type { RequestOptions } from "foundry-local-sdk";
 import { buildAssistantContext, buildImageAnalysisContext } from "../assistant/assistant-context";
 import { assistantSystemPrompt, chatUserPrompt, imageAnalysisPrompt } from "../assistant/assistant-prompts";
 import { AssistantCancelledError, AssistantOperationQueue } from "../assistant/assistant-queue";
 import { AssistantMemoryState } from "../assistant/assistant-state";
-import type { AssistantLaneSnapshot, AssistantMode, ImageAnalysisNote } from "../assistant/assistant-types";
+import type {
+  AssistantLaneSnapshot,
+  AssistantMode,
+  AssistantOperationToken,
+  AssistantRequestContext,
+  ImageAnalysisNote,
+} from "../assistant/assistant-types";
+import {
+  type AssistantImageByteLifecycle,
+  secureAssistantImageByteLifecycle,
+} from "../assistant/image-byte-lifecycle";
 import type { ValidatedImage } from "../assistant/image-security";
 import { formatAssistantPlainText } from "../assistant/plain-text";
 import type { AssistantRuntimeStatus } from "../foundry/foundry-runtime";
@@ -45,10 +56,22 @@ export interface AssistantRuntime {
 export interface AssistantControllerOptions {
   readonly runtime: AssistantRuntime;
   readonly getTranscript: () => TranscriptSnapshot;
+  readonly imageByteLifecycle?: AssistantImageByteLifecycle;
 }
 
 export interface StartedAssistantRequest {
   readonly requestId: string;
+  readonly snapshot: AssistantLaneSnapshot;
+}
+
+export interface AssistantImagePickerToken {
+  readonly ownerSessionId: string;
+  readonly generation: number;
+  readonly imageVersion: number;
+}
+
+export interface AssistantContextSynchronization {
+  readonly changed: boolean;
   readonly snapshot: AssistantLaneSnapshot;
 }
 
@@ -59,21 +82,44 @@ export class AssistantController {
   readonly #queue = new AssistantOperationQueue();
   readonly #runtime: AssistantRuntime;
   readonly #getTranscript: () => TranscriptSnapshot;
-  #imageBytes: Uint8Array | null = null;
+  readonly #imageByteLifecycle: AssistantImageByteLifecycle;
+  #imageBytes: {
+    readonly imageId: string;
+    readonly imageVersion: number;
+    readonly bytes: Uint8Array;
+  } | null = null;
+  #transcriptContextFingerprint: string;
 
   constructor(options: AssistantControllerOptions) {
     this.#runtime = options.runtime;
     this.#getTranscript = options.getTranscript;
+    this.#imageByteLifecycle = options.imageByteLifecycle ?? secureAssistantImageByteLifecycle;
+    this.#transcriptContextFingerprint = buildImageAnalysisContext(this.#getTranscript()).fingerprint;
   }
 
   snapshot(): AssistantLaneSnapshot {
+    this.#synchronizeTranscriptContext();
+    return this.#snapshot();
+  }
+
+  synchronizeTranscriptContext(): AssistantContextSynchronization {
+    const changed = this.#synchronizeTranscriptContext();
+    return { changed, snapshot: this.#snapshot() };
+  }
+
+  #snapshot(): AssistantLaneSnapshot {
     const snapshot = this.#state.snapshot(this.#queue);
-    const cleanupPending = this.#queue.draining || this.#runtime.assistantStatus.draining;
+    const runtimeStatus = this.#runtime.assistantStatus;
+    const cleanupPending = this.#queue.draining || runtimeStatus.draining;
     return {
       ...snapshot,
       cleanupPending,
       cleanupDetail: cleanupPending
-        ? "Optional assistant cleanup is draining; recording, transcription, and summary remain available."
+        ? runtimeStatus.cleanupDiagnostic === null
+          ? "Optional assistant cleanup is draining; recording, transcription, and summary remain available."
+          : `Optional assistant cleanup is draining after a native cleanup error; recording, transcription, and summary remain available. ${formatSafeDiagnostic(
+              runtimeStatus.cleanupDiagnostic,
+            )}`
         : null,
     };
   }
@@ -83,39 +129,75 @@ export class AssistantController {
       throw new Error("Assistant mode must be classroom or clinic.");
     }
     if (this.#state.snapshot().mode !== mode) {
-      this.#queue.cancelKind("chat");
-      this.#queue.cancelKind("image_analysis");
+      this.#queue.cancelAll("The assistant mode changed.");
+      this.#runtime.cancelAssistantOperations(new Error("Assistant mode change cancelled optional work."));
+      this.#state.setMode(mode);
     }
-    this.#state.setMode(mode);
     return this.snapshot();
   }
 
-  selectImage(image: ValidatedImage, thumbnailDataUrl: string): AssistantLaneSnapshot {
+  captureImagePickerToken(ownerSessionId: string): AssistantImagePickerToken {
+    const snapshot = this.#state.snapshot();
+    return {
+      ownerSessionId,
+      generation: snapshot.generation,
+      imageVersion: this.#state.imageVersion,
+    };
+  }
+
+  assertImagePickerToken(token: AssistantImagePickerToken): void {
+    if (!this.#state.isImagePickerTokenCurrent(token.generation, token.imageVersion)) {
+      throw new Error("The image selection belongs to stale assistant state.");
+    }
+  }
+
+  selectImage(
+    image: ValidatedImage,
+    thumbnailDataUrl: string,
+    pickerToken?: AssistantImagePickerToken,
+  ): AssistantLaneSnapshot {
     if (!thumbnailDataUrl.startsWith("data:image/png;base64,")) {
       throw new Error("The generated image thumbnail has an unexpected media type.");
     }
-    this.#queue.cancelKind("image_analysis");
-    this.#disposeImageBytes();
-    this.#imageBytes = image.bytes.slice();
-    this.#state.selectImage({
-      basename: image.basename,
-      mimeType: image.mimeType,
-      sizeBytes: image.sizeBytes,
-      width: image.width,
-      height: image.height,
-      thumbnailDataUrl,
-    });
+    if (pickerToken !== undefined) {
+      this.assertImagePickerToken(pickerToken);
+    }
+    this.#queue.cancelImageDependent();
+    const ownedBytes = this.#imageByteLifecycle.copy(image.bytes, "selected-image");
+    let committed = false;
+    try {
+      this.#disposeImageBytes();
+      const selected = this.#state.selectImage({
+        basename: image.basename,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        width: image.width,
+        height: image.height,
+        thumbnailDataUrl,
+      });
+      this.#imageBytes = {
+        imageId: selected.id,
+        imageVersion: selected.version,
+        bytes: ownedBytes,
+      };
+      committed = true;
+    } finally {
+      if (!committed) {
+        this.#imageByteLifecycle.release(ownedBytes, "selected-image");
+      }
+    }
     return this.snapshot();
   }
 
   removeImage(): AssistantLaneSnapshot {
-    this.#queue.cancelKind("image_analysis");
+    this.#queue.cancelImageDependent();
     this.#disposeImageBytes();
     this.#state.removeImage();
     return this.snapshot();
   }
 
   startImageAnalysis(ownerSessionId: string, onUpdate: UpdateCallback): StartedAssistantRequest {
+    this.#synchronizeTranscriptContext();
     this.#queue.cancelKind("image_analysis");
     const image = this.#state.snapshot().image;
     if (image === null || this.#imageBytes === null) {
@@ -123,9 +205,14 @@ export class AssistantController {
     }
     const context = buildImageAnalysisContext(this.#getTranscript());
     const mode = this.#state.snapshot().mode;
-    const imageBytes = this.#imageBytes.slice();
-    const queued = this.#queue.enqueue(ownerSessionId, "image_analysis", async (signal, requestId) => {
-      const token = this.#state.beginOperation(requestId, "image_analysis", context);
+    const token = this.#state.createOperationToken(randomUUID(), "image_analysis", context, {
+      dependsOnImage: true,
+      requiresImageBytes: true,
+    });
+    const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
+      const currentContext = buildImageAnalysisContext(this.#getTranscript());
+      this.#assertOperationCurrent(operationToken, currentContext);
+      const ownedImage = this.#copyOperationImage(operationToken);
       try {
         const result = await this.#runTurn(
           {
@@ -134,8 +221,8 @@ export class AssistantController {
             images: [
               {
                 kind: "data",
-                format: imageFormat(image.mimeType),
-                data: imageBytes,
+                format: imageFormat(ownedImage.image.mimeType),
+                data: ownedImage.bytes,
               },
             ],
           },
@@ -143,19 +230,19 @@ export class AssistantController {
           IMAGE_REQUEST_OPTIONS,
         );
         const note = parseImageAnalysisNote(result.text);
-        const currentContext = buildImageAnalysisContext(this.#getTranscript());
-        if (this.#state.applyImageAnalysis(token, currentContext, note, result.model.modelId)) {
-          this.#state.trace("image-analysis-raw", result.text, "info", requestId);
-        } else if (this.#state.isGenerationCurrent(token)) {
+        const completionContext = buildImageAnalysisContext(this.#getTranscript());
+        if (this.#state.applyImageAnalysis(operationToken, completionContext, note, result.model.modelId)) {
+          this.#state.trace("image-analysis-raw", result.text, "info", operationToken.requestId);
+        } else if (this.#state.isGenerationCurrent(operationToken)) {
           this.#state.trace(
             "image-analysis-stale",
             "Discarded image analysis because the selected image or lesson context changed.",
             "warning",
-            requestId,
+            operationToken.requestId,
           );
         }
       } finally {
-        imageBytes.fill(0);
+        this.#imageByteLifecycle.release(ownedImage.bytes, "assistant-operation");
       }
     });
     this.#watch(queued.result, queued.requestId, onUpdate);
@@ -172,51 +259,63 @@ export class AssistantController {
     if (normalizedQuestion.length > 1_000) {
       throw new Error("Assistant questions are limited to 1,000 characters.");
     }
+    this.#synchronizeTranscriptContext();
+    const transcript = this.#getTranscript();
+    const analysisContext = buildImageAnalysisContext(transcript);
+    const validImageAnalysis = this.#state.validImageAnalysis(analysisContext);
+    const context = buildAssistantContext(transcript, validImageAnalysis);
     const stateBefore = this.#state.snapshot();
     const asksAboutImage = isImageQuestion(normalizedQuestion);
     if (asksAboutImage && stateBefore.image === null) {
       throw new Error("Select an image before asking an image-specific question.");
     }
-    const context = buildAssistantContext(this.#getTranscript(), this.#state.imageAnalysis);
     const mode = stateBefore.mode;
-    const history = this.#state.chatMessages;
-    const directImageBytes = asksAboutImage && this.#imageBytes !== null ? this.#imageBytes.slice() : null;
-    const selectedImage = stateBefore.image;
-    const queued = this.#queue.enqueue(ownerSessionId, "chat", async (signal, requestId) => {
-      const token = this.#state.beginOperation(requestId, "chat", context);
+    const dependsOnImage = asksAboutImage || validImageAnalysis !== null;
+    const token = this.#state.createOperationToken(randomUUID(), "chat", context, {
+      dependsOnImage,
+      requiresImageBytes: asksAboutImage,
+    });
+    const history = this.#state.chatHistoryFor(token);
+    const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
+      const currentContext = this.#buildCurrentChatContext();
+      this.#assertOperationCurrent(operationToken, currentContext);
+      const ownedImage = operationToken.requiresImageBytes ? this.#copyOperationImage(operationToken) : null;
       try {
         const input: VisionChatTurnInput = {
           prompt: chatUserPrompt(normalizedQuestion, context, history),
           systemPrompt: assistantSystemPrompt(mode),
-          ...(directImageBytes === null || selectedImage === null
+          ...(ownedImage === null
             ? {}
             : {
                 images: [
                   {
                     kind: "data" as const,
-                    format: imageFormat(selectedImage.mimeType),
-                    data: directImageBytes,
+                    format: imageFormat(ownedImage.image.mimeType),
+                    data: ownedImage.bytes,
                   },
                 ],
               }),
         };
         const result = await this.#runTurn(input, signal, CHAT_REQUEST_OPTIONS);
         const answer = formatAssistantPlainText(result.text);
-        if (this.#state.applyChatAnswer(token, answer, context)) {
-          this.#state.trace("chat-raw", result.text, "info", requestId);
-        } else if (this.#state.isGenerationCurrent(token)) {
+        const completionContext = this.#buildCurrentChatContext();
+        if (this.#state.applyChatAnswer(operationToken, answer, completionContext)) {
+          this.#state.trace("chat-raw", result.text, "info", operationToken.requestId);
+        } else if (this.#state.isGenerationCurrent(operationToken)) {
           this.#state.trace(
             "chat-stale",
             "Discarded a chat answer because assistant state changed.",
             "warning",
-            requestId,
+            operationToken.requestId,
           );
         }
       } finally {
-        directImageBytes?.fill(0);
+        if (ownedImage !== null) {
+          this.#imageByteLifecycle.release(ownedImage.bytes, "assistant-operation");
+        }
       }
     });
-    this.#state.appendUserMessage(queued.requestId, normalizedQuestion, context);
+    this.#state.appendUserMessage(token, normalizedQuestion, context);
     this.#watch(queued.result, queued.requestId, onUpdate);
     onUpdate(this.snapshot());
     queueMicrotask(() => onUpdate(this.snapshot()));
@@ -243,6 +342,7 @@ export class AssistantController {
     const cleanup = this.#runtime.resetAssistant();
     this.#disposeImageBytes();
     this.#state.reset();
+    this.#transcriptContextFingerprint = buildImageAnalysisContext(this.#getTranscript()).fingerprint;
     void cleanup.then(
       () => onUpdate?.(this.snapshot()),
       (error: unknown) => {
@@ -262,6 +362,7 @@ export class AssistantController {
     this.#runtime.cancelAssistantOperations(new Error("Assistant shutdown cancelled optional work."));
     this.#disposeImageBytes();
     this.#state.reset();
+    this.#transcriptContextFingerprint = buildImageAnalysisContext(this.#getTranscript()).fingerprint;
   }
 
   async #runTurn(
@@ -294,8 +395,71 @@ export class AssistantController {
   }
 
   #disposeImageBytes(): void {
-    this.#imageBytes?.fill(0);
+    if (this.#imageBytes !== null) {
+      this.#imageByteLifecycle.release(this.#imageBytes.bytes, "selected-image");
+    }
     this.#imageBytes = null;
+  }
+
+  #copyOperationImage(token: AssistantOperationToken): {
+    readonly image: NonNullable<AssistantLaneSnapshot["image"]>;
+    readonly bytes: Uint8Array;
+  } {
+    const image = this.#state.snapshot().image;
+    const owned = this.#imageBytes;
+    if (
+      !token.dependsOnImage ||
+      !token.requiresImageBytes ||
+      image === null ||
+      owned === null ||
+      token.imageId !== image.id ||
+      token.imageVersion !== image.version ||
+      owned.imageId !== image.id ||
+      owned.imageVersion !== image.version
+    ) {
+      throw new AssistantCancelledError("The selected image changed before assistant execution.");
+    }
+    return {
+      image,
+      bytes: this.#imageByteLifecycle.copy(owned.bytes, "assistant-operation"),
+    };
+  }
+
+  #buildCurrentChatContext(): AssistantRequestContext {
+    const transcript = this.#getTranscript();
+    const analysisContext = buildImageAnalysisContext(transcript);
+    return buildAssistantContext(transcript, this.#state.validImageAnalysis(analysisContext));
+  }
+
+  #assertOperationCurrent(token: AssistantOperationToken, currentContext: AssistantRequestContext): void {
+    if (!this.#state.isOperationCurrent(token, currentContext)) {
+      throw new AssistantCancelledError(
+        "The assistant request no longer matches the current mode, image, or lesson context.",
+      );
+    }
+  }
+
+  #synchronizeTranscriptContext(): boolean {
+    const context = buildImageAnalysisContext(this.#getTranscript());
+    const contextChanged = context.fingerprint !== this.#transcriptContextFingerprint;
+    this.#transcriptContextFingerprint = context.fingerprint;
+    const invalidated = this.#state.invalidateImageAnalysis(context);
+    const cancelled = contextChanged ? this.#queue.cancelImageDependent() : false;
+    if (invalidated) {
+      this.#state.trace(
+        "image-analysis-stale",
+        "Stored image analysis was marked unavailable because the transcript context changed.",
+        "warning",
+      );
+    }
+    if (cancelled && !invalidated) {
+      this.#state.trace(
+        "assistant-context-stale",
+        "Cancelled image-dependent assistant work because the transcript context changed.",
+        "warning",
+      );
+    }
+    return invalidated || cancelled;
   }
 }
 

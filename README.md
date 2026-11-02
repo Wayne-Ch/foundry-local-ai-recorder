@@ -10,8 +10,9 @@ Windows-first Electron prototype for a complete local recording workflow:
 
 The core record-then-transcribe path remains usable when live captions are disabled or Nemotron
 preparation fails. Image/chat share the one validated Foundry manager but use a separate optional
-operation generation, vision model slot, queue, and renderer-session lease. Text chat reuses the
-already-loaded summary model. Assistant failure or cleanup cannot unload or mutate the
+operation generation, CPU vision-language model slot, queue, and renderer-session lease. Both
+text-only and image turns use the exact optional `qwen3.5-0.8b-generic-cpu:3` slot; the core
+summary model is exclusive to transcript summary. Assistant failure or cleanup cannot unload or mutate the
 Nemotron → Whisper → Qwen slots. There are no canned transcript, summary, image-analysis, or chat
 fallbacks.
 
@@ -23,8 +24,7 @@ fallbacks.
 | Live draft | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` / `CPUExecutionProvider` |
 | Final ASR | `openai-whisper-tiny-generic-cpu:4` / `CPUExecutionProvider` |
 | Summary | `qwen3-0.6b-generic-gpu:2` / `WebGPUExecutionProvider` |
-| Vision + image chat | exact configurable `vision-language-chat`; required built-in candidate `qwen3.5-0.8b-generic-cpu:3` / CPU / `CPUExecutionProvider`, accepted only after runtime task/modality/EP validation |
-| Text side chat | existing loaded summary slot `qwen3-0.6b-generic-gpu:2`; fresh per-turn `ChatSession` |
+| Optional text + image chat | exact `qwen3.5-0.8b-generic-cpu:3` / CPU / `CPUExecutionProvider`, accepted only after runtime task/modality/EP validation; fresh per-turn `ChatSession` |
 | Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded eight-chunk renderer/native queues |
 | Whisper input | Application-owned validated temporary WAV passed through `Item.audioFromUri(...)` |
 | Summary input | Exact, untrimmed Whisper string/version captured by `TranscriptStore.submitForSummary()` |
@@ -56,10 +56,10 @@ The optional assistant uses the exact Foundry Local 2.2.1 multimodal shape:
 `Item.userMessage([Item.text(...), Item.imageFromData(...)])`, `ChatSession`,
 `preflightRequest()`, `processRequest()`, and request cancellation. Each request gets a fresh
 `ChatSession`, so Clear removes the only durable chat memory and clinic/classroom safety applies to
-every turn. Text-only chat uses the existing summary `ModelSlot`; it never creates another manager
-or loads another text model. Image analysis/direct image chat use a separate vision `ModelSlot`
-owned by the same manager generation. Reset can unload only that vision slot after its native
-request settles; core slots remain loaded.
+every turn. Text-only chat, image analysis, and direct image chat all use the same exact optional
+CPU VLM `ModelSlot`, owned by the shared manager generation. The summary `ModelSlot` is never used
+for side chat. Reset can unload only the optional VLM slot after its native request settles; core
+slots remain loaded and callable while optional cleanup drains.
 
 Images are selected only by a main-process file dialog. PNG/JPEG/WebP extension-derived MIME and
 magic signatures must agree; input is capped at 10 MiB, 8,192 px per side, and 24 million pixels.
@@ -152,16 +152,20 @@ included.
 - **Ask AI** remains available during recording. It snapshots the current live draft for that
   request only, stores only the label `live draft snapshot (may change)` in chat history, and never
   writes the draft into final transcript or summary state.
-- Assistant inference is enabled after **Prepare local models** so text chat can reuse the loaded
-  summary slot and image requests can use the same validated manager generation.
+- Assistant inference is enabled after **Prepare local models**. Text-only and image requests use
+  the same lazy optional CPU VLM slot and validated manager generation; the summary slot remains
+  exclusive to transcript summary.
 - Chat is memory-only, bounded, serialized, cancellable, and independent from summary generation.
   Suggested prompts include a one-sentence ODE definition, a practical example, and one-sentence
   explanation of the selected image.
 - **Image** accepts a bounded lecture/blackboard/diagram/slide screenshot. Analysis returns three
   concise fields: visible text/objects, relation to lesson context, and uncertainty. A saved
-  transcript correction automatically queues re-analysis; stale image/context results are rejected.
+  transcript correction immediately marks prior analysis unavailable and queues re-analysis; stale
+  image/context results are rejected.
 - Classroom mode explains lesson material. Clinic mode is educational and clinician-led only: no
   diagnosis, urgency assessment, treatment recommendation, or interpreter replacement.
+  Switching modes cancels every assistant request, clears chat/analysis, and leaves any selected
+  image explicitly unanalyzed until it is processed again in the new mode.
 - Developer Trace keeps the exact raw Qwen response and records whether display formatting was
   applied. The editable Summary textarea receives the formatted text, and user edits continue from
   that formatted value.
@@ -186,12 +190,14 @@ included.
 - separate assistant session leases bound to the same exact renderer identity and an unguessable
   session generation
 - cancellation on reload, navigation, render loss, webContents destruction, and window close
-- copied VLM image buffers remain pinned and unmodified through request settlement, then are
-  zero-filled; replace/remove/reset/shutdown also zero-fill the retained original
+- queued work captures only immutable mode/image/context tokens. Raw image bytes are copied only
+  when the task begins, remain pinned through native settlement, and are then zero-filled;
+  replace/remove/reset/shutdown also zero-fill the retained original
 - one global manager/endpoint guard/shutdown lifecycle for core and assistant; there is no second
   `FoundryLocalManager`
-- text chat is serialized with summary-model text work; a core summary request cancels optional
-  text work before taking the shared text lane
+- the optional assistant lane is internally serialized but completely separate from the core Qwen
+  summary lane. A cancelled assistant request that never settles can reject new assistant work but
+  cannot delay recording, Whisper, Nemotron, core reset, or summary
 - Reset immediately clears visible assistant active/image/chat state. Native cancellation and
   vision-slot unload may continue under an explicit optional-draining status, which rejects new
   assistant work without blocking recording, Whisper, or core cleanup
@@ -200,6 +206,8 @@ included.
 - deterministic queue, session, model, manager, and temporary-file cleanup
 - request cancellation, session disposal, operation settlement, and temporary-file deletion are
   attempted independently so one cleanup failure cannot skip the rest
+- native assistant cancel callbacks are exception-contained; cleanup diagnostics are surfaced
+  safely, abort listeners are removed deterministically, and every tracked image copy is released
 - optional Nemotron cancellation has a scoped single-flight drain: it rejects another live stream
   but does not enter the global inference barrier for already-loaded Whisper or Qwen
 - Reset and shutdown share one durable cleanup generation. A caller-facing timeout does not clear
@@ -229,11 +237,12 @@ overrides fail; they never silently fall back.
 | Whisper | `SMART_RECORDER_WHISPER_MODEL_ID` | `SMART_RECORDER_WHISPER_EXECUTION_PROVIDER` |
 | Nemotron | `SMART_RECORDER_NEMOTRON_MODEL_ID` | `SMART_RECORDER_NEMOTRON_EXECUTION_PROVIDER` |
 | Summary | `SMART_RECORDER_SUMMARY_MODEL_ID` | `SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER` |
-| Vision/chat | `SMART_RECORDER_VISION_MODEL_ID` | `SMART_RECORDER_VISION_EXECUTION_PROVIDER` |
+| Optional assistant | `SMART_RECORDER_VISION_MODEL_ID` | `SMART_RECORDER_VISION_EXECUTION_PROVIDER` |
 
-Overrides are labeled not stage-validated unless they exactly match the built-in pair.
-Vision/chat overrides also require `SMART_RECORDER_VISION_DEVICE_TYPE` (`CPU`, `GPU`, or `NPU`);
-all three variables must be supplied together.
+Overrides are labeled not stage-validated unless they exactly match the built-in pair. Optional
+assistant variables must be supplied together and must preserve the exact
+`qwen3.5-0.8b-generic-cpu:3` / `CPUExecutionProvider` / `CPU` target; alternate assistant
+model/device/provider combinations fail closed.
 
 Other paths:
 
@@ -256,9 +265,8 @@ Other paths:
   network path was physically disconnected.
 - Cloud validation cannot prove the Windows CPU VLM. The three multimodal integration commands
   above are mandatory on the target Windows machine before claiming real image/chat evidence.
-- The GPU catalog variant remains available only through an exact three-variable environment
-  override and is unvalidated after an isolated Windows WebGPU device-loss failure. There is no
-  silent CPU/GPU fallback.
+- Alternate assistant model/device/provider overrides are rejected. There is no silent CPU/GPU
+  fallback.
 - Foundry Local logs show nonessential telemetry disabled, while SDK process information may still
   initialize. This is separate from inference and is documented rather than hidden.
 
@@ -274,9 +282,9 @@ registration, `AudioSession`/`ChatSession`, token preflight, and native inferenc
 
 The feature is isolated on `feature/multimodal-classroom-chat`; `main` remains unchanged. To return
 to the stable recorder, launch/build `main` or the previously deployed SHA. Within this feature
-build, simply avoid the optional right-side panel: text chat does not load another model, and the
-CPU vision slot is not prepared until an image request is made. If optional native cleanup fails,
-close the app and restart; the core recorder remains the authoritative recovery path.
+build, simply avoid the optional right-side panel: the CPU assistant slot is not prepared until a
+chat or image request is made. If optional native cleanup fails, close the app and restart; the core
+recorder remains the authoritative recovery path.
 
 See [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md), [CODE-WALKTHROUGH.md](CODE-WALKTHROUGH.md), and
 [VALIDATION.md](VALIDATION.md).

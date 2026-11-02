@@ -3,7 +3,7 @@ import { buildAssistantContext } from "../src/assistant/assistant-context";
 import { assistantSystemPrompt, chatUserPrompt } from "../src/assistant/assistant-prompts";
 import { formatAssistantPlainText } from "../src/assistant/plain-text";
 import { FoundryRecorderRuntime } from "../src/foundry/foundry-runtime";
-import { SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
+import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
 
 assert.equal(
   process.platform,
@@ -46,8 +46,10 @@ try {
   const sentences = answer.split(/[.!?]+/u).filter((part) => part.trim().length > 0);
   assert.equal(sentences.length, 1, `Expected one sentence, received: ${answer}`);
   assert.match(answer.toLowerCase(), /(ordinary differential equation|ode)/);
-  assert.equal(result.model.modelId, SUMMARY_MODEL_ID);
-  assert.equal(result.model.source, "summary_slot");
+  assert.equal(result.model.modelId, QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
+  assert.equal(result.model.source, "vision_slot");
+  assert.equal(result.model.runtime.deviceType, "CPU");
+  assert.equal(result.model.runtime.executionProvider, "CPUExecutionProvider");
   assert.equal(result.response.finishReason, "stop");
   console.log(
     `ASSISTANT_CHAT_INTEGRATION_OK ${JSON.stringify({
