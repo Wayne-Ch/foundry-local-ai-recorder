@@ -33,6 +33,7 @@ Runtime log evidence:
 | `npm test` | Pass; 21 files, 242 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=moderate` | Pass against the live advisory service; 0 vulnerabilities |
+| Fresh clone with `core.autocrlf=true` | Pass; `README.md`, `src/main/main.ts`, and `src/foundry/foundry-runtime.ts` all had `CRLF=0` |
 
 Unit coverage includes:
 
