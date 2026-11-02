@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { buildAssistantContext } from "../src/assistant/assistant-context";
 import { assistantSystemPrompt, chatUserPrompt } from "../src/assistant/assistant-prompts";
 import { formatAssistantPlainText } from "../src/assistant/plain-text";
-import { FoundryAssistantRuntime } from "../src/foundry/foundry-assistant-runtime";
+import { FoundryRecorderRuntime } from "../src/foundry/foundry-runtime";
+import { SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
 
 assert.equal(
   process.platform,
@@ -10,8 +11,9 @@ assert.equal(
   "The exact Foundry Local assistant chat gate must run on the target Windows machine.",
 );
 
-const runtime = new FoundryAssistantRuntime();
+const runtime = new FoundryRecorderRuntime();
 try {
+  await runtime.prepare(false, (event) => process.stdout.write(`${event.detail}\n`));
   const context = buildAssistantContext(
     {
       liveDraft: "",
@@ -25,7 +27,7 @@ try {
     null,
   );
   const question = "What is ODE? Answer in one sentence.";
-  const result = await runtime.runTurn(
+  const result = await runtime.runAssistantTurn(
     {
       systemPrompt: assistantSystemPrompt("classroom"),
       prompt: chatUserPrompt(question, context),
@@ -44,10 +46,11 @@ try {
   const sentences = answer.split(/[.!?]+/u).filter((part) => part.trim().length > 0);
   assert.equal(sentences.length, 1, `Expected one sentence, received: ${answer}`);
   assert.match(answer.toLowerCase(), /(ordinary differential equation|ode)/);
+  assert.equal(result.model.modelId, SUMMARY_MODEL_ID);
+  assert.equal(result.model.source, "summary_slot");
   assert.equal(result.response.finishReason, "stop");
   console.log(
     `ASSISTANT_CHAT_INTEGRATION_OK ${JSON.stringify({
-      target: runtime.target,
       model: result.model,
       question,
       answer,
@@ -55,5 +58,5 @@ try {
     })}`,
   );
 } finally {
-  await runtime.dispose();
+  await runtime.shutdown();
 }

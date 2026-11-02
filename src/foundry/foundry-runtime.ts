@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import type { EpDownloadResult, EpInfo, FoundryLocalConfig, IModel } from "foundry-local-sdk";
+import type {
+  EpDownloadResult,
+  EpInfo,
+  FoundryLocalConfig,
+  IModel,
+  RequestOptions,
+} from "foundry-local-sdk";
 import {
   AudioSession,
   ChatSession,
@@ -37,7 +43,18 @@ import { TempAudioStore, withTemporaryWav } from "../audio/temp-audio-store";
 import type { ModelIdentity, ModelReadiness, ProgressEvent, RuntimeReadiness } from "../shared/contracts";
 import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../summary/summary-prompt";
+import {
+  type AssistantRuntimeTarget,
+  resolveAssistantRuntimeTarget,
+} from "./assistant-runtime-config";
 import { ModelSlot } from "./model-slot";
+import {
+  inspectVisionChatModel,
+  type PreparedAssistantModel,
+  processAssistantTurn,
+  type VisionChatTurnInput,
+  type VisionChatTurnResult,
+} from "./optional-vision-chat-runtime";
 import { type RecorderPaths, resolveRecorderPaths } from "./paths";
 import {
   canonicalExecutionProvider,
@@ -132,6 +149,20 @@ interface NativeOperationContext {
   assertCurrent(): void;
 }
 
+interface ActiveAssistantOperation {
+  readonly kind: "text" | "vision";
+  readonly generation: number;
+  readonly managerEpoch: number;
+  readonly controller: AbortController;
+  readonly settled: Promise<void>;
+  readonly resolveSettled: () => void;
+}
+
+interface PreparedVisionSlot {
+  readonly model: IModel;
+  readonly identity: PreparedAssistantModel;
+}
+
 interface LifecycleCleanupGeneration {
   readonly generation: number;
   shutdownRequested: boolean;
@@ -153,6 +184,12 @@ export interface PrepareRuntimeResult {
   readonly liveCaptionsFailure: SafeDiagnostic | null;
 }
 
+export interface AssistantRuntimeStatus {
+  readonly active: boolean;
+  readonly draining: boolean;
+  readonly visionModelId: string | null;
+}
+
 export interface FoundryRecorderRuntimeOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly resolvePaths?: () => Promise<RecorderPaths>;
@@ -167,6 +204,7 @@ const DEFAULT_SETTLEMENT_TIMEOUT_MS = 10_000;
 
 export class FoundryRecorderRuntime {
   readonly #targets: RuntimeTargets;
+  readonly #assistantTarget: AssistantRuntimeTarget;
   readonly #resolvePaths: () => Promise<RecorderPaths>;
   readonly #createManager: (config: FoundryLocalConfig) => ManagerHandle;
   readonly #createChatSession: (model: IModel) => ChatSessionHandle;
@@ -176,6 +214,7 @@ export class FoundryRecorderRuntime {
     nemotron: new ModelSlot<IModel>(),
     summary: new ModelSlot<IModel>(),
   };
+  readonly #visionSlot = new ModelSlot<IModel>();
   #manager: ManagerContext | null = null;
   #quarantinedManager: QuarantinedManager | null = null;
   #managerEpoch = 0;
@@ -184,6 +223,10 @@ export class FoundryRecorderRuntime {
   #preparePromise: Promise<PrepareRuntimeResult> | null = null;
   #activeStream: ActiveAudioStream | null = null;
   readonly #activeOperations = new Set<ActiveNativeOperation>();
+  #activeAssistantOperation: ActiveAssistantOperation | null = null;
+  #assistantCleanupPromise: Promise<void> | null = null;
+  #assistantGeneration = 0;
+  #textLaneTail: Promise<void> = Promise.resolve();
   readonly #settlementTimeoutMs: number;
   #cleanupCompletion: Promise<void> | null = null;
   #lifecycleCleanup: LifecycleCleanupGeneration | null = null;
@@ -196,6 +239,7 @@ export class FoundryRecorderRuntime {
 
   constructor(options: FoundryRecorderRuntimeOptions = {}) {
     this.#targets = resolveRuntimeTargets(options.environment);
+    this.#assistantTarget = resolveAssistantRuntimeTarget(options.environment);
     this.#resolvePaths = options.resolvePaths ?? resolveRecorderPaths;
     this.#createManager = options.createManager ?? ((config) => FoundryLocalManager.create(config));
     this.#createChatSession = options.createChatSession ?? ((model) => new ChatSession(model));
@@ -214,6 +258,91 @@ export class FoundryRecorderRuntime {
 
   get cleanupCompletion(): Promise<void> | null {
     return this.#cleanupCompletion;
+  }
+
+  get assistantStatus(): AssistantRuntimeStatus {
+    const active = this.#activeAssistantOperation;
+    return {
+      active: active !== null && !active.controller.signal.aborted,
+      draining:
+        this.#assistantCleanupPromise !== null ||
+        (active !== null && active.controller.signal.aborted),
+      visionModelId: this.#visionSlot.active?.id ?? null,
+    };
+  }
+
+  cancelAssistantOperations(reason?: unknown): Promise<void> | null {
+    this.#assistantGeneration += 1;
+    const active = this.#activeAssistantOperation;
+    if (active === null) {
+      return null;
+    }
+    if (!active.controller.signal.aborted) {
+      active.controller.abort(reason);
+    }
+    return active.settled;
+  }
+
+  resetAssistant(): Promise<void> {
+    if (this.#assistantCleanupPromise !== null) {
+      return this.#assistantCleanupPromise;
+    }
+    const activeSettlement = this.cancelAssistantOperations(
+      new Error("Assistant reset cancelled optional work."),
+    );
+    let cleanup: Promise<void>;
+    cleanup = (async () => {
+      if (activeSettlement !== null) {
+        await activeSettlement;
+      }
+      await this.#visionSlot.clear();
+    })().finally(() => {
+      if (this.#assistantCleanupPromise === cleanup) {
+        this.#assistantCleanupPromise = null;
+      }
+    });
+    this.#assistantCleanupPromise = cleanup;
+    void cleanup.catch(() => undefined);
+    return cleanup;
+  }
+
+  async runAssistantTurn(
+    input: VisionChatTurnInput,
+    options: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions } = {},
+  ): Promise<VisionChatTurnResult> {
+    this.#assertAvailable();
+    if (this.#assistantCleanupPromise !== null) {
+      throw new Error("Optional assistant cleanup is still draining.");
+    }
+    const manager = await this.#ensureValidatedManager();
+    this.#assertAvailable();
+    const kind = (input.images?.length ?? 0) > 0 ? "vision" : "text";
+    return this.#runAssistantOperation(kind, manager, options.signal, async (operationSignal) => {
+      if (kind === "text") {
+        const model = this.#requireModel("summary");
+        const identity = assistantModelIdentity("summary_slot", model, ["text"], ["text"]);
+        return this.#withTextLane(operationSignal, () =>
+          processAssistantTurn(model, identity, input, {
+            signal: operationSignal,
+            ...(options.requestOptions === undefined
+              ? {}
+              : { requestOptions: options.requestOptions }),
+            createChatSession: this.#createChatSession,
+            assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
+          }),
+        );
+      }
+
+      const prepared = await this.#prepareVisionModel(manager, operationSignal);
+      return processAssistantTurn(prepared.model, prepared.identity, input, {
+        signal: operationSignal,
+        ...(options.requestOptions === undefined
+          ? {}
+          : { requestOptions: options.requestOptions }),
+        createChatSession: this.#createChatSession,
+        assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
+      });
+    });
   }
 
   initialize(): Promise<void> {
@@ -500,58 +629,61 @@ export class FoundryRecorderRuntime {
     this.#assertAvailable();
     const model = this.#requireModel("summary");
     const generation = this.#generation;
-    return this.#runTrackedOperation("summary", generation, async (operation) => {
-      const session = this.#createChatSession(model);
-      const request = new Request()
-        .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
-        .addItem(Item.userMessage(summaryUserPrompt(transcript)))
-        .setOptions({
-          search: {
-            doSample: false,
-            temperature: 0,
-            seed: 42,
-            maxOutputTokens: 260,
+    this.cancelAssistantOperations(new Error("Core summary generation has priority."));
+    return this.#withTextLane(undefined, () =>
+      this.#runTrackedOperation("summary", generation, async (operation) => {
+        const session = this.#createChatSession(model);
+        const request = new Request()
+          .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
+          .addItem(Item.userMessage(summaryUserPrompt(transcript)))
+          .setOptions({
+            search: {
+              doSample: false,
+              temperature: 0,
+              seed: 42,
+              maxOutputTokens: 260,
+            },
+            toolChoice: "none",
+            additionalOptions: {
+              chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
+            },
+          });
+        operation.setCancel(() => request.cancel());
+        const startedAt = performance.now();
+        return await runWithCleanup(
+          async () => {
+            const preflight = await session.preflightRequest(request);
+            operation.assertCurrent();
+            if (!preflight.fits) {
+              throw new Error(
+                `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
+              );
+            }
+            const response = await session.processRequest(request);
+            operation.assertCurrent();
+            if (response.finishReason !== "stop") {
+              throw new Error(`Summary generation ended with ${response.finishReason}.`);
+            }
+            const text = extractDefaultText(response);
+            if (!text.trim()) {
+              throw new Error("The local summary model returned no text.");
+            }
+            if (text.length > 2_500) {
+              throw new Error("The local summary exceeded the prototype output bound.");
+            }
+            return {
+              text,
+              durationMs: Math.round(performance.now() - startedAt),
+              model: modelIdentity("summary", model),
+              preflight,
+              response,
+            };
           },
-          toolChoice: "none",
-          additionalOptions: {
-            chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
-          },
-        });
-      operation.setCancel(() => request.cancel());
-      const startedAt = performance.now();
-      return await runWithCleanup(
-        async () => {
-          const preflight = await session.preflightRequest(request);
-          operation.assertCurrent();
-          if (!preflight.fits) {
-            throw new Error(
-              `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
-            );
-          }
-          const response = await session.processRequest(request);
-          operation.assertCurrent();
-          if (response.finishReason !== "stop") {
-            throw new Error(`Summary generation ended with ${response.finishReason}.`);
-          }
-          const text = extractDefaultText(response);
-          if (!text.trim()) {
-            throw new Error("The local summary model returned no text.");
-          }
-          if (text.length > 2_500) {
-            throw new Error("The local summary exceeded the prototype output bound.");
-          }
-          return {
-            text,
-            durationMs: Math.round(performance.now() - startedAt),
-            model: modelIdentity("summary", model),
-            preflight,
-            response,
-          };
-        },
-        [() => request.cancel(), () => session.dispose()],
-        "Qwen native request",
-      );
-    });
+          [() => request.cancel(), () => session.dispose()],
+          "Qwen native request",
+        );
+      }),
+    );
   }
 
   reset(): Promise<void> {
@@ -559,6 +691,7 @@ export class FoundryRecorderRuntime {
       return this.#lifecycleCleanup.result;
     }
     this.#assertNotShutdown();
+    void this.resetAssistant();
     this.#generation += 1;
     return this.#startLifecycleCleanup(false);
   }
@@ -571,12 +704,14 @@ export class FoundryRecorderRuntime {
       if (!this.#lifecycleCleanup.shutdownRequested) {
         this.#lifecycleCleanup.shutdownRequested = true;
         this.#shutdownRequested = true;
+        this.cancelAssistantOperations(new Error("Recorder shutdown cancelled optional assistant work."));
         this.#setCleanupDetail("Native recorder work is draining before model and manager shutdown.");
       }
       return this.#lifecycleCleanup.result;
     }
     if (!this.#shutdownRequested) {
       this.#shutdownRequested = true;
+      this.cancelAssistantOperations(new Error("Recorder shutdown cancelled optional assistant work."));
       this.#generation += 1;
     }
     return this.#startLifecycleCleanup(true);
@@ -649,6 +784,7 @@ export class FoundryRecorderRuntime {
   async #invalidateManager(manager: ManagerContext, primaryError: unknown): Promise<never> {
     this.#invalidatingManager = true;
     this.#generation += 1;
+    this.cancelAssistantOperations(new Error("Endpoint guard cancelled optional assistant work."));
     if (this.#manager === manager) {
       this.#manager = null;
     }
@@ -670,7 +806,12 @@ export class FoundryRecorderRuntime {
         } catch (error) {
           cleanupErrors.push(error);
         }
-        if (this.#hasUnsafeNativeResources()) {
+        try {
+          await this.#drainAssistantResources();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+        if (this.#hasUnsafeManagerResources()) {
           throwCollectedErrors(
             cleanupErrors,
             "Endpoint guard cleanup could not confirm native resource disposal.",
@@ -997,6 +1138,207 @@ export class FoundryRecorderRuntime {
     throwCollectedErrors(errors, "Failed to dispose Nemotron native resources.");
   }
 
+  async #runAssistantOperation<T>(
+    kind: ActiveAssistantOperation["kind"],
+    manager: ManagerContext,
+    signal: AbortSignal | undefined,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const existing = this.#activeAssistantOperation;
+    if (existing !== null) {
+      throw new Error(
+        existing.controller.signal.aborted
+          ? "Optional assistant cleanup is still draining."
+          : "Another optional assistant request is already active.",
+      );
+    }
+    const controller = new AbortController();
+    const unlinkSignal = forwardAbortSignal(signal, controller);
+    let resolveSettled = () => {};
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    const active: ActiveAssistantOperation = {
+      kind,
+      generation: this.#assistantGeneration,
+      managerEpoch: manager.epoch,
+      controller,
+      settled,
+      resolveSettled,
+    };
+    this.#activeAssistantOperation = active;
+    try {
+      this.#assertAssistantCurrent(manager.epoch);
+      return await run(controller.signal);
+    } finally {
+      unlinkSignal();
+      if (this.#activeAssistantOperation === active) {
+        this.#activeAssistantOperation = null;
+      }
+      active.resolveSettled();
+    }
+  }
+
+  async #withTextLane<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
+    const previous = this.#textLaneTail.catch(() => undefined);
+    let release = () => {};
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#textLaneTail = previous.then(() => current);
+    try {
+      await waitWithAbort(previous, signal);
+    } catch (error) {
+      void previous.then(release);
+      throw error;
+    }
+    try {
+      return await run();
+    } finally {
+      release();
+    }
+  }
+
+  async #prepareVisionModel(
+    manager: ManagerContext,
+    signal: AbortSignal,
+  ): Promise<PreparedVisionSlot> {
+    const target = this.#assistantTarget;
+    const current = this.#visionSlot.activeFor(manager);
+    let candidate: IModel | null = null;
+    try {
+      if (
+        current !== null &&
+        current.id === target.modelId &&
+        executionProvider(current) === target.executionProvider &&
+        (await current.isLoaded())
+      ) {
+        const compatibility = inspectVisionChatModel(current, target.modelId, {
+          deviceType: target.deviceType,
+          executionProvider: target.executionProvider,
+        });
+        if (!compatibility.compatible) {
+          throw new Error(describeVisionCompatibility(target.modelId, compatibility.issues));
+        }
+        return {
+          model: current,
+          identity: assistantModelIdentity(
+            "vision_slot",
+            current,
+            compatibility.inputModalities,
+            compatibility.outputModalities,
+          ),
+        };
+      }
+
+      candidate = await manager.handle.catalog.getModelVariant(target.modelId);
+      throwIfSignalAborted(signal);
+      this.#assertAssistantCurrent(manager.epoch);
+      const compatibility = inspectVisionChatModel(candidate, target.modelId, {
+        deviceType: target.deviceType,
+        executionProvider: target.executionProvider,
+      });
+      if (!compatibility.compatible) {
+        throw new Error(describeVisionCompatibility(target.modelId, compatibility.issues));
+      }
+      if (!candidate.isCached) {
+        await candidate.download(signal);
+        throwIfSignalAborted(signal);
+        if (!candidate.isCached) {
+          throw new Error(`Vision model download completed without caching ${candidate.id}.`);
+        }
+      }
+      await this.#ensureAssistantProvider(manager.handle);
+      throwIfSignalAborted(signal);
+      this.#assertAssistantCurrent(manager.epoch);
+      await this.#visionSlot.activate(candidate, manager);
+      throwIfSignalAborted(signal);
+      this.#assertAssistantCurrent(manager.epoch);
+      return {
+        model: candidate,
+        identity: assistantModelIdentity(
+          "vision_slot",
+          candidate,
+          compatibility.inputModalities,
+          compatibility.outputModalities,
+        ),
+      };
+    } catch (error) {
+      const cleanupErrors: unknown[] = [];
+      if (candidate !== null && candidate !== current) {
+        try {
+          if (this.#visionSlot.active === candidate) {
+            await this.#visionSlot.clear();
+          } else if (await candidate.isLoaded()) {
+            await candidate.unload();
+          }
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      throw combineErrors(
+        error,
+        cleanupErrors,
+        "Vision model preparation failed and optional cleanup also failed.",
+      );
+    }
+  }
+
+  async #ensureAssistantProvider(manager: ManagerHandle): Promise<void> {
+    if (this.#assistantTarget.executionProvider === AUDIO_EXECUTION_PROVIDER) {
+      return;
+    }
+    const provider = manager
+      .discoverEps()
+      .find(
+        (candidate) =>
+          canonicalExecutionProvider(candidate.name) === this.#assistantTarget.executionProvider,
+      );
+    if (provider === undefined) {
+      throw new Error(
+        `Vision execution provider ${this.#assistantTarget.executionProvider} is not discoverable.`,
+      );
+    }
+    if (provider.isRegistered) {
+      return;
+    }
+    const result = await manager.downloadAndRegisterEps([provider.name], () => {});
+    if (!result.success || result.failedEps.length > 0) {
+      throw new Error(`Vision execution provider registration failed: ${result.status}`);
+    }
+  }
+
+  async #drainAssistantResources(): Promise<void> {
+    const cleanup = this.#assistantCleanupPromise;
+    if (cleanup !== null) {
+      await cleanup;
+    }
+    const active = this.#activeAssistantOperation;
+    if (active === null) {
+      return;
+    }
+    if (!active.controller.signal.aborted) {
+      active.controller.abort(new Error("Foundry Local manager cleanup cancelled assistant work."));
+    }
+    await active.settled;
+  }
+
+  #assertAssistantCurrent(managerEpoch: number): void {
+    const active = this.#activeAssistantOperation;
+    if (
+      active === null ||
+      active.generation !== this.#assistantGeneration ||
+      active.managerEpoch !== managerEpoch ||
+      active.controller.signal.aborted ||
+      this.#manager?.epoch !== managerEpoch ||
+      this.#shutdownRequested
+    ) {
+      const error = new Error("The optional assistant operation was cancelled.");
+      error.name = "AbortError";
+      throw error;
+    }
+  }
+
   async #runTrackedOperation<T>(
     kind: ActiveNativeOperation["kind"],
     generation: number,
@@ -1147,6 +1489,15 @@ export class FoundryRecorderRuntime {
     this.#updateAudioRecoveryReadiness();
     await Promise.resolve();
     if (cycle.shutdownRequested) {
+      try {
+        await this.#drainAssistantResources();
+      } catch (error) {
+        errors.push(error);
+      }
+      if (this.#hasUnsafeManagerResources()) {
+        throwCollectedErrors(errors, "Shutdown could not confirm assistant resource cleanup.");
+        throw new Error("Shutdown could not confirm assistant resource cleanup.");
+      }
       await this.#performShutdownTeardown(errors);
     }
     throwCollectedErrors(
@@ -1182,7 +1533,7 @@ export class FoundryRecorderRuntime {
     if (
       this.#quarantinedManager === null &&
       this.#modelSlotsCleared() &&
-      !this.#hasUnsafeNativeResources() &&
+      !this.#hasUnsafeManagerResources() &&
       !this.#audioCleanupRequired
     ) {
       this.#shutdownComplete = true;
@@ -1422,6 +1773,7 @@ export class FoundryRecorderRuntime {
       this.#slots.nemotron.clear(),
       this.#slots.whisper.clear(),
       this.#slots.summary.clear(),
+      this.#visionSlot.clear(),
     ]);
     for (const outcome of slotOutcomes) {
       if (outcome.status === "rejected") {
@@ -1438,12 +1790,21 @@ export class FoundryRecorderRuntime {
     return (
       this.#slots.nemotron.active === null &&
       this.#slots.whisper.active === null &&
-      this.#slots.summary.active === null
+      this.#slots.summary.active === null &&
+      this.#visionSlot.active === null
     );
   }
 
   #hasUnsafeNativeResources(): boolean {
     return this.#activeStream !== null || this.#activeOperations.size > 0;
+  }
+
+  #hasUnsafeManagerResources(): boolean {
+    return (
+      this.#hasUnsafeNativeResources() ||
+      this.#activeAssistantOperation !== null ||
+      this.#assistantCleanupPromise !== null
+    );
   }
 
   #updateAudioRecoveryReadiness(): void {
@@ -1630,6 +1991,91 @@ function audioModelIdentity(model: IModel, streaming: boolean): AudioModelIdenti
     language: AUDIO_LANGUAGE,
     inputMode: streaming ? "streaming PCM ItemQueue" : "temporary PCM WAV file URI",
   };
+}
+
+function assistantModelIdentity(
+  source: PreparedAssistantModel["source"],
+  model: IModel,
+  inputModalities: readonly string[],
+  outputModalities: readonly string[],
+): PreparedAssistantModel {
+  return {
+    modelId: model.id,
+    source,
+    task: model.info.task ?? "",
+    runtime: {
+      deviceType: model.info.runtime?.deviceType ?? model.info.deviceType,
+      executionProvider: executionProvider(model),
+    },
+    inputModalities,
+    outputModalities,
+  };
+}
+
+function describeVisionCompatibility(
+  modelId: string,
+  issues: readonly { readonly field: string; readonly expected: string; readonly actual: string | null }[],
+): string {
+  return `${modelId} is not an exact compatible vision-language-chat model: ${issues
+    .map((issue) => `${issue.field} expected ${issue.expected}, got ${issue.actual ?? "(missing)"}`)
+    .join("; ")}.`;
+}
+
+function forwardAbortSignal(
+  signal: AbortSignal | undefined,
+  controller: AbortController,
+): () => void {
+  if (signal === undefined) {
+    return () => {};
+  }
+  const abort = () => controller.abort(signal.reason);
+  if (signal.aborted) {
+    abort();
+    return () => {};
+  }
+  signal.addEventListener("abort", abort, { once: true });
+  return () => signal.removeEventListener("abort", abort);
+}
+
+function waitWithAbort(promise: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (signal === undefined) {
+    return promise;
+  }
+  if (signal.aborted) {
+    return Promise.reject(abortError(signal.reason));
+  }
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      reject(abortError(signal.reason));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      () => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+function throwIfSignalAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw abortError(signal.reason);
+  }
+}
+
+function abortError(reason: unknown): Error {
+  if (reason instanceof Error && reason.name === "AbortError") {
+    return reason;
+  }
+  const error = new Error("The optional assistant operation was cancelled.", { cause: reason });
+  error.name = "AbortError";
+  return error;
 }
 
 function errorMessage(error: unknown): string {

@@ -52,6 +52,8 @@ export class AssistantMemoryState {
       activeOperation: queue?.activeOperation ?? null,
       queuedRequests: queue?.queuedRequests ?? 0,
       maxQueuedRequests: queue?.maxQueuedRequests ?? DEFAULT_MAX_ASSISTANT_QUEUE,
+      cleanupPending: false,
+      cleanupDetail: null,
       trace: [...this.#trace],
     };
   }
@@ -204,6 +206,10 @@ export class AssistantMemoryState {
 
   get chatMessages(): readonly AssistantChatMessage[] {
     return [...this.#chatMessages];
+  }
+
+  isGenerationCurrent(token: AssistantOperationToken): boolean {
+    return token.generation === this.#generation;
   }
 
   #appendChat(message: AssistantChatMessage): void {

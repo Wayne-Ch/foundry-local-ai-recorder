@@ -6,6 +6,7 @@ import {
   AUDIO_MAX_DURATION_MS,
   AUDIO_SAMPLE_RATE,
 } from "../src/audio/audio-types";
+import { FoundryRecorderRuntime } from "../src/foundry/foundry-runtime";
 import { AssistantController } from "../src/main/assistant-controller";
 import { RecorderController } from "../src/main/recorder-controller";
 import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
@@ -24,8 +25,10 @@ assert.equal(
   "The concurrent Foundry Local chain gate must run on the target Windows machine.",
 );
 
-const controller = new RecorderController();
+const runtime = new FoundryRecorderRuntime();
+const controller = new RecorderController(runtime);
 const assistant = new AssistantController({
+  runtime,
   getTranscript: () => controller.bootstrap().transcript,
 });
 const before = await listOwnedTempFiles();
@@ -107,7 +110,8 @@ try {
     })}`,
   );
 } finally {
-  await Promise.allSettled([assistant.shutdown(), controller.shutdown()]);
+  assistant.shutdown();
+  await controller.shutdown();
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {

@@ -2,11 +2,8 @@ import type { RequestOptions } from "foundry-local-sdk";
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
 import type { ValidatedImage } from "../src/assistant/image-security";
-import type {
-  OptionalVisionChatRuntimeStatus,
-  VisionChatTurnInput,
-  VisionChatTurnResult,
-} from "../src/foundry/optional-vision-chat-runtime";
+import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
+import type { VisionChatTurnInput, VisionChatTurnResult } from "../src/foundry/optional-vision-chat-runtime";
 import type { AssistantRuntime } from "../src/main/assistant-controller";
 import { AssistantController, parseImageAnalysisNote } from "../src/main/assistant-controller";
 import type { TranscriptSnapshot } from "../src/transcript/transcript-store";
@@ -17,7 +14,7 @@ describe("AssistantController", () => {
     const runtime = new FakeRuntime("An ODE relates a function to its ordinary derivatives.");
     const controller = new AssistantController({
       getTranscript: () => transcript,
-      createRuntime: () => runtime,
+      runtime,
     });
     const updates: string[] = [];
 
@@ -41,7 +38,7 @@ describe("AssistantController", () => {
     const runtime = new FakeRuntime("Educational explanation only.");
     const controller = new AssistantController({
       getTranscript: () => snapshot({}),
-      createRuntime: () => runtime,
+      runtime,
     });
     controller.setMode("clinic");
 
@@ -64,7 +61,7 @@ describe("AssistantController", () => {
     );
     const controller = new AssistantController({
       getTranscript: () => transcript,
-      createRuntime: () => runtime,
+      runtime,
     });
     controller.selectImage(image(), "data:image/png;base64,abc");
 
@@ -83,7 +80,7 @@ describe("AssistantController", () => {
     const runtime = new FakeRuntime("The diagram shows exponential decay.");
     const controller = new AssistantController({
       getTranscript: () => snapshot({}),
-      createRuntime: () => runtime,
+      runtime,
     });
 
     controller.startChat("session-1", "Give one practical example.", () => {});
@@ -105,7 +102,7 @@ describe("AssistantController", () => {
     );
     const controller = new AssistantController({
       getTranscript: () => snapshot({}),
-      createRuntime: () => runtime,
+      runtime,
     });
     const validated = image();
     controller.selectImage(validated, "data:image/png;base64,abc");
@@ -117,11 +114,18 @@ describe("AssistantController", () => {
     expect(runtime.imagePayloads[0]).toEqual(new Uint8Array([1, 2, 3]));
   });
 
-  it("reset clears optional state and disposes the optional runtime without touching core state", async () => {
-    const runtime = new FakeRuntime("answer");
+  it("reset clears visible optional state immediately while native cleanup drains", async () => {
+    let release = () => {};
+    const runtime = new FakeRuntime(
+      "answer",
+      async () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
     const controller = new AssistantController({
       getTranscript: () => snapshot({ finalText: "core final", version: 1 }),
-      createRuntime: () => runtime,
+      runtime,
     });
     controller.selectImage(image(), "data:image/png;base64,abc");
     controller.startChat("session-1", "What is ODE?", () => {});
@@ -134,8 +138,15 @@ describe("AssistantController", () => {
       imageAnalysis: null,
       chatMessages: [],
       mode: "classroom",
+      activeRequestId: null,
+      activeOperation: null,
+      cleanupPending: true,
     });
-    await vi.waitFor(() => expect(runtime.dispose).toHaveBeenCalledOnce());
+    expect(runtime.resetAssistant).toHaveBeenCalledOnce();
+    expect(() => controller.startChat("session-1", "Another question", () => {})).toThrow(
+      "cleanup is still draining",
+    );
+    release();
   });
 
   it("parses only the required structured image note", () => {
@@ -153,58 +164,84 @@ describe("AssistantController", () => {
 });
 
 class FakeRuntime implements AssistantRuntime {
-  readonly status: OptionalVisionChatRuntimeStatus | null = null;
+  assistantStatus: AssistantRuntimeStatus = {
+    active: false,
+    draining: false,
+    visionModelId: null,
+  };
   readonly inputs: VisionChatTurnInput[] = [];
   readonly imagePayloads: Uint8Array[] = [];
-  readonly dispose = vi.fn(async (): Promise<void> => {});
+  readonly cancelAssistantOperations = vi.fn((_reason?: unknown): Promise<void> | null => {
+    if (!this.assistantStatus.active) {
+      return null;
+    }
+    this.assistantStatus = {
+      ...this.assistantStatus,
+      active: false,
+      draining: true,
+    };
+    return Promise.resolve();
+  });
+  readonly resetAssistant = vi.fn(
+    (): Promise<void> => this.cancelAssistantOperations(new Error("Reset")) ?? Promise.resolve(),
+  );
 
   constructor(
     readonly answer: string,
     readonly beforeAnswer: () => Promise<void> = async () => {},
   ) {}
 
-  async runTurn(
+  async runAssistantTurn(
     input: VisionChatTurnInput,
     _options?: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions },
   ): Promise<VisionChatTurnResult> {
+    this.assistantStatus = {
+      ...this.assistantStatus,
+      active: true,
+      draining: false,
+    };
     this.inputs.push(input);
     for (const image of input.images ?? []) {
       if (image.kind === "data") {
         this.imagePayloads.push(image.data.slice());
       }
     }
-    await this.beforeAnswer();
-    return {
-      text: this.answer,
-      model: {
-        modelId: "vision-model",
-        source: "primary",
-        task: "vision-language-chat",
-        runtime: {
-          deviceType: DeviceType.GPU,
-          executionProvider: "WebGPUExecutionProvider",
+    try {
+      await this.beforeAnswer();
+      return {
+        text: this.answer,
+        model: {
+          modelId: input.images === undefined ? "summary-model" : "vision-model",
+          source: input.images === undefined ? "summary_slot" : "vision_slot",
+          task: input.images === undefined ? "chat-completion" : "vision-language-chat",
+          runtime: {
+            deviceType: DeviceType.CPU,
+            executionProvider: "CPUExecutionProvider",
+          },
+          inputModalities: input.images === undefined ? ["text"] : ["text", "image"],
+          outputModalities: ["text"],
         },
-        inputModalities: ["text", "image"],
-        outputModalities: ["text"],
-      },
-      preflight: {
-        promptTokens: 1,
-        outputReserveTokens: 1,
-        requiredTokens: 2,
-        contextLimitTokens: 4096,
-        fits: true,
-        deficitTokens: 0,
-      },
-      response: {
-        output: [{ type: "text", text: this.answer }],
-        finishReason: "stop",
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-      },
-    };
-  }
-
-  cancelActiveTurn(): boolean {
-    return true;
+        preflight: {
+          promptTokens: 1,
+          outputReserveTokens: 1,
+          requiredTokens: 2,
+          contextLimitTokens: 4096,
+          fits: true,
+          deficitTokens: 0,
+        },
+        response: {
+          output: [{ type: "text", text: this.answer }],
+          finishReason: "stop",
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        },
+      };
+    } finally {
+      this.assistantStatus = {
+        ...this.assistantStatus,
+        active: false,
+        draining: false,
+      };
+    }
   }
 }
 

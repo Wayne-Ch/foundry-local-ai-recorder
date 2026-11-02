@@ -7,10 +7,10 @@ import {
 import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
 
 describe("assistant runtime config", () => {
-  it("uses the built-in Qwen GPU candidate only as an exact runtime target", () => {
+  it("uses the built-in Qwen CPU candidate only as an exact runtime target", () => {
     expect(resolveAssistantRuntimeTarget({})).toEqual({
       modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-      deviceType: DeviceType.GPU,
+      deviceType: DeviceType.CPU,
       executionProvider: ASSISTANT_EXECUTION_PROVIDER,
       source: "built_in_candidate",
       stageValidated: false,
@@ -25,17 +25,17 @@ describe("assistant runtime config", () => {
     ).toThrow("must be set together");
   });
 
-  it("accepts a complete CPU override without treating it as stage validated", () => {
+  it("accepts a complete GPU override without treating it as stage validated", () => {
     expect(
       resolveAssistantRuntimeTarget({
-        SMART_RECORDER_VISION_MODEL_ID: "custom-vision-cpu:1",
-        SMART_RECORDER_VISION_EXECUTION_PROVIDER: "CPUExecutionProvider",
-        SMART_RECORDER_VISION_DEVICE_TYPE: "CPU",
+        SMART_RECORDER_VISION_MODEL_ID: "custom-vision-gpu:1",
+        SMART_RECORDER_VISION_EXECUTION_PROVIDER: "WebGPUExecutionProvider",
+        SMART_RECORDER_VISION_DEVICE_TYPE: "GPU",
       }),
     ).toEqual({
-      modelId: "custom-vision-cpu:1",
-      deviceType: DeviceType.CPU,
-      executionProvider: "CPUExecutionProvider",
+      modelId: "custom-vision-gpu:1",
+      deviceType: DeviceType.GPU,
+      executionProvider: "WebGPUExecutionProvider",
       source: "environment_override",
       stageValidated: false,
     });

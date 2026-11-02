@@ -84,6 +84,8 @@ export interface AssistantLaneSnapshot {
   readonly activeOperation: AssistantOperationKind | null;
   readonly queuedRequests: number;
   readonly maxQueuedRequests: number;
+  readonly cleanupPending: boolean;
+  readonly cleanupDetail: string | null;
   readonly trace: readonly AssistantTraceEntry[];
 }
 

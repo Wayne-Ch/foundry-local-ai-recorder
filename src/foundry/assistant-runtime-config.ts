@@ -1,8 +1,9 @@
 import { DeviceType } from "foundry-local-sdk";
+import { AUDIO_EXECUTION_PROVIDER } from "../audio/audio-types";
 import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "./optional-vision-chat-runtime";
 import { canonicalExecutionProvider, RuntimeConfigurationError } from "./runtime-config";
 
-export const ASSISTANT_EXECUTION_PROVIDER = "WebGPUExecutionProvider";
+export const ASSISTANT_EXECUTION_PROVIDER = AUDIO_EXECUTION_PROVIDER;
 
 export interface AssistantRuntimeTarget {
   readonly modelId: string;
@@ -30,7 +31,7 @@ export function resolveAssistantRuntimeTarget(
 
   const resolvedModelId = modelId || QWEN_VISION_CHAT_CANDIDATE_MODEL_ID;
   const resolvedProvider = canonicalExecutionProvider(provider || ASSISTANT_EXECUTION_PROVIDER);
-  const resolvedDevice = parseDeviceType(device || "GPU");
+  const resolvedDevice = parseDeviceType(device || "CPU");
   return {
     modelId: resolvedModelId,
     deviceType: resolvedDevice,

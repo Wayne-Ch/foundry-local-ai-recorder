@@ -26,6 +26,10 @@ describe("assistant UI and Electron isolation", () => {
     expect(main).toContain("sandbox: true");
     expect(main).toContain("frame !== event.sender.mainFrame");
     expect(main).toContain("assistantSessionOwnership.assertOwned");
+    expect(main.match(/new FoundryRecorderRuntime\(\)/g)).toHaveLength(1);
+    expect(main).toContain("new RecorderController(foundryRuntime)");
+    expect(main).toContain("runtime: foundryRuntime");
+    expect(main).not.toContain("FoundryAssistantRuntime");
     expect(main).toContain("setWindowOpenHandler(() =>");
     expect(preload).toContain('contextBridge.exposeInMainWorld("recorderApi", api)');
     expect(preload).not.toContain('exposeInMainWorld("electron"');

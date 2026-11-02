@@ -42,6 +42,7 @@ import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnosti
 import { AssistantController } from "./assistant-controller";
 import { type AssistantSessionOwnerIdentity, AssistantSessionOwnership } from "./assistant-session-owner";
 import { type AudioStreamOwnerIdentity, AudioStreamOwnership } from "./audio-stream-owner";
+import { FoundryRecorderRuntime } from "../foundry/foundry-runtime";
 import {
   isAllowedAppNavigation,
   MicrophonePermissionGate,
@@ -54,8 +55,10 @@ let mainWindow: BrowserWindow | null = null;
 let mainWebContents: WebContents | null = null;
 let microphonePermissionGate: MicrophonePermissionGate | null = null;
 let shutdownStarted = false;
-const controller = new RecorderController();
+const foundryRuntime = new FoundryRecorderRuntime();
+const controller = new RecorderController(foundryRuntime);
 const assistantController = new AssistantController({
+  runtime: foundryRuntime,
   getTranscript: () => controller.bootstrap().transcript,
 });
 const assistantSessionOwnership = new AssistantSessionOwnership((sessionId) => {
@@ -374,7 +377,9 @@ function registerIpc(): void {
           formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_LIVE_CLEANUP_PENDING")),
         );
       });
-    const assistantSnapshot = assistantController.reset();
+    const assistantSnapshot = assistantController.reset((snapshot) => {
+      routeAssistantUpdate(renderer, snapshot);
+    });
     routeAssistantUpdate(renderer, assistantSnapshot);
     return controller.reset();
   });
@@ -873,12 +878,7 @@ app.on("before-quit", (event) => {
 
 async function shutdownForExit(): Promise<void> {
   let shutdownFailed = false;
-  const assistantShutdown = assistantController.shutdown().catch((error: unknown) => {
-    console.error(
-      "Optional assistant cleanup did not complete cleanly:",
-      formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_ASSISTANT_CLEANUP_PENDING")),
-    );
-  });
+  assistantController.shutdown();
   try {
     await controller.shutdown();
   } catch (error) {
@@ -923,12 +923,5 @@ async function shutdownForExit(): Promise<void> {
   if (shutdownFailed) {
     process.exitCode = 1;
   }
-  await Promise.race([
-    assistantShutdown,
-    new Promise<void>((resolve) => {
-      const timeout = setTimeout(resolve, 2_000);
-      timeout.unref?.();
-    }),
-  ]);
   app.quit();
 }

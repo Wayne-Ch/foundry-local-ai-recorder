@@ -4,7 +4,8 @@ import path from "node:path";
 import { buildImageAnalysisContext } from "../src/assistant/assistant-context";
 import { assistantSystemPrompt, imageAnalysisPrompt } from "../src/assistant/assistant-prompts";
 import { validateImage } from "../src/assistant/image-security";
-import { FoundryAssistantRuntime } from "../src/foundry/foundry-assistant-runtime";
+import { FoundryRecorderRuntime } from "../src/foundry/foundry-runtime";
+import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
 import { parseImageAnalysisNote } from "../src/main/assistant-controller";
 
 assert.equal(
@@ -20,8 +21,9 @@ const image = validateImage({
   declaredMimeType: "image/png",
   bytes: sourceBytes,
 });
-const runtime = new FoundryAssistantRuntime();
+const runtime = new FoundryRecorderRuntime();
 try {
+  await runtime.prepare(false, (event) => process.stdout.write(`${event.detail}\n`));
   const context = buildImageAnalysisContext({
     liveDraft: "",
     liveSequence: -1,
@@ -32,7 +34,7 @@ try {
     submittedVersion: null,
     summary: null,
   });
-  const result = await runtime.runTurn(
+  const result = await runtime.runAssistantTurn(
     {
       systemPrompt: assistantSystemPrompt("classroom"),
       prompt: imageAnalysisPrompt("classroom", context),
@@ -53,11 +55,11 @@ try {
     `${note.visibleTextAndObjects} ${note.relationToLesson}`.toLowerCase(),
     /(ordinary differential|ode|dy\/dt|derivative)/,
   );
-  assert.equal(result.model.modelId, runtime.target.modelId);
+  assert.equal(result.model.modelId, QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
+  assert.equal(result.model.source, "vision_slot");
   assert.equal(result.response.finishReason, "stop");
   console.log(
     `VISION_INTEGRATION_OK ${JSON.stringify({
-      target: runtime.target,
       model: result.model,
       note,
       usage: result.response.usage,
@@ -72,5 +74,5 @@ try {
 } finally {
   sourceBytes.fill(0);
   image.bytes.fill(0);
-  await runtime.dispose();
+  await runtime.shutdown();
 }

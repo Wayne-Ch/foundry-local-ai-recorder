@@ -26,6 +26,7 @@ import {
 } from "../src/audio/audio-types";
 import { TempAudioStore } from "../src/audio/temp-audio-store";
 import { FoundryRecorderRuntime, type FoundryRecorderRuntimeOptions } from "../src/foundry/foundry-runtime";
+import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
 import { SUMMARY_EXECUTION_PROVIDER, SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
 import { toSafeDiagnostic } from "../src/shared/safe-diagnostic";
@@ -1238,6 +1239,220 @@ describe("FoundryRecorderRuntime", () => {
     expect(manager.shutdown).toHaveBeenCalledOnce();
     expect(manager.dispose).toHaveBeenCalledOnce();
   });
+
+  it("uses one manager and the loaded summary slot for text assistant turns", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const createManager = vi.fn(() => manager);
+    const sessionModels: string[] = [];
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager,
+      createAudioSession: () => fakeAudioSession(),
+      createChatSession: (model) => {
+        sessionModels.push(model.id);
+        return fakeChatSession({ processRequest: async () => textResponse("One sentence ODE answer.") });
+      },
+    });
+
+    await runtime.prepare(false);
+    const result = await runtime.runAssistantTurn({
+      systemPrompt: "Classroom safety.",
+      prompt: "What is ODE? Answer in one sentence.",
+    });
+
+    expect(createManager).toHaveBeenCalledOnce();
+    expect(sessionModels).toEqual([SUMMARY_MODEL_ID]);
+    expect(result.model).toMatchObject({
+      modelId: SUMMARY_MODEL_ID,
+      source: "summary_slot",
+      task: "chat-completion",
+    });
+    expect(manager.catalog.getModelVariant).not.toHaveBeenCalledWith(
+      QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+    );
+    await runtime.shutdown();
+  });
+
+  it("loads the exact CPU vision model in a separate slot on the shared manager", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const createManager = vi.fn(() => manager);
+    const sessionModels: string[] = [];
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager,
+      createAudioSession: () => fakeAudioSession(),
+      createChatSession: (model) => {
+        sessionModels.push(model.id);
+        return fakeChatSession({ processRequest: async () => textResponse("Structured image note.") });
+      },
+    });
+
+    await runtime.prepare(false);
+    const result = await runtime.runAssistantTurn({
+      systemPrompt: "Classroom safety.",
+      prompt: "Analyze this image.",
+      images: [{ kind: "data", format: "png", data: new Uint8Array([1, 2, 3]) }],
+    });
+
+    expect(createManager).toHaveBeenCalledOnce();
+    expect(sessionModels).toEqual([QWEN_VISION_CHAT_CANDIDATE_MODEL_ID]);
+    expect(result.model).toMatchObject({
+      modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+      source: "vision_slot",
+      runtime: {
+        deviceType: DeviceType.CPU,
+        executionProvider: AUDIO_EXECUTION_PROVIDER,
+      },
+    });
+    expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
+    expect(models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID)?.loaded).toBe(true);
+    await runtime.resetAssistant();
+    expect(models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID)?.loaded).toBe(false);
+    expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
+    await runtime.shutdown();
+  });
+
+  it("keeps all core slots loaded when optional CPU vision inference fails", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager: () => manager,
+      createAudioSession: () => fakeAudioSession(),
+      createChatSession: (model) =>
+        fakeChatSession({
+          processRequest: async () => {
+            if (model.id === QWEN_VISION_CHAT_CANDIDATE_MODEL_ID) {
+              throw new Error("optional vision failed");
+            }
+            return textResponse("core text");
+          },
+        }),
+    });
+
+    await runtime.prepare(true);
+    await expect(
+      runtime.runAssistantTurn({
+        prompt: "Analyze.",
+        images: [{ kind: "data", format: "png", data: new Uint8Array([1]) }],
+      }),
+    ).rejects.toThrow("optional vision failed");
+
+    expect(models.get(WHISPER_AUDIO_MODEL_ID)?.loaded).toBe(true);
+    expect(models.get(NEMOTRON_AUDIO_MODEL_ID)?.loaded).toBe(true);
+    expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
+    await runtime.shutdown();
+  });
+
+  it("keeps Nemotron capture accepting chunks while shared-manager text chat runs", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const chatResponse = deferred<Response>();
+    const chatStarted = deferred<void>();
+    const stream: StreamingResponse = {
+      response: Promise.resolve(speechResponse("Nemotron terminal.")),
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => ({ done: true, value: undefined }),
+        };
+      },
+    };
+    const createManager = vi.fn(() => manager);
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager,
+      createAudioSession: (model) =>
+        model.id === NEMOTRON_AUDIO_MODEL_ID
+          ? fakeAudioSession({ processStreamingRequest: () => stream })
+          : fakeAudioSession(),
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async () => {
+            chatStarted.resolve();
+            return chatResponse.promise;
+          },
+        }),
+    });
+    await runtime.prepare(true);
+    const live = await runtime.startLiveStream(() => {});
+    const chat = runtime.runAssistantTurn({ prompt: "What is ODE?" });
+    await chatStarted.promise;
+
+    for (let sequence = 0; sequence < 3; sequence += 1) {
+      expect(
+        runtime.appendLiveChunk(
+          live.streamId,
+          sequence,
+          new Uint8Array(AUDIO_STREAM_CHUNK_BYTES),
+        ).acceptedSequence,
+      ).toBe(sequence);
+    }
+
+    chatResponse.resolve(textResponse("An ODE relates a function to ordinary derivatives."));
+    await expect(chat).resolves.toMatchObject({
+      model: { modelId: SUMMARY_MODEL_ID, source: "summary_slot" },
+    });
+    await expect(
+      runtime.finishLiveStream({
+        streamId: live.streamId,
+        lastSequence: 2,
+        audioDurationMs: 300,
+      }),
+    ).resolves.toMatchObject({ transcript: "Nemotron terminal." });
+    expect(createManager).toHaveBeenCalledOnce();
+    await runtime.shutdown();
+  });
+
+  it("hides cancelled assistant work from new requests while its native drain settles once", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const chatResponse = deferred<Response>();
+    const chatStarted = deferred<void>();
+    const dispose = vi.fn();
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: async () => pathsFor(root),
+      createManager: () => manager,
+      createAudioSession: () =>
+        fakeAudioSession({ processRequest: async () => speechResponse("Core Whisper final.") }),
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async () => {
+            chatStarted.resolve();
+            return chatResponse.promise;
+          },
+          dispose,
+        }),
+    });
+    await runtime.prepare(false);
+    const chat = runtime.runAssistantTurn({ prompt: "Wait for reset." });
+    await chatStarted.promise;
+
+    const firstDrain = runtime.resetAssistant();
+    const repeatedDrain = runtime.resetAssistant();
+    expect(repeatedDrain).toBe(firstDrain);
+    expect(runtime.assistantStatus).toMatchObject({ active: false, draining: true });
+    await expect(runtime.runAssistantTurn({ prompt: "Too early." })).rejects.toThrow(
+      "cleanup is still draining",
+    );
+    await expect(runtime.transcribeCapture(validatedCapture())).resolves.toMatchObject({
+      transcript: "Core Whisper final.",
+    });
+
+    chatResponse.resolve(textResponse("stale answer"));
+    await expect(chat).rejects.toMatchObject({ name: "AbortError" });
+    await firstDrain;
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(runtime.assistantStatus).toMatchObject({ active: false, draining: false });
+    expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
+    await runtime.shutdown();
+  });
 });
 
 interface RuntimeFactoryOptions {
@@ -1337,9 +1552,16 @@ class FakeModel implements IModel {
     task: string,
     executionProvider: string,
     order?: string[],
+    metadata: {
+      readonly deviceType?: DeviceType;
+      readonly inputModalities?: string;
+      readonly outputModalities?: string;
+    } = {},
   ) {
     this.#order = order;
-    const deviceType = executionProvider === SUMMARY_EXECUTION_PROVIDER ? DeviceType.GPU : DeviceType.CPU;
+    const deviceType =
+      metadata.deviceType ??
+      (executionProvider === SUMMARY_EXECUTION_PROVIDER ? DeviceType.GPU : DeviceType.CPU);
     this.info = {
       id,
       name: alias,
@@ -1352,6 +1574,12 @@ class FakeModel implements IModel {
       cached: true,
       task,
       runtime: { deviceType, executionProvider },
+      ...(metadata.inputModalities === undefined
+        ? {}
+        : { inputModalities: metadata.inputModalities }),
+      ...(metadata.outputModalities === undefined
+        ? {}
+        : { outputModalities: metadata.outputModalities }),
       fileSizeMb: 1,
       createdAtUnix: 0,
       isTestModel: true,
@@ -1373,11 +1601,11 @@ class FakeModel implements IModel {
   }
 
   get inputModalities(): string | null {
-    return null;
+    return this.info.inputModalities ?? null;
   }
 
   get outputModalities(): string | null {
-    return null;
+    return this.info.outputModalities ?? null;
   }
 
   get capabilities(): string | null {
@@ -1462,6 +1690,21 @@ function createModels(order?: string[]): ReadonlyMap<string, FakeModel> {
     [
       SUMMARY_MODEL_ID,
       new FakeModel(SUMMARY_MODEL_ID, "qwen", "chat-completion", SUMMARY_EXECUTION_PROVIDER, order),
+    ],
+    [
+      QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+      new FakeModel(
+        QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+        "qwen-vision",
+        "vision-language-chat",
+        AUDIO_EXECUTION_PROVIDER,
+        order,
+        {
+          deviceType: DeviceType.CPU,
+          inputModalities: '["text", "image"]',
+          outputModalities: "text",
+        },
+      ),
     ],
   ]);
 }

@@ -6,9 +6,8 @@ import { AssistantMemoryState } from "../assistant/assistant-state";
 import type { AssistantLaneSnapshot, AssistantMode, ImageAnalysisNote } from "../assistant/assistant-types";
 import type { ValidatedImage } from "../assistant/image-security";
 import { formatAssistantPlainText } from "../assistant/plain-text";
-import { FoundryAssistantRuntime } from "../foundry/foundry-assistant-runtime";
+import type { AssistantRuntimeStatus } from "../foundry/foundry-runtime";
 import type {
-  OptionalVisionChatRuntimeStatus,
   VisionChatTurnInput,
   VisionChatTurnResult,
 } from "../foundry/optional-vision-chat-runtime";
@@ -37,17 +36,17 @@ const IMAGE_REQUEST_OPTIONS: RequestOptions = {
 };
 
 export interface AssistantRuntime {
-  readonly status: OptionalVisionChatRuntimeStatus | null;
-  runTurn(
+  readonly assistantStatus: AssistantRuntimeStatus;
+  runAssistantTurn(
     input: VisionChatTurnInput,
     options?: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions },
   ): Promise<VisionChatTurnResult>;
-  cancelActiveTurn(reason?: unknown): boolean;
-  dispose(): Promise<void>;
+  cancelAssistantOperations(reason?: unknown): Promise<void> | null;
+  resetAssistant(): Promise<void>;
 }
 
 export interface AssistantControllerOptions {
-  readonly createRuntime?: () => AssistantRuntime;
+  readonly runtime: AssistantRuntime;
   readonly getTranscript: () => TranscriptSnapshot;
 }
 
@@ -61,19 +60,25 @@ type UpdateCallback = (snapshot: AssistantLaneSnapshot) => void;
 export class AssistantController {
   readonly #state = new AssistantMemoryState();
   readonly #queue = new AssistantOperationQueue();
-  readonly #createRuntime: () => AssistantRuntime;
+  readonly #runtime: AssistantRuntime;
   readonly #getTranscript: () => TranscriptSnapshot;
-  #runtime: AssistantRuntime | null = null;
-  #runtimeCleanup: Promise<void> | null = null;
   #imageBytes: Uint8Array | null = null;
 
   constructor(options: AssistantControllerOptions) {
-    this.#createRuntime = options.createRuntime ?? (() => new FoundryAssistantRuntime());
+    this.#runtime = options.runtime;
     this.#getTranscript = options.getTranscript;
   }
 
   snapshot(): AssistantLaneSnapshot {
-    return this.#state.snapshot(this.#queue);
+    const snapshot = this.#state.snapshot(this.#queue);
+    const cleanupPending = this.#queue.draining || this.#runtime.assistantStatus.draining;
+    return {
+      ...snapshot,
+      cleanupPending,
+      cleanupDetail: cleanupPending
+        ? "Optional assistant cleanup is draining; recording, transcription, and summary remain available."
+        : null,
+    };
   }
 
   setMode(mode: AssistantMode): AssistantLaneSnapshot {
@@ -140,10 +145,11 @@ export class AssistantController {
           signal,
           IMAGE_REQUEST_OPTIONS,
         );
-        this.#state.trace("image-analysis-raw", result.text, "info", requestId);
         const note = parseImageAnalysisNote(result.text);
         const currentContext = buildImageAnalysisContext(this.#getTranscript());
-        if (!this.#state.applyImageAnalysis(token, currentContext, note, result.model.modelId)) {
+        if (this.#state.applyImageAnalysis(token, currentContext, note, result.model.modelId)) {
+          this.#state.trace("image-analysis-raw", result.text, "info", requestId);
+        } else if (this.#state.isGenerationCurrent(token)) {
           this.#state.trace(
             "image-analysis-stale",
             "Discarded image analysis because the selected image or lesson context changed.",
@@ -198,9 +204,10 @@ export class AssistantController {
               }),
         };
         const result = await this.#runTurn(input, signal, CHAT_REQUEST_OPTIONS);
-        this.#state.trace("chat-raw", result.text, "info", requestId);
         const answer = formatAssistantPlainText(result.text);
-        if (!this.#state.applyChatAnswer(token, answer, context)) {
+        if (this.#state.applyChatAnswer(token, answer, context)) {
+          this.#state.trace("chat-raw", result.text, "info", requestId);
+        } else if (this.#state.isGenerationCurrent(token)) {
           this.#state.trace(
             "chat-stale",
             "Discarded a chat answer because assistant state changed.",
@@ -234,32 +241,30 @@ export class AssistantController {
     this.#queue.cancelOwner(sessionId);
   }
 
-  reset(): AssistantLaneSnapshot {
+  reset(onUpdate?: UpdateCallback): AssistantLaneSnapshot {
     this.#queue.reset();
+    const cleanup = this.#runtime.resetAssistant();
     this.#disposeImageBytes();
     this.#state.reset();
-    this.#disposeRuntimeWithoutBlocking();
+    void cleanup.then(
+      () => onUpdate?.(this.snapshot()),
+      (error: unknown) => {
+        this.#state.trace(
+          "assistant-cleanup",
+          formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_ASSISTANT_CLEANUP_PENDING")),
+          "warning",
+        );
+        onUpdate?.(this.snapshot());
+      },
+    );
     return this.snapshot();
   }
 
-  async shutdown(): Promise<void> {
+  shutdown(): void {
     this.#queue.reset();
+    this.#runtime.cancelAssistantOperations(new Error("Assistant shutdown cancelled optional work."));
     this.#disposeImageBytes();
     this.#state.reset();
-    const runtime = this.#runtime;
-    this.#runtime = null;
-    const cleanup = this.#runtimeCleanup;
-    this.#runtimeCleanup = null;
-    const outcomes = await Promise.allSettled([
-      ...(cleanup === null ? [] : [cleanup]),
-      ...(runtime === null ? [] : [runtime.dispose()]),
-    ]);
-    const errors = outcomes
-      .filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected")
-      .map((outcome) => outcome.reason);
-    if (errors.length > 0) {
-      throw new AggregateError(errors, "Optional assistant shutdown failed.");
-    }
   }
 
   async #runTurn(
@@ -267,20 +272,7 @@ export class AssistantController {
     signal: AbortSignal,
     requestOptions: RequestOptions,
   ): Promise<VisionChatTurnResult> {
-    const runtime = await this.#getRuntime();
-    return runtime.runTurn(input, { signal, requestOptions });
-  }
-
-  async #getRuntime(): Promise<AssistantRuntime> {
-    const cleanup = this.#runtimeCleanup;
-    if (cleanup !== null) {
-      await cleanup;
-      if (this.#runtimeCleanup === cleanup) {
-        this.#runtimeCleanup = null;
-      }
-    }
-    this.#runtime ??= this.#createRuntime();
-    return this.#runtime;
+    return this.#runtime.runAssistantTurn(input, { signal, requestOptions });
   }
 
   #watch(result: Promise<void>, requestId: string, onUpdate: UpdateCallback): void {
@@ -302,23 +294,6 @@ export class AssistantController {
         queueMicrotask(() => onUpdate(this.snapshot()));
       },
     );
-  }
-
-  #disposeRuntimeWithoutBlocking(): void {
-    const runtime = this.#runtime;
-    this.#runtime = null;
-    if (runtime === null) {
-      return;
-    }
-    const cleanup = runtime.dispose();
-    this.#runtimeCleanup = cleanup;
-    void cleanup.catch((error: unknown) => {
-      this.#state.trace(
-        "assistant-cleanup",
-        formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_ASSISTANT_CLEANUP_PENDING")),
-        "warning",
-      );
-    });
   }
 
   #disposeImageBytes(): void {

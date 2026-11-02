@@ -1131,7 +1131,7 @@ function renderAssistant(): void {
   const state = assistantSnapshot;
   elements.assistantPanel.setAttribute(
     "aria-busy",
-    String(assistantUiPending || state?.activeRequestId != null),
+    String(assistantUiPending || state?.activeRequestId != null || state?.cleanupPending === true),
   );
   if (state === null) {
     elements.assistantHistory.replaceChildren(
@@ -1236,7 +1236,12 @@ function renderAssistant(): void {
     );
   }
 
-  if (state.activeOperation !== null) {
+  if (state.cleanupPending) {
+    assistantStatusMessage =
+      state.cleanupDetail ??
+      "Optional assistant cleanup is draining; the core recorder remains available.";
+    assistantStatusTone = "warning";
+  } else if (state.activeOperation !== null) {
     assistantStatusMessage =
       state.activeOperation === "chat"
         ? "Local chat is running; audio capture continues independently."
@@ -1371,19 +1376,38 @@ function updateControls(): void {
   elements.saveTranscript.disabled = busy || !transcriptChanged;
   elements.summary.disabled = busy || !hasFinal;
   const assistantReady = assistantSessionId !== null && assistantSnapshot !== null;
+  const assistantCleanupPending = assistantSnapshot?.cleanupPending === true;
   const assistantQueueFull =
     assistantSnapshot !== null && assistantSnapshot.queuedRequests >= assistantSnapshot.maxQueuedRequests;
-  elements.assistantMode.disabled = !assistantReady || assistantUiPending;
+  elements.assistantMode.disabled = !assistantReady || assistantCleanupPending || assistantUiPending;
   elements.assistantAsk.disabled =
-    !assistantReady || assistantUiPending || assistantQueueFull || !elements.assistantInput.value.trim();
+    !assistantReady ||
+    assistantCleanupPending ||
+    assistantUiPending ||
+    assistantQueueFull ||
+    !elements.assistantInput.value.trim();
   elements.assistantCancel.disabled =
-    !assistantReady || assistantUiPending || assistantSnapshot?.activeRequestId === null;
+    !assistantReady ||
+    assistantCleanupPending ||
+    assistantUiPending ||
+    assistantSnapshot?.activeRequestId === null;
   elements.assistantClear.disabled =
-    !assistantReady || assistantUiPending || (assistantSnapshot?.chatMessages.length ?? 0) === 0;
-  elements.imageSelect.disabled = !assistantReady || assistantUiPending;
+    !assistantReady ||
+    assistantCleanupPending ||
+    assistantUiPending ||
+    (assistantSnapshot?.chatMessages.length ?? 0) === 0;
+  elements.imageSelect.disabled = !assistantReady || assistantCleanupPending || assistantUiPending;
   elements.imageAnalyze.disabled =
-    !assistantReady || assistantUiPending || assistantQueueFull || assistantSnapshot?.image === null;
-  elements.imageRemove.disabled = !assistantReady || assistantUiPending || assistantSnapshot?.image === null;
+    !assistantReady ||
+    assistantCleanupPending ||
+    assistantUiPending ||
+    assistantQueueFull ||
+    assistantSnapshot?.image === null;
+  elements.imageRemove.disabled =
+    !assistantReady ||
+    assistantCleanupPending ||
+    assistantUiPending ||
+    assistantSnapshot?.image === null;
   elements.reset.disabled = busy;
   elements.reset.textContent = resetting
     ? "Cancelling / resetting…"

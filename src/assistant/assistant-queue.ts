@@ -35,11 +35,17 @@ export class AssistantOperationQueue {
   }
 
   get activeRequestId(): string | null {
-    return this.#active?.id ?? null;
+    const active = this.#active;
+    return active !== null && !active.abortController.signal.aborted ? active.id : null;
   }
 
   get activeOperation(): AssistantOperationKind | null {
-    return this.#active?.kind ?? null;
+    const active = this.#active;
+    return active !== null && !active.abortController.signal.aborted ? active.kind : null;
+  }
+
+  get draining(): boolean {
+    return this.#active?.abortController.signal.aborted === true;
   }
 
   get queuedRequests(): number {
@@ -55,6 +61,9 @@ export class AssistantOperationQueue {
     kind: AssistantOperationKind,
     run: (signal: AbortSignal, requestId: string) => Promise<T>,
   ): { readonly requestId: string; readonly result: Promise<T> } {
+    if (this.draining) {
+      throw new Error("Optional assistant cleanup is still draining.");
+    }
     if (this.#pending.length >= this.#maxQueuedRequests) {
       throw new Error(`The assistant queue is full (${this.#maxQueuedRequests} waiting requests).`);
     }
