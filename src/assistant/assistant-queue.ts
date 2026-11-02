@@ -119,9 +119,11 @@ export class AssistantOperationQueue {
     }
   }
 
-  cancelKind(kind: AssistantOperationKind): void {
+  cancelKind(kind: AssistantOperationKind): boolean {
+    let cancelled = false;
     if (this.#active?.token.kind === kind) {
       this.#active.abortController.abort();
+      cancelled = true;
     }
     for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
       const task = this.#pending[index];
@@ -131,7 +133,9 @@ export class AssistantOperationQueue {
       this.#pending.splice(index, 1);
       task.abortController.abort();
       task.reject(new AssistantCancelledError());
+      cancelled = true;
     }
+    return cancelled;
   }
 
   cancelImageDependent(): boolean {

@@ -111,6 +111,7 @@ export class AssistantMemoryState {
     if (options.dependsOnImage && image === null) {
       throw new Error("Select a current lesson image before starting this assistant request.");
     }
+    const capturedContext = captureRequestContext(context);
     return {
       requestId,
       generation: this.#generation,
@@ -121,7 +122,8 @@ export class AssistantMemoryState {
       requiresImageBytes: options.requiresImageBytes,
       imageId: image?.id ?? null,
       imageVersion: image?.version ?? null,
-      contextFingerprint: context.fingerprint,
+      contextFingerprint: capturedContext.fingerprint,
+      context: capturedContext,
     };
   }
 
@@ -133,7 +135,7 @@ export class AssistantMemoryState {
   ): boolean {
     if (
       token.kind !== "image_analysis" ||
-      !this.isOperationCurrent(token, currentContext) ||
+      !this.isImageAnalysisOperationCurrent(token, currentContext) ||
       token.imageId === null ||
       token.imageVersion === null
     ) {
@@ -157,11 +159,7 @@ export class AssistantMemoryState {
     return true;
   }
 
-  appendUserMessage(
-    token: AssistantOperationToken,
-    question: string,
-    context: AssistantRequestContext,
-  ): AssistantChatMessage {
+  appendUserMessage(token: AssistantOperationToken, question: string): AssistantChatMessage {
     if (token.kind !== "chat") {
       throw new Error("Only chat operation tokens can append chat history.");
     }
@@ -175,19 +173,15 @@ export class AssistantMemoryState {
       dependsOnImage: token.dependsOnImage,
       imageId: token.imageId,
       imageVersion: token.imageVersion,
-      contextLabels: durableChatMessageContext(context),
+      contextLabels: durableChatMessageContext(token.context),
       createdAt: new Date().toISOString(),
     };
     this.#appendChat(message);
     return message;
   }
 
-  applyChatAnswer(
-    token: AssistantOperationToken,
-    answer: string,
-    currentContext: AssistantRequestContext,
-  ): boolean {
-    if (token.kind !== "chat" || !this.isOperationCurrent(token, currentContext)) {
+  applyChatAnswer(token: AssistantOperationToken, answer: string): boolean {
+    if (!this.isChatOperationCurrent(token)) {
       return false;
     }
     this.#appendChat({
@@ -200,7 +194,7 @@ export class AssistantMemoryState {
       dependsOnImage: token.dependsOnImage,
       imageId: token.imageId,
       imageVersion: token.imageVersion,
-      contextLabels: durableChatMessageContext(currentContext),
+      contextLabels: durableChatMessageContext(token.context),
       createdAt: new Date().toISOString(),
     });
     return true;
@@ -281,11 +275,25 @@ export class AssistantMemoryState {
     );
   }
 
-  isOperationCurrent(token: AssistantOperationToken, currentContext: AssistantRequestContext): boolean {
+  isChatOperationCurrent(token: AssistantOperationToken): boolean {
+    return token.kind === "chat" && this.#isOperationStateCurrent(token);
+  }
+
+  isImageAnalysisOperationCurrent(
+    token: AssistantOperationToken,
+    currentContext: AssistantRequestContext,
+  ): boolean {
+    return (
+      token.kind === "image_analysis" &&
+      token.contextFingerprint === currentContext.fingerprint &&
+      this.#isOperationStateCurrent(token)
+    );
+  }
+
+  #isOperationStateCurrent(token: AssistantOperationToken): boolean {
     if (
       token.generation !== this.#generation ||
       token.mode !== this.#mode ||
-      token.contextFingerprint !== currentContext.fingerprint ||
       token.laneGeneration !== (token.kind === "chat" ? this.#chatGeneration : this.#imageVersion)
     ) {
       return false;
@@ -316,4 +324,14 @@ export class AssistantMemoryState {
       this.#image = { ...this.#image, analysisStatus: "unanalyzed" };
     }
   }
+}
+
+function captureRequestContext(context: AssistantRequestContext): AssistantRequestContext {
+  const transcript = Object.freeze({ ...context.transcript });
+  const labels = Object.freeze(context.labels.map((label) => Object.freeze({ ...label })));
+  return Object.freeze({
+    ...context,
+    transcript,
+    labels,
+  });
 }

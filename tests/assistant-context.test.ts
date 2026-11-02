@@ -44,11 +44,60 @@ describe("assistant context and memory", () => {
       dependsOnImage: false,
       requiresImageBytes: false,
     });
-    state.appendUserMessage(token, "What is ODE?", context);
+    state.appendUserMessage(token, "What is ODE?");
     const serialized = JSON.stringify(state.snapshot());
 
     expect(serialized).toContain("live draft snapshot (may change)");
     expect(serialized).not.toContain("private live snapshot");
+  });
+
+  it("captures immutable chat context, labels both roles, and filters history by snapshot", () => {
+    const state = new AssistantMemoryState();
+    const liveContext = buildAssistantContext(
+      transcript({ liveDraft: "ask-time live words", liveSequence: 7 }),
+      null,
+    );
+    const liveToken = state.createOperationToken("request-live", "chat", liveContext, {
+      dependsOnImage: false,
+      requiresImageBytes: false,
+    });
+
+    expect(liveToken.context).not.toBe(liveContext);
+    expect(liveToken.context.labels).not.toBe(liveContext.labels);
+    expect(Object.isFrozen(liveToken.context)).toBe(true);
+    expect(Object.isFrozen(liveToken.context.transcript)).toBe(true);
+    expect(Object.isFrozen(liveToken.context.labels)).toBe(true);
+
+    state.appendUserMessage(liveToken, "Question from live context");
+    expect(state.applyChatAnswer(liveToken, "Answer from live context")).toBe(true);
+
+    const finalContext = buildAssistantContext(
+      transcript({ finalText: "authoritative final words", version: 3 }),
+      null,
+    );
+    const finalToken = state.createOperationToken("request-final", "chat", finalContext, {
+      dependsOnImage: false,
+      requiresImageBytes: false,
+    });
+    state.appendUserMessage(finalToken, "Question from final context");
+    expect(state.applyChatAnswer(finalToken, "Answer from final context")).toBe(true);
+
+    expect(state.chatHistoryFor(finalToken).map((message) => message.requestId)).toEqual([
+      "request-final",
+      "request-final",
+    ]);
+    expect(
+      state
+        .snapshot()
+        .chatMessages.filter((message) => message.requestId === "request-live")
+        .map((message) => message.contextLabels.map((label) => label.label)),
+    ).toEqual([["live draft snapshot (may change)"], ["live draft snapshot (may change)"]]);
+    expect(
+      state
+        .snapshot()
+        .chatMessages.filter((message) => message.requestId === "request-final")
+        .map((message) => message.contextLabels.map((label) => label.label)),
+    ).toEqual([["final transcript v3"], ["final transcript v3"]]);
   });
 
   it("rejects stale image analysis after image or transcript context changes", () => {
@@ -135,7 +184,7 @@ describe("assistant context and memory", () => {
       dependsOnImage: false,
       requiresImageBytes: false,
     });
-    state.appendUserMessage(token, "Explain this.", context);
+    state.appendUserMessage(token, "Explain this.");
 
     state.reset();
 

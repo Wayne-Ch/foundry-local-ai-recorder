@@ -204,20 +204,19 @@ export class AssistantController {
       throw new Error("Select a current lesson image before analysis.");
     }
     const context = buildImageAnalysisContext(this.#getTranscript());
-    const mode = this.#state.snapshot().mode;
     const token = this.#state.createOperationToken(randomUUID(), "image_analysis", context, {
       dependsOnImage: true,
       requiresImageBytes: true,
     });
     const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
       const currentContext = buildImageAnalysisContext(this.#getTranscript());
-      this.#assertOperationCurrent(operationToken, currentContext);
+      this.#assertImageAnalysisOperationCurrent(operationToken, currentContext, signal);
       const ownedImage = this.#copyOperationImage(operationToken);
       try {
         const result = await this.#runTurn(
           {
-            prompt: imageAnalysisPrompt(mode, context),
-            systemPrompt: assistantSystemPrompt(mode),
+            prompt: imageAnalysisPrompt(operationToken.mode, operationToken.context),
+            systemPrompt: assistantSystemPrompt(operationToken.mode),
             images: [
               {
                 kind: "data",
@@ -231,7 +230,10 @@ export class AssistantController {
         );
         const note = parseImageAnalysisNote(result.text);
         const completionContext = buildImageAnalysisContext(this.#getTranscript());
-        if (this.#state.applyImageAnalysis(operationToken, completionContext, note, result.model.modelId)) {
+        if (
+          !signal.aborted &&
+          this.#state.applyImageAnalysis(operationToken, completionContext, note, result.model.modelId)
+        ) {
           this.#state.trace("image-analysis-raw", result.text, "info", operationToken.requestId);
         } else if (this.#state.isGenerationCurrent(operationToken)) {
           this.#state.trace(
@@ -269,7 +271,6 @@ export class AssistantController {
     if (asksAboutImage && stateBefore.image === null) {
       throw new Error("Select an image before asking an image-specific question.");
     }
-    const mode = stateBefore.mode;
     const dependsOnImage = asksAboutImage || validImageAnalysis !== null;
     const token = this.#state.createOperationToken(randomUUID(), "chat", context, {
       dependsOnImage,
@@ -277,13 +278,12 @@ export class AssistantController {
     });
     const history = this.#state.chatHistoryFor(token);
     const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
-      const currentContext = this.#buildCurrentChatContext();
-      this.#assertOperationCurrent(operationToken, currentContext);
+      this.#assertChatOperationCurrent(operationToken, signal);
       const ownedImage = operationToken.requiresImageBytes ? this.#copyOperationImage(operationToken) : null;
       try {
         const input: VisionChatTurnInput = {
-          prompt: chatUserPrompt(normalizedQuestion, context, history),
-          systemPrompt: assistantSystemPrompt(mode),
+          prompt: chatUserPrompt(normalizedQuestion, operationToken.context, history),
+          systemPrompt: assistantSystemPrompt(operationToken.mode),
           ...(ownedImage === null
             ? {}
             : {
@@ -298,8 +298,7 @@ export class AssistantController {
         };
         const result = await this.#runTurn(input, signal, CHAT_REQUEST_OPTIONS);
         const answer = formatAssistantPlainText(result.text);
-        const completionContext = this.#buildCurrentChatContext();
-        if (this.#state.applyChatAnswer(operationToken, answer, completionContext)) {
+        if (!signal.aborted && this.#state.applyChatAnswer(operationToken, answer)) {
           this.#state.trace("chat-raw", result.text, "info", operationToken.requestId);
         } else if (this.#state.isGenerationCurrent(operationToken)) {
           this.#state.trace(
@@ -315,7 +314,7 @@ export class AssistantController {
         }
       }
     });
-    this.#state.appendUserMessage(token, normalizedQuestion, context);
+    this.#state.appendUserMessage(token, normalizedQuestion);
     this.#watch(queued.result, queued.requestId, onUpdate);
     onUpdate(this.snapshot());
     queueMicrotask(() => onUpdate(this.snapshot()));
@@ -425,14 +424,20 @@ export class AssistantController {
     };
   }
 
-  #buildCurrentChatContext(): AssistantRequestContext {
-    const transcript = this.#getTranscript();
-    const analysisContext = buildImageAnalysisContext(transcript);
-    return buildAssistantContext(transcript, this.#state.validImageAnalysis(analysisContext));
+  #assertChatOperationCurrent(token: AssistantOperationToken, signal: AbortSignal): void {
+    if (signal.aborted || !this.#state.isChatOperationCurrent(token)) {
+      throw new AssistantCancelledError(
+        "The assistant chat request no longer matches the current mode, image, or renderer session.",
+      );
+    }
   }
 
-  #assertOperationCurrent(token: AssistantOperationToken, currentContext: AssistantRequestContext): void {
-    if (!this.#state.isOperationCurrent(token, currentContext)) {
+  #assertImageAnalysisOperationCurrent(
+    token: AssistantOperationToken,
+    currentContext: AssistantRequestContext,
+    signal: AbortSignal,
+  ): void {
+    if (signal.aborted || !this.#state.isImageAnalysisOperationCurrent(token, currentContext)) {
       throw new AssistantCancelledError(
         "The assistant request no longer matches the current mode, image, or lesson context.",
       );
@@ -444,7 +449,7 @@ export class AssistantController {
     const contextChanged = context.fingerprint !== this.#transcriptContextFingerprint;
     this.#transcriptContextFingerprint = context.fingerprint;
     const invalidated = this.#state.invalidateImageAnalysis(context);
-    const cancelled = contextChanged ? this.#queue.cancelImageDependent() : false;
+    const cancelled = contextChanged ? this.#queue.cancelKind("image_analysis") : false;
     if (invalidated) {
       this.#state.trace(
         "image-analysis-stale",
@@ -455,7 +460,7 @@ export class AssistantController {
     if (cancelled && !invalidated) {
       this.#state.trace(
         "assistant-context-stale",
-        "Cancelled image-dependent assistant work because the transcript context changed.",
+        "Cancelled image analysis because the transcript context changed.",
         "warning",
       );
     }

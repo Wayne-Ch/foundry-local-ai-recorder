@@ -38,6 +38,272 @@ describe("AssistantController", () => {
     expect(updates.length).toBeGreaterThan(1);
   });
 
+  it("accepts a queued chat with its original live snapshot after multiple partial updates", async () => {
+    let transcript = snapshot({ liveDraft: "blocking live snapshot", liveSequence: 1 });
+    let releaseFirst = () => {};
+    const runtime = new FakeRuntime(["blocking answer", "queued snapshot answer"], async (_input, index) => {
+      if (index === 0) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+    });
+    const controller = new AssistantController({
+      getTranscript: () => transcript,
+      runtime,
+    });
+
+    controller.startChat("session-1", "Block the queue.", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+    transcript = snapshot({ liveDraft: "queued ask-time snapshot", liveSequence: 2 });
+    controller.synchronizeTranscriptContext();
+    const queued = controller.startChat("session-1", "Use the queued snapshot.", () => {});
+    expect(controller.snapshot().queuedRequests).toBe(1);
+
+    transcript = snapshot({ liveDraft: "later partial three", liveSequence: 3 });
+    controller.synchronizeTranscriptContext();
+    transcript = snapshot({ liveDraft: "later partial four", liveSequence: 4 });
+    controller.synchronizeTranscriptContext();
+
+    releaseFirst();
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === queued.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+
+    expect(runtime.inputs[1]?.prompt).toContain("queued ask-time snapshot");
+    expect(runtime.inputs[1]?.prompt).not.toContain("later partial three");
+    expect(runtime.inputs[1]?.prompt).not.toContain("later partial four");
+    expect(
+      controller
+        .snapshot()
+        .chatMessages.filter((message) => message.requestId === queued.requestId)
+        .map((message) => message.contextLabels.map((label) => label.label)),
+    ).toEqual([["live draft snapshot (may change)"], ["live draft snapshot (may change)"]]);
+  });
+
+  it("keeps a running live-snapshot answer when final transcript arrives and uses final context next", async () => {
+    let transcript = snapshot({ liveDraft: "original live ask-time text", liveSequence: 10 });
+    let releaseLiveAnswer = () => {};
+    const runtime = new FakeRuntime(
+      ["answer from captured live text", "answer from final text"],
+      async (_input, index) => {
+        if (index === 0) {
+          await new Promise<void>((resolve) => {
+            releaseLiveAnswer = resolve;
+          });
+        }
+      },
+    );
+    const controller = new AssistantController({
+      getTranscript: () => transcript,
+      runtime,
+    });
+
+    const liveRequest = controller.startChat("session-1", "Unique live question?", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+    transcript = snapshot({ liveDraft: "second live partial", liveSequence: 11 });
+    controller.synchronizeTranscriptContext();
+    transcript = snapshot({ liveDraft: "third live partial", liveSequence: 12 });
+    controller.synchronizeTranscriptContext();
+    transcript = snapshot({ finalText: "authoritative final transcript", version: 7 });
+    controller.synchronizeTranscriptContext();
+
+    releaseLiveAnswer();
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === liveRequest.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+
+    expect(runtime.inputs[0]?.prompt).toContain("original live ask-time text");
+    expect(runtime.inputs[0]?.prompt).not.toContain("authoritative final transcript");
+    expect(
+      controller
+        .snapshot()
+        .chatMessages.filter((message) => message.requestId === liveRequest.requestId)
+        .map((message) => message.contextLabels.map((label) => label.label)),
+    ).toEqual([["live draft snapshot (may change)"], ["live draft snapshot (may change)"]]);
+
+    const finalRequest = controller.startChat("session-1", "Unique final question?", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === finalRequest.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+
+    expect(runtime.inputs[1]?.prompt).toContain("authoritative final transcript");
+    expect(runtime.inputs[1]?.prompt).not.toContain("original live ask-time text");
+    expect(runtime.inputs[1]?.prompt).not.toContain("Unique live question?");
+    expect(runtime.inputs[1]?.prompt).not.toContain("answer from captured live text");
+    expect(
+      controller
+        .snapshot()
+        .chatMessages.filter((message) => message.requestId === finalRequest.requestId)
+        .map((message) => message.contextLabels.map((label) => label.label)),
+    ).toEqual([["final transcript v7"], ["final transcript v7"]]);
+    expect(controller.snapshot().chatMessages).toHaveLength(4);
+  });
+
+  it("keeps captured image-analysis chat across transcript updates but invalidates the stored analysis", async () => {
+    let transcript = snapshot({ liveDraft: "image-grounded live snapshot", liveSequence: 20 });
+    let releaseChat = () => {};
+    const runtime = new FakeRuntime(
+      [
+        "Visible text/objects: CAPTURED ODE DIAGRAM\nRelation to lesson: Captured relation\nUncertainty: None",
+        "The captured diagram supports the lesson.",
+      ],
+      async (_input, index) => {
+        if (index === 1) {
+          await new Promise<void>((resolve) => {
+            releaseChat = resolve;
+          });
+        }
+      },
+    );
+    const controller = new AssistantController({
+      getTranscript: () => transcript,
+      runtime,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
+
+    const chat = controller.startChat(
+      "session-1",
+      "How does the lesson example support the explanation?",
+      () => {},
+    );
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(2));
+    transcript = snapshot({ liveDraft: "newer image-grounded partial", liveSequence: 21 });
+    controller.synchronizeTranscriptContext();
+
+    expect(controller.snapshot().imageAnalysis).toBeNull();
+    expect(controller.snapshot().cleanupPending).toBe(false);
+    releaseChat();
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === chat.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+
+    expect(runtime.inputs[1]?.prompt).toContain("image-grounded live snapshot");
+    expect(runtime.inputs[1]?.prompt).toContain("CAPTURED ODE DIAGRAM");
+    expect(
+      controller
+        .snapshot()
+        .chatMessages.filter((message) => message.requestId === chat.requestId)
+        .map((message) => message.contextLabels.map((label) => label.label)),
+    ).toEqual([
+      ["live draft snapshot (may change)", "image analysis v1"],
+      ["live draft snapshot (may change)", "image analysis v1"],
+    ]);
+  });
+
+  it("keeps image-independent chat when the selected image is replaced", async () => {
+    let release = () => {};
+    const runtime = new FakeRuntime(
+      "Image-independent answer.",
+      async () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+    const chat = controller.startChat("session-1", "What is an ordinary differential equation?", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+    controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+    expect(controller.snapshot().cleanupPending).toBe(false);
+    release();
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === chat.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+
+    expect(
+      controller
+        .snapshot()
+        .chatMessages.filter((message) => message.requestId === chat.requestId)
+        .every((message) => !message.dependsOnImage),
+    ).toBe(true);
+  });
+
+  it.each(["reset", "clear", "mode", "revoke"] as const)(
+    "%s still discards an active chat answer",
+    async (action) => {
+      let release = () => {};
+      const runtime = new FakeRuntime(
+        "stale answer",
+        async () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const controller = new AssistantController({
+        getTranscript: () => snapshot({ liveDraft: "captured live text", liveSequence: 1 }),
+        runtime,
+      });
+      const request = controller.startChat("session-1", "Explain the lesson.", () => {});
+      await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+      switch (action) {
+        case "reset":
+          controller.reset();
+          break;
+        case "clear":
+          controller.clearChat();
+          break;
+        case "mode":
+          controller.setMode("clinic");
+          break;
+        case "revoke":
+          controller.revokeSession("session-1");
+          break;
+      }
+
+      release();
+      await vi.waitFor(() => expect(controller.snapshot().cleanupPending).toBe(false));
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === request.requestId && message.role === "assistant",
+          ),
+      ).toBe(false);
+    },
+  );
+
   it("applies clinic safety to every request", async () => {
     const runtime = new FakeRuntime("Educational explanation only.");
     const controller = new AssistantController({

@@ -128,6 +128,22 @@ function token(
     imageId: null,
     imageVersion: null,
     contextFingerprint: "context",
+    context: {
+      transcript: {
+        kind: "none",
+        text: "",
+        version: null,
+        liveSequence: null,
+        ephemeral: false,
+      },
+      transcriptFingerprint: "transcript-context",
+      summaryText: null,
+      summaryVersion: null,
+      imageAnalysisText: null,
+      imageAnalysisVersion: null,
+      labels: [{ kind: "none", label: "none", version: null, ephemeral: false }],
+      fingerprint: "context",
+    },
     ...overrides,
   };
 }

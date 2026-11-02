@@ -108,4 +108,5 @@ export interface AssistantOperationToken {
   readonly imageId: string | null;
   readonly imageVersion: number | null;
   readonly contextFingerprint: string;
+  readonly context: AssistantRequestContext;
 }

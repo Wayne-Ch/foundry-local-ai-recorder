@@ -33,6 +33,8 @@ const assistant = new AssistantController({
 });
 const before = await listOwnedTempFiles();
 let chatRequestedAt: number | null = null;
+let chatAnsweredAt: number | null = null;
+let chatRequestId: string | null = null;
 try {
   const prepared = await controller.prepare({ enableLiveCaptions: true }, (event) =>
     process.stdout.write(`${event.detail}\n`),
@@ -66,10 +68,26 @@ try {
     await sleep(100);
     if (chatRequestedAt === null && partials.length > 0) {
       chatRequestedAt = Date.now();
-      assistant.startChat("windows-integration-session", "What is ODE? Answer in one sentence.", () => {});
+      const started = assistant.startChat(
+        "windows-integration-session",
+        "What is ODE? Answer in one sentence.",
+        (snapshot) => {
+          if (
+            chatAnsweredAt === null &&
+            chatRequestId !== null &&
+            snapshot.chatMessages.some(
+              (message) => message.requestId === chatRequestId && message.role === "assistant",
+            )
+          ) {
+            chatAnsweredAt = Date.now();
+          }
+        },
+      );
+      chatRequestId = started.requestId;
     }
   }
   assert.ok(chatRequestedAt !== null, "Chat must be submitted while Nemotron recording is active.");
+  assert.ok(chatRequestId !== null, "Concurrent chat must capture its request ID.");
   const durationMs = audioDurationMsFromPcmBytes(pcm.byteLength);
   const live = await controller.finishLiveStream({
     streamId: started.streamId,
@@ -86,11 +104,31 @@ try {
   });
   const summary = await controller.generateSummary();
   await waitFor(
-    () => assistant.snapshot().chatMessages.some((message) => message.role === "assistant"),
+    () =>
+      assistant
+        .snapshot()
+        .chatMessages.some((message) => message.requestId === chatRequestId && message.role === "assistant"),
     120_000,
   );
-  const answer = assistant.snapshot().chatMessages.findLast((message) => message.role === "assistant")?.text;
-  assert.ok(answer, "Concurrent local chat must return an answer.");
+  const chatMessages = assistant
+    .snapshot()
+    .chatMessages.filter((message) => message.requestId === chatRequestId);
+  const userMessage = chatMessages.find((message) => message.role === "user");
+  const assistantMessage = chatMessages.find((message) => message.role === "assistant");
+  assert.ok(userMessage, "Concurrent chat must retain its user message.");
+  assert.ok(assistantMessage, "Concurrent local chat must retain its answer after final transcription.");
+  assert.ok(chatAnsweredAt !== null, "Concurrent chat completion timing must be captured.");
+  const expectedContextLabel = "live draft snapshot (may change)";
+  assert.deepEqual(
+    userMessage.contextLabels.map((label) => label.label),
+    [expectedContextLabel],
+  );
+  assert.deepEqual(
+    assistantMessage.contextLabels.map((label) => label.label),
+    [expectedContextLabel],
+  );
+  const requestToAnswerMs = chatAnsweredAt - chatRequestedAt;
+  assert.ok(requestToAnswerMs >= 0, "Concurrent chat timing must be non-negative.");
   assert.ok(chatRequestedAt <= recordingFinishedAt, "Chat was not initiated during recording.");
   assert.ok(partials.length > 0);
   assert.ok(keywordRecall(final.result.transcript).recall >= 0.66);
@@ -102,7 +140,9 @@ try {
     `CONCURRENT_ASSISTANT_CHAIN_OK ${JSON.stringify({
       partialCount: partials.length,
       chatRequestedDuringRecording: chatRequestedAt <= recordingFinishedAt,
-      chatAnswer: answer,
+      chatRequestToAnswerMs: requestToAnswerMs,
+      chatContextLabel: expectedContextLabel,
+      chatAnswer: assistantMessage.text,
       whisperFinal: final.result.transcript,
       summary: summary.snapshot.transcript.summary,
       coreInProcessValidated: summary.snapshot.readiness.inProcessModeValidated,
