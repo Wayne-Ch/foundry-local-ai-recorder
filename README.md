@@ -87,6 +87,18 @@ with Windows `Expand-Archive` when necessary.
 Repository `.gitattributes` enforces LF for text and marks image/audio/native artifacts binary, so
 a fresh Windows checkout remains lint-clean even when global `core.autocrlf=true`.
 
+For local Windows validation, use a genuinely fresh checkout created after `.gitattributes` was
+added. Do not mass-rewrite an existing working tree. Only for a clean, disposable validation
+worktree that was materialized earlier:
+
+```powershell
+if (git status --porcelain) { throw "Validation worktree must be clean" }
+git config core.autocrlf false
+git reset --hard HEAD
+```
+
+Then run lint and the model gates. Never use that reset recipe in a worktree containing changes.
+
 Select **Prepare local models** before recording. Preparation can use the network to download an
 uncached model or the WebGPU execution-provider bundle. Once cached and loaded, inference uses
 native in-process sessions; the application does not start the Foundry embedded web service and has

@@ -149,7 +149,7 @@ describe("AssistantController", () => {
     release();
   });
 
-  it("parses only the required structured image note", () => {
+  it("parses inline structured image notes", () => {
     expect(
       parseImageAnalysisNote(
         "Visible text/objects: ODE slope field\nRelation to lesson: Shows solution curves\nUncertainty: Labels are small",
@@ -161,7 +161,102 @@ describe("AssistantController", () => {
     });
     expect(() => parseImageAnalysisNote("A loose paragraph.")).toThrow("structured note");
   });
+
+  it("parses the exact CPU VLM section-and-bullets response", () => {
+    expect(parseImageAnalysisNote(EXACT_CPU_VLM_RESULT)).toEqual({
+      visibleTextAndObjects: [
+        "Equation: dy/dt = -2y",
+        "Solution: y(t) = y0 * e^(-2t)",
+        "Graph: y vs t curve showing exponential decay",
+      ].join("\n"),
+      relationToLesson: "Demonstrates the solution to the first order decay model",
+      uncertainty: "No uncertainty",
+    });
+  });
+
+  it("handles case-insensitive headings, numbering, wrapped lines, and extra whitespace", () => {
+    expect(
+      parseImageAnalysisNote(`
+        VISIBLE TEXT / OBJECTS :
+        1. Equation: dy/dt = -2y
+           with initial value y(0) = y0
+        * Graph: exponential decay
+
+        relation TO lesson:
+        1) Connects the equation to
+           the plotted solution
+
+        UNCERTAINTY : Labels are small
+      `),
+    ).toEqual({
+      visibleTextAndObjects: "Equation: dy/dt = -2y with initial value y(0) = y0\nGraph: exponential decay",
+      relationToLesson: "Connects the equation to the plotted solution",
+      uncertainty: "Labels are small",
+    });
+  });
+
+  it("preserves inert markup and math text while stripping only leading list markers", () => {
+    expect(
+      parseImageAnalysisNote(
+        "Visible text/objects:\n- <b>ODE</b>: y = -2y * t\nRelation to lesson:\n• Uses -2 as the decay rate\nUncertainty:\n- None",
+      ),
+    ).toEqual({
+      visibleTextAndObjects: "<b>ODE</b>: y = -2y * t",
+      relationToLesson: "Uses -2 as the decay rate",
+      uncertainty: "None",
+    });
+  });
+
+  it("allows identical duplicate sections but rejects conflicting duplicates", () => {
+    expect(
+      parseImageAnalysisNote(
+        "Visible text/objects: ODE\nVisible text/objects: ODE\nRelation to lesson: Lesson\nUncertainty: None",
+      ).visibleTextAndObjects,
+    ).toBe("ODE");
+    expect(() =>
+      parseImageAnalysisNote(
+        "Visible text/objects: ODE\nVisible text/objects: Different\nRelation to lesson: Lesson\nUncertainty: None",
+      ),
+    ).toThrow("duplicated with conflicting content");
+  });
+
+  it.each([
+    [
+      "reordered",
+      "Relation to lesson: Lesson\nVisible text/objects: ODE\nUncertainty: None",
+      "sections must appear",
+    ],
+    ["missing", "Visible text/objects: ODE\nRelation to lesson: Lesson", "sections must appear"],
+    ["empty", "Visible text/objects:\nRelation to lesson: Lesson\nUncertainty: None", "is empty"],
+    ["unstructured", "This is an ODE slide with a graph.", "unexpected text"],
+  ])("rejects %s image notes", (_label, raw, expected) => {
+    expect(() => parseImageAnalysisNote(raw)).toThrow(expected);
+  });
+
+  it("enforces per-field and combined output bounds", () => {
+    expect(() =>
+      parseImageAnalysisNote(
+        `Visible text/objects: ${"x".repeat(1_501)}\nRelation to lesson: Lesson\nUncertainty: None`,
+      ),
+    ).toThrow("field bound");
+    expect(() =>
+      parseImageAnalysisNote(
+        `Visible text/objects: ${"v".repeat(1_100)}\nRelation to lesson: ${"r".repeat(
+          1_100,
+        )}\nUncertainty: ${"u".repeat(1_100)}`,
+      ),
+    ).toThrow("total bound");
+  });
 });
+
+const EXACT_CPU_VLM_RESULT = `Visible text/objects:
+- Equation: dy/dt = -2y
+- Solution: y(t) = y0 * e^(-2t)
+- Graph: y vs t curve showing exponential decay
+Relation to lesson:
+- Demonstrates the solution to the first order decay model
+Uncertainty:
+- No uncertainty`;
 
 class FakeRuntime implements AssistantRuntime {
   assistantStatus: AssistantRuntimeStatus = {

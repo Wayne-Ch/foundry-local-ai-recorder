@@ -301,21 +301,152 @@ export class AssistantController {
 
 export function parseImageAnalysisNote(raw: string): ImageAnalysisNote {
   const text = formatAssistantPlainText(raw);
-  const fields = new Map<string, string>();
+  const occurrences = new Map<ImageAnalysisSection, string[]>();
+  const firstSeenOrder: ImageAnalysisSection[] = [];
+  let current: { readonly section: ImageAnalysisSection; readonly entries: string[] } | null = null;
+
+  const finishCurrent = (): void => {
+    if (current === null) {
+      return;
+    }
+    const value = current.entries
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .join("\n");
+    if (!value) {
+      throw imageAnalysisParseError(`${sectionHeading(current.section)} is empty`);
+    }
+    if (value.length > MAX_IMAGE_ANALYSIS_FIELD_CHARS) {
+      throw imageAnalysisParseError(`${sectionHeading(current.section)} exceeds the field bound`);
+    }
+    const values = occurrences.get(current.section) ?? [];
+    values.push(value);
+    occurrences.set(current.section, values);
+    current = null;
+  };
+
   for (const line of text.split("\n")) {
-    const separator = line.indexOf(":");
-    if (separator <= 0) {
+    const trimmed = line.trim();
+    if (!trimmed) {
       continue;
     }
-    fields.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
+    const heading = parseSectionHeading(trimmed);
+    if (heading !== null) {
+      finishCurrent();
+      if (!occurrences.has(heading.section) && !firstSeenOrder.includes(heading.section)) {
+        firstSeenOrder.push(heading.section);
+      }
+      current = { section: heading.section, entries: [] };
+      if (heading.inlineValue) {
+        current.entries.push(stripListMarker(heading.inlineValue).value);
+      }
+      continue;
+    }
+    if (current === null) {
+      throw imageAnalysisParseError("unexpected text appears outside a required section");
+    }
+    const content = stripListMarker(trimmed);
+    if (!content.value) {
+      continue;
+    }
+    if (content.listItem || current.entries.length === 0) {
+      current.entries.push(content.value);
+    } else {
+      const lastIndex = current.entries.length - 1;
+      current.entries[lastIndex] = `${current.entries[lastIndex]} ${content.value}`.trim();
+    }
   }
-  const visibleTextAndObjects = fields.get("visible text/objects");
-  const relationToLesson = fields.get("relation to lesson");
-  const uncertainty = fields.get("uncertainty");
-  if (!visibleTextAndObjects || !relationToLesson || !uncertainty) {
-    throw new Error("The local image model did not return the required structured note.");
+  finishCurrent();
+
+  if (
+    firstSeenOrder.length !== IMAGE_ANALYSIS_SECTION_ORDER.length ||
+    firstSeenOrder.some((section, index) => section !== IMAGE_ANALYSIS_SECTION_ORDER[index])
+  ) {
+    throw imageAnalysisParseError(
+      "sections must appear in Visible text/objects, Relation to lesson, Uncertainty order",
+    );
   }
+
+  const visibleTextAndObjects = resolveSection(occurrences, "visibleTextAndObjects");
+  const relationToLesson = resolveSection(occurrences, "relationToLesson");
+  const uncertainty = resolveSection(occurrences, "uncertainty");
+  if (
+    visibleTextAndObjects.length + relationToLesson.length + uncertainty.length >
+    MAX_IMAGE_ANALYSIS_TOTAL_CHARS
+  ) {
+    throw imageAnalysisParseError("combined fields exceed the total bound");
+  }
+
   return { visibleTextAndObjects, relationToLesson, uncertainty };
+}
+
+type ImageAnalysisSection = keyof ImageAnalysisNote;
+
+const IMAGE_ANALYSIS_SECTION_ORDER = [
+  "visibleTextAndObjects",
+  "relationToLesson",
+  "uncertainty",
+] as const satisfies readonly ImageAnalysisSection[];
+const MAX_IMAGE_ANALYSIS_FIELD_CHARS = 1_500;
+const MAX_IMAGE_ANALYSIS_TOTAL_CHARS = 3_000;
+
+function parseSectionHeading(
+  line: string,
+): { readonly section: ImageAnalysisSection; readonly inlineValue: string } | null {
+  const match = /^(visible\s+text\s*\/\s*objects|relation\s+to\s+lesson|uncertainty)\s*:\s*(.*)$/iu.exec(
+    line,
+  );
+  if (match === null) {
+    return null;
+  }
+  const normalized = match[1]
+    ?.toLowerCase()
+    .replaceAll(/\s+/g, " ")
+    .replaceAll(/\s*\/\s*/g, "/");
+  const section =
+    normalized === "visible text/objects"
+      ? "visibleTextAndObjects"
+      : normalized === "relation to lesson"
+        ? "relationToLesson"
+        : "uncertainty";
+  return { section, inlineValue: match[2]?.trim() ?? "" };
+}
+
+function stripListMarker(value: string): { readonly value: string; readonly listItem: boolean } {
+  const match = /^(?:[-*•]\s+|\d{1,3}[.)]\s+)(.*)$/u.exec(value.trim());
+  return match === null
+    ? { value: value.trim(), listItem: false }
+    : { value: match[1]?.trim() ?? "", listItem: true };
+}
+
+function resolveSection(
+  occurrences: ReadonlyMap<ImageAnalysisSection, readonly string[]>,
+  section: ImageAnalysisSection,
+): string {
+  const values = occurrences.get(section);
+  if (values === undefined || values.length === 0) {
+    throw imageAnalysisParseError(`${sectionHeading(section)} is missing`);
+  }
+  const distinct = [...new Set(values)];
+  if (distinct.length > 1) {
+    throw imageAnalysisParseError(`${sectionHeading(section)} is duplicated with conflicting content`);
+  }
+  return distinct[0] ?? "";
+}
+
+function sectionHeading(section: ImageAnalysisSection): string {
+  switch (section) {
+    case "visibleTextAndObjects":
+      return "Visible text/objects";
+    case "relationToLesson":
+      return "Relation to lesson";
+    case "uncertainty":
+      return "Uncertainty";
+  }
+}
+
+function imageAnalysisParseError(reason: string): Error {
+  return new Error(`The local image model did not return the required structured note: ${reason}.`);
 }
 
 function imageFormat(mimeType: "image/png" | "image/jpeg" | "image/webp"): string {

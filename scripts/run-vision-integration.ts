@@ -13,6 +13,16 @@ assert.equal(
   "win32",
   "The exact Foundry Local VLM gate must run on the target Windows machine.",
 );
+const exactCpuShape = parseImageAnalysisNote(`Visible text/objects:
+- Equation: dy/dt = -2y
+- Solution: y(t) = y0 * e^(-2t)
+- Graph: y vs t curve showing exponential decay
+Relation to lesson:
+- Demonstrates the solution to the first order decay model
+Uncertainty:
+- No uncertainty`);
+assert.match(exactCpuShape.visibleTextAndObjects, /dy\/dt = -2y/);
+assert.match(exactCpuShape.relationToLesson.toLowerCase(), /first order decay model/);
 
 const filePath = path.resolve("fixtures", "ode-slide.png");
 const sourceBytes = await readFile(filePath);
@@ -62,6 +72,7 @@ try {
     `VISION_INTEGRATION_OK ${JSON.stringify({
       model: result.model,
       note,
+      exactCpuShape,
       usage: result.response.usage,
       fixture: {
         basename: image.basename,

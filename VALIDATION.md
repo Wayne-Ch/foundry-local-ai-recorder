@@ -30,7 +30,7 @@ Runtime log evidence:
 |---|---|
 | `npm run lint` | Pass; 74 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 21 files, 242 tests |
+| `npm test` | Pass; 21 files, 251 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=moderate` | Pass against the live advisory service; 0 vulnerabilities |
 | Fresh clone with `core.autocrlf=true` | Pass; `README.md`, `src/main/main.ts`, and `src/foundry/foundry-runtime.ts` all had `CRLF=0` |
@@ -109,6 +109,9 @@ Unit coverage includes:
   Reset snapshots with no stale active request while cleanup settles once;
 - safe plain-text display, inert markup, response bounds, required structured image note, raw
   assistant trace, accessible tabs/status/keyboard controls, and Electron isolation assertions.
+- exact CPU VLM section-and-bullets output, inline fields, case-insensitive headings, numbered and
+  bulleted objects, wrapped lines, deterministic joins, inert markup/math preservation, required
+  section order, duplicate-conflict rejection, and per-field/combined parser bounds.
 
 The test environment replaces only SDK-native `Request`, `Item`, and `ItemQueue` constructors with
 typed in-memory equivalents so the cloud suite does not load Windows ONNX native libraries.
@@ -251,6 +254,17 @@ non-color status text while the transcript and summary remain readable.
 
 These were added and typechecked in the cloud session but **not executed there**. Linux cloud
 validation must not be reported as real Windows CPU VLM evidence.
+
+Use a genuinely fresh Windows checkout so committed `.gitattributes` applies before files are
+materialized. If an older validation worktree predates the LF attributes, do not mass-convert it.
+Only when that worktree is clean and disposable:
+
+```powershell
+if (git status --porcelain) { throw "Validation worktree must be clean" }
+git config core.autocrlf false
+git reset --hard HEAD
+npm run lint
+```
 
 ```powershell
 npm run test:vision-integration
