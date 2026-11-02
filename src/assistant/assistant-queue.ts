@@ -15,7 +15,7 @@ interface QueueTask<T> {
   readonly ownerSessionId: string;
   readonly kind: AssistantOperationKind;
   readonly generation: number;
-  readonly run: (signal: AbortSignal) => Promise<T>;
+  readonly run: (signal: AbortSignal, requestId: string) => Promise<T>;
   readonly resolve: (value: T) => void;
   readonly reject: (error: unknown) => void;
   readonly abortController: AbortController;
@@ -53,7 +53,7 @@ export class AssistantOperationQueue {
   enqueue<T>(
     ownerSessionId: string,
     kind: AssistantOperationKind,
-    run: (signal: AbortSignal) => Promise<T>,
+    run: (signal: AbortSignal, requestId: string) => Promise<T>,
   ): { readonly requestId: string; readonly result: Promise<T> } {
     if (this.#pending.length >= this.#maxQueuedRequests) {
       throw new Error(`The assistant queue is full (${this.#maxQueuedRequests} waiting requests).`);
@@ -77,7 +77,7 @@ export class AssistantOperationQueue {
       abortController: new AbortController(),
     };
     this.#pending.push(task as QueueTask<unknown>);
-    void this.#drain();
+    queueMicrotask(() => void this.#drain());
     return { requestId, result };
   }
 
@@ -111,6 +111,21 @@ export class AssistantOperationQueue {
     }
   }
 
+  cancelKind(kind: AssistantOperationKind): void {
+    if (this.#active?.kind === kind) {
+      this.#active.abortController.abort();
+    }
+    for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
+      const task = this.#pending[index];
+      if (task?.kind !== kind) {
+        continue;
+      }
+      this.#pending.splice(index, 1);
+      task.abortController.abort();
+      task.reject(new AssistantCancelledError());
+    }
+  }
+
   reset(): void {
     this.#generation += 1;
     this.#active?.abortController.abort();
@@ -133,7 +148,7 @@ export class AssistantOperationQueue {
       if (next.generation !== this.#generation || next.abortController.signal.aborted) {
         throw new AssistantCancelledError();
       }
-      const value = await next.run(next.abortController.signal);
+      const value = await next.run(next.abortController.signal, next.id);
       if (next.generation !== this.#generation || next.abortController.signal.aborted) {
         throw new AssistantCancelledError();
       }

@@ -76,6 +76,39 @@ describe("assistant context and memory", () => {
     expect(state.snapshot().imageAnalysis).toBeNull();
   });
 
+  it("stores image context versions without retaining an ephemeral live draft", () => {
+    const state = new AssistantMemoryState();
+    state.selectImage({
+      basename: "ode.png",
+      mimeType: "image/png",
+      sizeBytes: 123,
+      width: 640,
+      height: 480,
+      thumbnailDataUrl: "data:image/png;base64,abc",
+    });
+    const context = buildAssistantContext(
+      transcript({ liveDraft: "ephemeral lesson words", liveSequence: 4 }),
+      null,
+    );
+    const token = state.beginOperation("request-1", "image_analysis", context);
+
+    expect(
+      state.applyImageAnalysis(
+        token,
+        context,
+        {
+          visibleTextAndObjects: "ODE",
+          relationToLesson: "equation",
+          uncertainty: "none",
+        },
+        "vision-model",
+      ),
+    ).toBe(true);
+    const serialized = JSON.stringify(state.snapshot().imageAnalysis);
+    expect(serialized).toContain("live draft snapshot (may change)");
+    expect(serialized).not.toContain("ephemeral lesson words");
+  });
+
   it("clears image, analysis, chat, and mode on reset", () => {
     const state = new AssistantMemoryState();
     state.setMode("clinic");

@@ -27,6 +27,7 @@ export interface ImageSelectionInput {
 
 export class AssistantMemoryState {
   #generation = 0;
+  #chatGeneration = 0;
   #mode: AssistantMode = "classroom";
   #imageVersion = 0;
   #analysisVersion = 0;
@@ -56,6 +57,9 @@ export class AssistantMemoryState {
   }
 
   setMode(mode: AssistantMode): void {
+    if (mode !== this.#mode) {
+      this.#generation += 1;
+    }
     this.#mode = mode;
   }
 
@@ -85,6 +89,7 @@ export class AssistantMemoryState {
     return {
       requestId,
       generation: this.#generation,
+      laneGeneration: kind === "chat" ? this.#chatGeneration : this.#imageVersion,
       kind,
       imageVersion: this.#image?.version ?? null,
       contextFingerprint: context.fingerprint,
@@ -100,6 +105,7 @@ export class AssistantMemoryState {
     if (
       token.kind !== "image_analysis" ||
       token.generation !== this.#generation ||
+      token.laneGeneration !== this.#imageVersion ||
       token.imageVersion === null ||
       token.imageVersion !== this.#image?.version ||
       token.contextFingerprint !== currentContext.fingerprint
@@ -111,7 +117,8 @@ export class AssistantMemoryState {
       ...note,
       version: this.#analysisVersion,
       imageVersion: token.imageVersion,
-      context: currentContext,
+      contextLabels: durableChatMessageContext(currentContext),
+      contextFingerprint: currentContext.fingerprint,
       mode: this.#mode,
       modelId,
       generatedAt: new Date().toISOString(),
@@ -140,6 +147,8 @@ export class AssistantMemoryState {
     if (
       token.kind !== "chat" ||
       token.generation !== this.#generation ||
+      token.laneGeneration !== this.#chatGeneration ||
+      token.imageVersion !== (this.#image?.version ?? null) ||
       token.contextFingerprint !== context.fingerprint
     ) {
       return false;
@@ -156,7 +165,7 @@ export class AssistantMemoryState {
   }
 
   clearChat(): void {
-    this.#generation += 1;
+    this.#chatGeneration += 1;
     this.#chatMessages.length = 0;
   }
 
@@ -180,6 +189,7 @@ export class AssistantMemoryState {
 
   reset(): void {
     this.#generation += 1;
+    this.#chatGeneration += 1;
     this.#mode = "classroom";
     this.#imageVersion += 1;
     this.#image = null;
@@ -190,6 +200,10 @@ export class AssistantMemoryState {
 
   get imageAnalysis(): ImageAnalysisSnapshot | null {
     return this.#imageAnalysis;
+  }
+
+  get chatMessages(): readonly AssistantChatMessage[] {
+    return [...this.#chatMessages];
   }
 
   #appendChat(message: AssistantChatMessage): void {

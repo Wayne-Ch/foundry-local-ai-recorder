@@ -3,12 +3,13 @@
 ## Before the room
 
 1. Use Wayne's Windows 11 x64 demo PC.
-2. Run `npm install`, `npm run fixture:generate`, and the validation commands in `VALIDATION.md`.
+2. Run `npm install`, `npm run fixture:generate`, `npm run fixture:image`, and the validation
+   commands in `VALIDATION.md`.
 3. Start with `npm run start:built`.
 4. Select **Prepare local models** while network access is still available.
 5. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary
    validated**, and the Developer Trace reports no embedded web service URL.
-6. Confirm `fixtures/ode-lesson.wav` exists for the stage fallback.
+6. Confirm `fixtures/ode-lesson.wav` and `fixtures/ode-slide.png` exist.
 7. Leave the app reset, the consent box unchecked, and live captions enabled.
 
 Do not claim a completed offline rehearsal unless the manual network-disconnect gate in
@@ -51,7 +52,26 @@ While speaking:
 - state that each partial replaces the prior hypothesis;
 - emphasize that it is not history, final state, or summary input.
 
-### 6:00-7:30 — Stop and authoritative transcript
+Open **Ask AI** without stopping and select the chip:
+
+> What is ODE? Answer in one sentence.
+
+Point out that recording and live captions continue while the separate local chat request runs. The
+chat context label must say **live draft snapshot (may change)**; the actual snapshot is not stored
+in chat history.
+
+### 6:00-8:00 — Image understanding while recording continues
+
+1. Open the **Image** tab.
+2. Choose `fixtures/ode-slide.png`.
+3. Show basename, PNG type, byte size, dimensions, and thumbnail—never a filesystem path.
+4. Select **Analyze image**.
+5. Show the three fields: visible text/objects, relation to lesson, and uncertainty.
+
+State that PNG/JPEG/WebP only are accepted, signature must match the extension-derived MIME, input
+is bounded, and SVG/HTML/PDF/Office files are rejected.
+
+### 8:00-9:30 — Stop and authoritative transcript
 
 Select **Stop**.
 
@@ -62,7 +82,7 @@ Select **Stop**.
 5. Explain that Whisper's returned string is preserved exactly, including whitespace, and that the
    application-owned temporary WAV is already deleted.
 
-### 7:30-9:00 — Correction and invalidation
+### 9:30-10:30 — Correction and image re-analysis
 
 Make a small correction in the final transcript and select **Save correction**.
 
@@ -70,9 +90,10 @@ Point out:
 
 - the transcript version increments;
 - a prior summary would be removed;
+- the selected image is automatically re-analyzed against the corrected final version;
 - the live draft never appears in this versioned state.
 
-### 9:00-10:30 — Local summary
+### 10:30-11:45 — Local summary
 
 Select **Generate summary**.
 
@@ -86,7 +107,7 @@ Point to:
 Do not present the summary as a citation source. It is a concise transformation of the reviewed
 transcript.
 
-### 10:30-12:00 — Developer trace
+### 11:45-12:45 — Developer trace
 
 Open the trace and show the responsibility boundary:
 
@@ -94,8 +115,9 @@ Open the trace and show the responsibility boundary:
 - Foundry Local: model lifecycle, `AudioSession`, `ChatSession`, preflight, native inference.
 
 Show that the live terminal was explicitly discarded before Whisper finalization.
+Show the exact raw assistant/image output beside safe plain-text display state.
 
-### 12:00-13:30 — Stage fallback
+### 12:45-14:00 — Stage fallback
 
 Optionally start a short recording and select **Cancel / reset** to show that cancellation discards
 audio without Whisper or Qwen. Then select **Open stage fallback WAV** and choose
@@ -106,14 +128,16 @@ Whisper temporary-WAV path; it is not a canned transcript.
 
 Generate the summary again if time permits.
 
-### 13:30-15:00 — Close with honest limits
+### 14:00-15:00 — Close with honest limits
 
 - Windows 11 x64 only.
 - English only.
 - 30-second bounded prototype, not lecture-length stability.
 - Imported WAV must already be PCM16LE/16 kHz/mono.
 - Network-disconnect rehearsal is a separate manual gate.
-- Image processing is a later typed service boundary, not a hidden disabled feature.
+- Image/chat are optional local lanes; they do not diagnose, assess urgency, recommend treatment,
+  or replace an interpreter in clinic mode.
+- Do not claim real VLM evidence until the three target-Windows multimodal integration gates pass.
 
 ## Recovery
 
@@ -124,5 +148,8 @@ Generate the summary again if time permits.
 | Live captions fail mid-recording | Keep speaking; Stop still sends the complete application-owned capture to Whisper. |
 | Whisper fails | Do not summarize the Nemotron terminal. Reset, confirm Whisper readiness, then retry or use the fixture. |
 | Summary fails/truncates | Keep the final transcript visible. Retry only after confirming Qwen readiness; never show canned summary text. |
+| Image is rejected | Confirm PNG/JPEG/WebP extension, signature, 10 MiB bound, and dimensions. Convert the source locally; do not bypass validation. |
+| VLM/image analysis fails | Keep recording and use the final transcript/summary. Replace the image or retry the optional request; never substitute canned output. |
+| Chat fails or is cancelled | Continue recording. Ask again after the optional queue settles; do not restart or unload core models. |
 | Renderer reloads or window closes | Main-process ownership cancels the stream. Reopen, prepare if needed, and start a fresh recording. |
 | Locked temporary file found at startup | The status/trace shows only the retained count and app-owned path policy. Close the process holding the file, then use **Delete / reset** or restart to retry cleanup. |

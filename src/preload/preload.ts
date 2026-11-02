@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { AssistantLaneSnapshot } from "../assistant/assistant-types";
 import type {
   AudioCapturePayload,
   AudioPartialTranscriptEvent,
@@ -10,6 +11,13 @@ import type {
   AudioStreamStartResponse,
 } from "../audio/audio-types";
 import {
+  type AssistantAskRequest,
+  type AssistantBootstrapResponse,
+  type AssistantCancelRequest,
+  type AssistantSessionRequest,
+  type AssistantSetModeRequest,
+  type AssistantStartResponse,
+  type AssistantUpdateEvent,
   type EditTranscriptRequest,
   type ImportWavResponse,
   ipcChannels,
@@ -50,6 +58,42 @@ const api: RecorderApi = {
     invokeSafely<RecorderSnapshot>(ipcChannels.editTranscript, "LOCAL_OPERATION_FAILED", request),
   generateSummary: () => invokeSafely<SummaryResponse>(ipcChannels.generateSummary, "LOCAL_OPERATION_FAILED"),
   reset: () => invokeSafely<RecorderSnapshot>(ipcChannels.reset, "LOCAL_OPERATION_FAILED"),
+  getAssistantBootstrap: () =>
+    invokeSafely<AssistantBootstrapResponse>(ipcChannels.assistantBootstrap, "OPTIONAL_ASSISTANT_FAILED"),
+  selectAssistantImage: (request: AssistantSessionRequest) =>
+    invokeSafely<AssistantLaneSnapshot | null>(
+      ipcChannels.assistantSelectImage,
+      "OPTIONAL_ASSISTANT_FAILED",
+      request,
+    ),
+  setAssistantMode: (request: AssistantSetModeRequest) =>
+    invokeSafely<AssistantLaneSnapshot>(ipcChannels.assistantSetMode, "OPTIONAL_ASSISTANT_FAILED", request),
+  analyzeAssistantImage: (request: AssistantSessionRequest) =>
+    invokeSafely<AssistantStartResponse>(
+      ipcChannels.assistantAnalyzeImage,
+      "OPTIONAL_ASSISTANT_FAILED",
+      request,
+    ),
+  askAssistant: (request: AssistantAskRequest) =>
+    invokeSafely<AssistantStartResponse>(ipcChannels.assistantAsk, "OPTIONAL_ASSISTANT_FAILED", request),
+  cancelAssistant: (request: AssistantCancelRequest) =>
+    invokeSafely<AssistantLaneSnapshot>(
+      ipcChannels.assistantCancel,
+      "OPTIONAL_ASSISTANT_CLEANUP_PENDING",
+      request,
+    ),
+  clearAssistantChat: (request: AssistantSessionRequest) =>
+    invokeSafely<AssistantLaneSnapshot>(
+      ipcChannels.assistantClearChat,
+      "OPTIONAL_ASSISTANT_CLEANUP_PENDING",
+      request,
+    ),
+  removeAssistantImage: (request: AssistantSessionRequest) =>
+    invokeSafely<AssistantLaneSnapshot>(
+      ipcChannels.assistantRemoveImage,
+      "OPTIONAL_ASSISTANT_CLEANUP_PENDING",
+      request,
+    ),
   onProgress: (callback: (event: ProgressEvent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: ProgressEvent) => callback(progress);
     ipcRenderer.on(ipcChannels.progress, listener);
@@ -60,6 +104,11 @@ const api: RecorderApi = {
       callback(partial);
     ipcRenderer.on(ipcChannels.audioPartial, listener);
     return () => ipcRenderer.removeListener(ipcChannels.audioPartial, listener);
+  },
+  onAssistantUpdate: (callback: (event: AssistantUpdateEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, update: AssistantUpdateEvent) => callback(update);
+    ipcRenderer.on(ipcChannels.assistantUpdate, listener);
+    return () => ipcRenderer.removeListener(ipcChannels.assistantUpdate, listener);
   },
 };
 

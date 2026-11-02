@@ -6,7 +6,8 @@ import electronPath from "electron";
 
 const capturePath = path.resolve("artifacts", "smart-ai-recorder-populated-summary.png");
 await mkdir(path.dirname(capturePath), { recursive: true });
-const child = spawn(electronPath, ["."], {
+const electronArgs = process.getuid?.() === 0 ? ["--no-sandbox", "."] : ["."];
+const child = spawn(electronPath, electronArgs, {
   cwd: process.cwd(),
   env: {
     ...process.env,

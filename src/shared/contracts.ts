@@ -1,3 +1,4 @@
+import type { AssistantLaneSnapshot, AssistantMode } from "../assistant/assistant-types";
 import type {
   AudioCapturePayload,
   AudioPartialTranscriptEvent,
@@ -26,6 +27,15 @@ export const ipcChannels = {
   editTranscript: "recorder:edit-transcript",
   generateSummary: "recorder:generate-summary",
   reset: "recorder:reset",
+  assistantBootstrap: "assistant:bootstrap",
+  assistantSelectImage: "assistant:select-image",
+  assistantSetMode: "assistant:set-mode",
+  assistantAnalyzeImage: "assistant:analyze-image",
+  assistantAsk: "assistant:ask",
+  assistantCancel: "assistant:cancel",
+  assistantClearChat: "assistant:clear-chat",
+  assistantRemoveImage: "assistant:remove-image",
+  assistantUpdate: "assistant:update",
   progress: "recorder:progress",
   audioPartial: "recorder:audio-partial",
 } as const;
@@ -162,6 +172,37 @@ export interface SummaryResponse {
   readonly summaryInput: string;
 }
 
+export interface AssistantSessionRequest {
+  readonly sessionId: string;
+}
+
+export interface AssistantBootstrapResponse {
+  readonly sessionId: string;
+  readonly snapshot: AssistantLaneSnapshot;
+}
+
+export interface AssistantSetModeRequest extends AssistantSessionRequest {
+  readonly mode: AssistantMode;
+}
+
+export interface AssistantAskRequest extends AssistantSessionRequest {
+  readonly question: string;
+}
+
+export interface AssistantCancelRequest extends AssistantSessionRequest {
+  readonly requestId: string;
+}
+
+export interface AssistantStartResponse {
+  readonly requestId: string;
+  readonly snapshot: AssistantLaneSnapshot;
+}
+
+export interface AssistantUpdateEvent {
+  readonly sessionId: string;
+  readonly snapshot: AssistantLaneSnapshot;
+}
+
 export interface RecorderApi {
   getBootstrap(): Promise<RecorderSnapshot>;
   prepare(request: PrepareRecorderRequest): Promise<PrepareRecorderResponse>;
@@ -175,6 +216,15 @@ export interface RecorderApi {
   editTranscript(request: EditTranscriptRequest): Promise<RecorderSnapshot>;
   generateSummary(): Promise<SummaryResponse>;
   reset(): Promise<RecorderSnapshot>;
+  getAssistantBootstrap(): Promise<AssistantBootstrapResponse>;
+  selectAssistantImage(request: AssistantSessionRequest): Promise<AssistantLaneSnapshot | null>;
+  setAssistantMode(request: AssistantSetModeRequest): Promise<AssistantLaneSnapshot>;
+  analyzeAssistantImage(request: AssistantSessionRequest): Promise<AssistantStartResponse>;
+  askAssistant(request: AssistantAskRequest): Promise<AssistantStartResponse>;
+  cancelAssistant(request: AssistantCancelRequest): Promise<AssistantLaneSnapshot>;
+  clearAssistantChat(request: AssistantSessionRequest): Promise<AssistantLaneSnapshot>;
+  removeAssistantImage(request: AssistantSessionRequest): Promise<AssistantLaneSnapshot>;
   onProgress(callback: (event: ProgressEvent) => void): () => void;
   onAudioPartial(callback: (event: AudioPartialTranscriptEvent) => void): () => void;
+  onAssistantUpdate(callback: (event: AssistantUpdateEvent) => void): () => void;
 }

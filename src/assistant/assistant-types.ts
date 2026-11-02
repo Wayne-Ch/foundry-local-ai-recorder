@@ -50,7 +50,8 @@ export interface ImageAnalysisNote {
 export interface ImageAnalysisSnapshot extends ImageAnalysisNote {
   readonly version: number;
   readonly imageVersion: number;
-  readonly context: AssistantRequestContext;
+  readonly contextLabels: readonly AssistantContextLabel[];
+  readonly contextFingerprint: string;
   readonly mode: AssistantMode;
   readonly modelId: string;
   readonly generatedAt: string;
@@ -89,6 +90,7 @@ export interface AssistantLaneSnapshot {
 export interface AssistantOperationToken {
   readonly requestId: string;
   readonly generation: number;
+  readonly laneGeneration: number;
   readonly kind: AssistantOperationKind;
   readonly imageVersion: number | null;
   readonly contextFingerprint: string;

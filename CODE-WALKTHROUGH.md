@@ -129,7 +129,48 @@ Message:
 > response remains in Developer Trace; only the deterministic plain-text display form enters the
 > editable Summary state.
 
-## 9:30-10:45 — Model preparation preserves working slots
+## 9:30-10:45 — Main-owned image ingest and stale-result rejection
+
+**Files:** `src/assistant/image-security.ts`, `src/main/main.ts`,
+`src/main/assistant-controller.ts`, `src/assistant/assistant-state.ts`
+
+Show:
+
+- the main-process picker and extension/MIME/signature checks;
+- PNG/JPEG/WebP dimension parsing before decode;
+- original-byte zero-fill and PNG thumbnail-only renderer contract;
+- final-transcript → ephemeral-live-draft → none context priority;
+- image/context token comparison in `applyImageAnalysis`;
+- automatic re-analysis after Whisper final/import/correction.
+
+Message:
+
+> The renderer never receives a path or original bytes. Image analysis is an optional,
+> version-attached note. If the image or lesson context changes while inference runs, the result is
+> trace evidence only and cannot attach to current state.
+
+## 10:45-12:15 — Side chat is separate from capture and summary
+
+**Files:** `src/assistant/assistant-queue.ts`, `src/main/assistant-controller.ts`,
+`src/foundry/optional-vision-chat-runtime.ts`, `src/foundry/foundry-assistant-runtime.ts`
+
+Show:
+
+- the bounded serialized queue and AbortSignal cancellation;
+- per-request live-draft snapshot with durable labels but no durable draft text;
+- explicit memory-only chat history used to build the next prompt;
+- one fresh `ChatSession` per turn;
+- exact `Item.userMessage` text/image parts;
+- separate manager/endpoint guard and owned-model-only unload;
+- clinic prompt prohibitions.
+
+Message:
+
+> Asking during recording never enters the audio controller or summary slot. The request captures a
+> temporary context snapshot, while audio callbacks continue. Clear cancels queued chat and removes
+> the only chat history. Clinic mode is explanatory and clinician-led, never diagnostic.
+
+## 12:15-13:15 — Model preparation preserves working slots
 
 **Files:** `src/foundry/model-slot.ts`, `src/foundry/foundry-runtime.ts`
 
@@ -141,19 +182,21 @@ Message:
 > Optional Nemotron preparation cannot unload Whisper or Qwen. A candidate load failure leaves the
 > prior working slot active and the UI falls back explicitly.
 
-## 10:45-12:15 — Stream ownership survives renderer churn
+## 13:15-14:15 — Stream and assistant ownership survive renderer churn
 
-**Files:** `src/main/audio-stream-owner.ts`, `src/main/main.ts`
+**Files:** `src/main/audio-stream-owner.ts`, `src/main/assistant-session-owner.ts`,
+`src/main/main.ts`
 
 Show the owner tuple and cancellation hooks for navigation, reload, render loss, destruction, and
 window close.
 
 Message:
 
-> A stream belongs to one exact renderer frame token. Stale partials fail `canRoute` and never reach
-> a replacement renderer.
+> Audio streams and assistant requests have separate leases but the same exact renderer identity.
+> Reload, navigation, render loss, destruction, and close cancel both lanes; stale partials and
+> model results never reach a replacement renderer.
 
-## 12:15-13:15 — Deterministic cleanup and fail-closed mode
+## 14:15-15:30 — Deterministic cleanup and fail-closed mode
 
 Show:
 
@@ -167,12 +210,17 @@ Show:
 - rejected-manager quarantine until shutdown and disposal are both confirmed;
 - canonical structured diagnostics that never render raw native/IPC messages or local paths;
 - reset clearing derived state without processing captured audio;
+- optional assistant reset immediately clearing chat/image state and cancelling its queue without
+  waiting on core cleanup;
+- best-effort optional VLM/session/model/manager disposal that cannot block core shutdown;
 - startup `capture-*.wav` orphan recovery and locked-file warning.
 
-## 13:15-15:00 — Evidence, not claims
+## 15:30-17:00 — Evidence, not claims
 
 **Files:** `tests/recorder-controller.test.ts`, `tests/audio-contract.test.ts`,
-`tests/audio-stream-owner.test.ts`, `scripts/run-chain-integration.ts`, `VALIDATION.md`
+`tests/audio-stream-owner.test.ts`, `tests/assistant-controller.test.ts`,
+`tests/image-security.test.ts`, `scripts/run-chain-integration.ts`,
+`scripts/run-concurrent-assistant-chain-integration.ts`, `VALIDATION.md`
 
 The key regression asserts:
 
@@ -185,4 +233,5 @@ expect(summary.snapshot.trace.findLast((entry) => entry.phase === "summary-raw")
   .toBe(rawQwenResponse);
 ```
 
-Close with the measured exact-model chain and the still-open physical network-disconnect gate.
+Close with the measured core chain, cloud static evidence, and the still-mandatory target-Windows
+VLM/chat/concurrent-chain gates.

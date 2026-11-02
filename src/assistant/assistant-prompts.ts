@@ -1,4 +1,4 @@
-import type { AssistantMode, AssistantRequestContext } from "./assistant-types";
+import type { AssistantChatMessage, AssistantMode, AssistantRequestContext } from "./assistant-types";
 
 const CLASSROOM_SAFETY =
   "You are a concise local classroom assistant. Explain only from the supplied local context, say when uncertain, and never claim citations or grounding that were not supplied.";
@@ -22,12 +22,19 @@ export function imageAnalysisPrompt(mode: AssistantMode, context: AssistantReque
   ].join("\n");
 }
 
-export function chatUserPrompt(question: string, context: AssistantRequestContext): string {
+export function chatUserPrompt(
+  question: string,
+  context: AssistantRequestContext,
+  history: readonly AssistantChatMessage[] = [],
+): string {
   return [
     `Question: ${question.trim()}`,
+    historyBlock(history),
     contextBlock(context),
     "Answer concisely in plain text. Follow any sentence limit in the question.",
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function contextBlock(context: AssistantRequestContext): string {
@@ -48,4 +55,16 @@ function contextBlock(context: AssistantRequestContext): string {
       ? "No image analysis context."
       : `Image analysis v${context.imageAnalysisVersion}:\n${context.imageAnalysisText}`;
   return `LOCAL CONTEXT\n${transcript}\n\n${summary}\n\n${image}`;
+}
+
+function historyBlock(history: readonly AssistantChatMessage[]): string {
+  if (history.length === 0) {
+    return "";
+  }
+  return [
+    "MEMORY-ONLY CHAT HISTORY",
+    ...history
+      .slice(-8)
+      .map((message) => `${message.role === "user" ? "User" : "Assistant"}: ${message.text}`),
+  ].join("\n");
 }

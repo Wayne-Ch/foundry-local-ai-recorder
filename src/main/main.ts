@@ -7,10 +7,18 @@ import {
   dialog,
   type IpcMainInvokeEvent,
   ipcMain,
+  nativeImage,
   session,
   type WebContents,
   type WebFrameMain,
 } from "electron";
+import type { AssistantLaneSnapshot } from "../assistant/assistant-types";
+import {
+  declaredImageMimeType,
+  MAX_IMAGE_BYTES,
+  type ValidatedImage,
+  validateImage,
+} from "../assistant/image-security";
 import type {
   AudioCapturePayload,
   AudioStreamCancelRequest,
@@ -20,12 +28,19 @@ import type {
 } from "../audio/audio-types";
 import { AUDIO_MAX_PCM_BYTES } from "../audio/audio-types";
 import {
+  type AssistantAskRequest,
+  type AssistantCancelRequest,
+  type AssistantSessionRequest,
+  type AssistantSetModeRequest,
+  type AssistantUpdateEvent,
   type EditTranscriptRequest,
   ipcChannels,
   type MicrophoneAuthorizationRequest,
   type PrepareRecorderRequest,
 } from "../shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
+import { AssistantController } from "./assistant-controller";
+import { type AssistantSessionOwnerIdentity, AssistantSessionOwnership } from "./assistant-session-owner";
 import { type AudioStreamOwnerIdentity, AudioStreamOwnership } from "./audio-stream-owner";
 import {
   isAllowedAppNavigation,
@@ -40,6 +55,12 @@ let mainWebContents: WebContents | null = null;
 let microphonePermissionGate: MicrophonePermissionGate | null = null;
 let shutdownStarted = false;
 const controller = new RecorderController();
+const assistantController = new AssistantController({
+  getTranscript: () => controller.bootstrap().transcript,
+});
+const assistantSessionOwnership = new AssistantSessionOwnership((sessionId) => {
+  assistantController.revokeSession(sessionId);
+});
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const rendererFilePath = path.join(currentDirectory, "..", "renderer", "index.html");
 const populatedSummaryCaptureEnabled =
@@ -132,6 +153,7 @@ function createWindow(): BrowserWindow {
     permissionGate.revoke();
     if (event.isMainFrame) {
       revokeAudioStreamOwner(webContentsId, frameOwnership(event.frame));
+      revokeAssistantOwner(webContentsId, frameOwnership(event.frame));
     }
     if (!isAllowedAppNavigation(rendererDocumentUrl, event.url, event.isMainFrame)) {
       event.preventDefault();
@@ -141,6 +163,7 @@ function createWindow(): BrowserWindow {
     permissionGate.revoke();
     if (event.isMainFrame) {
       revokeAudioStreamOwner(webContentsId, frameOwnership(event.frame));
+      revokeAssistantOwner(webContentsId, frameOwnership(event.frame));
     }
     if (!isAllowedAppNavigation(rendererDocumentUrl, event.url, event.isMainFrame)) {
       event.preventDefault();
@@ -149,14 +172,17 @@ function createWindow(): BrowserWindow {
   webContents.on("did-start-navigation", (event) => {
     if (event.isMainFrame && !event.isSameDocument) {
       revokeAudioStreamOwner(webContentsId);
+      revokeAssistantOwner(webContentsId);
     }
   });
   webContents.on("render-process-gone", () => {
     permissionGate.revoke();
     revokeAudioStreamOwner(webContentsId);
+    revokeAssistantOwner(webContentsId);
   });
   webContents.on("destroyed", () => {
     revokeAudioStreamOwner(webContentsId);
+    revokeAssistantOwner(webContentsId);
     if (mainWebContents === webContents) {
       mainWebContents = null;
     }
@@ -164,6 +190,7 @@ function createWindow(): BrowserWindow {
   window.on("closed", () => {
     permissionGate.revoke();
     revokeAudioStreamOwner(webContentsId);
+    revokeAssistantOwner(webContentsId);
     if (mainWindow === window) {
       mainWindow = null;
       if (mainWebContents === webContents) {
@@ -292,12 +319,14 @@ function registerIpc(): void {
       audioStreamOwnership.complete(renderer.owner, request.streamId);
     }
   });
-  ipcMain.handle(ipcChannels.transcribeCapture, (event, request: AudioCapturePayload) => {
-    assertTrustedRendererIpc(event);
-    return controller.transcribeCapture(request);
+  ipcMain.handle(ipcChannels.transcribeCapture, async (event, request: AudioCapturePayload) => {
+    const renderer = assertTrustedRendererIpc(event);
+    const response = await controller.transcribeCapture(request);
+    queueCurrentImageReanalysis(renderer);
+    return response;
   });
   ipcMain.handle(ipcChannels.importWav, async (event) => {
-    assertTrustedRendererIpc(event);
+    const renderer = assertTrustedRendererIpc(event);
     const owner = mainWindow;
     if (owner === null || owner.isDestroyed()) {
       throw new Error("The application window is not available.");
@@ -315,11 +344,21 @@ function registerIpc(): void {
     if (file.size > AUDIO_MAX_PCM_BYTES + 1_048_576) {
       throw new Error("The selected WAV exceeds the bounded 30-second import limit.");
     }
-    return controller.transcribeImportedWav(path.basename(filePath), await readFile(filePath));
+    const response = await controller.transcribeImportedWav(
+      path.basename(filePath),
+      await readFile(filePath),
+    );
+    queueCurrentImageReanalysis(renderer);
+    return response;
   });
   ipcMain.handle(ipcChannels.editTranscript, (event, request: EditTranscriptRequest) => {
-    assertTrustedRendererIpc(event);
-    return controller.editTranscript(request.text);
+    const renderer = assertTrustedRendererIpc(event);
+    const previousVersion = controller.bootstrap().transcript.version;
+    const response = controller.editTranscript(request.text);
+    if (response.transcript.version !== previousVersion) {
+      queueCurrentImageReanalysis(renderer);
+    }
+    return response;
   });
   ipcMain.handle(ipcChannels.generateSummary, (event) => {
     assertTrustedRendererIpc(event);
@@ -335,14 +374,100 @@ function registerIpc(): void {
           formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_LIVE_CLEANUP_PENDING")),
         );
       });
+    const assistantSnapshot = assistantController.reset();
+    routeAssistantUpdate(renderer, assistantSnapshot);
     return controller.reset();
+  });
+  ipcMain.handle(ipcChannels.assistantBootstrap, (event) => {
+    const renderer = assertTrustedRendererIpc(event);
+    const lease = assistantSessionOwnership.open(renderer.owner);
+    return {
+      sessionId: lease.sessionId,
+      snapshot: assistantController.snapshot(),
+    };
+  });
+  ipcMain.handle(ipcChannels.assistantSelectImage, async (event, request: AssistantSessionRequest) => {
+    const renderer = assertAssistantSession(event, request);
+    const owner = mainWindow;
+    if (owner === null || owner.isDestroyed()) {
+      throw new Error("The application window is not available.");
+    }
+    const result = await dialog.showOpenDialog(owner, {
+      title: "Choose a lesson image",
+      properties: ["openFile"],
+      filters: [{ name: "Lesson images", extensions: ["png", "jpg", "jpeg", "webp"] }],
+    });
+    const filePath = result.filePaths[0];
+    if (result.canceled || filePath === undefined) {
+      return null;
+    }
+    let fileBytes: Uint8Array | null = null;
+    let validatedBytes: Uint8Array | null = null;
+    try {
+      const file = await stat(filePath);
+      if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) {
+        throw new Error("The selected image must be between 1 byte and 10 MiB.");
+      }
+      fileBytes = await readFile(filePath);
+      const basename = path.basename(filePath);
+      const validated = validateImage({
+        basename,
+        declaredMimeType: declaredImageMimeType(basename),
+        bytes: fileBytes,
+      });
+      validatedBytes = validated.bytes;
+      const thumbnailDataUrl = createSafeThumbnail(validated);
+      assertAssistantLease(renderer, request.sessionId);
+      const snapshot = assistantController.selectImage(validated, thumbnailDataUrl);
+      routeAssistantUpdate(renderer, snapshot, request.sessionId);
+      return snapshot;
+    } finally {
+      fileBytes?.fill(0);
+      validatedBytes?.fill(0);
+    }
+  });
+  ipcMain.handle(ipcChannels.assistantSetMode, (event, request: AssistantSetModeRequest) => {
+    const renderer = assertAssistantSession(event, request);
+    const snapshot = assistantController.setMode(request.mode);
+    routeAssistantUpdate(renderer, snapshot, request.sessionId);
+    return snapshot;
+  });
+  ipcMain.handle(ipcChannels.assistantAnalyzeImage, (event, request: AssistantSessionRequest) => {
+    const renderer = assertAssistantSession(event, request);
+    return assistantController.startImageAnalysis(request.sessionId, (snapshot) => {
+      routeAssistantUpdate(renderer, snapshot, request.sessionId);
+    });
+  });
+  ipcMain.handle(ipcChannels.assistantAsk, (event, request: AssistantAskRequest) => {
+    const renderer = assertAssistantSession(event, request);
+    return assistantController.startChat(request.sessionId, request.question, (snapshot) => {
+      routeAssistantUpdate(renderer, snapshot, request.sessionId);
+    });
+  });
+  ipcMain.handle(ipcChannels.assistantCancel, (event, request: AssistantCancelRequest) => {
+    const renderer = assertAssistantSession(event, request);
+    const snapshot = assistantController.cancel(request.requestId);
+    routeAssistantUpdate(renderer, snapshot, request.sessionId);
+    return snapshot;
+  });
+  ipcMain.handle(ipcChannels.assistantClearChat, (event, request: AssistantSessionRequest) => {
+    const renderer = assertAssistantSession(event, request);
+    const snapshot = assistantController.clearChat();
+    routeAssistantUpdate(renderer, snapshot, request.sessionId);
+    return snapshot;
+  });
+  ipcMain.handle(ipcChannels.assistantRemoveImage, (event, request: AssistantSessionRequest) => {
+    const renderer = assertAssistantSession(event, request);
+    const snapshot = assistantController.removeImage();
+    routeAssistantUpdate(renderer, snapshot, request.sessionId);
+    return snapshot;
   });
 }
 
 function assertTrustedRendererIpc(event: IpcMainInvokeEvent): {
   readonly webContents: WebContents;
   readonly frame: WebFrameMain;
-  readonly owner: AudioStreamOwnerIdentity;
+  readonly owner: AudioStreamOwnerIdentity & AssistantSessionOwnerIdentity;
 } {
   const window = mainWindow;
   const webContents = mainWebContents;
@@ -374,6 +499,89 @@ function assertTrustedRendererIpc(event: IpcMainInvokeEvent): {
   };
 }
 
+function assertAssistantSession(
+  event: IpcMainInvokeEvent,
+  request: AssistantSessionRequest,
+): ReturnType<typeof assertTrustedRendererIpc> {
+  const renderer = assertTrustedRendererIpc(event);
+  if (typeof request?.sessionId !== "string" || !request.sessionId.trim()) {
+    throw new Error("The assistant renderer session id is required.");
+  }
+  assertAssistantLease(renderer, request.sessionId);
+  return renderer;
+}
+
+function assertAssistantLease(
+  renderer: ReturnType<typeof assertTrustedRendererIpc>,
+  sessionId: string,
+): void {
+  assistantSessionOwnership.assertOwned(renderer.owner, sessionId);
+}
+
+function routeAssistantUpdate(
+  renderer: ReturnType<typeof assertTrustedRendererIpc>,
+  snapshot: AssistantLaneSnapshot,
+  requestedSessionId?: string,
+): void {
+  const lease =
+    requestedSessionId === undefined
+      ? assistantSessionOwnership.activeFor(renderer.owner)
+      : assistantSessionOwnership.canRoute(renderer.owner, requestedSessionId)
+        ? { sessionId: requestedSessionId, owner: renderer.owner }
+        : null;
+  if (lease === null) {
+    return;
+  }
+  const update: AssistantUpdateEvent = {
+    sessionId: lease.sessionId,
+    snapshot,
+  };
+  if (!sendToFrame(renderer.frame, ipcChannels.assistantUpdate, update)) {
+    assistantSessionOwnership.revokeOwner(renderer.owner.webContentsId, renderer.owner);
+  }
+}
+
+function queueCurrentImageReanalysis(renderer: ReturnType<typeof assertTrustedRendererIpc>): void {
+  if (assistantController.snapshot().image === null) {
+    return;
+  }
+  const lease = assistantSessionOwnership.activeFor(renderer.owner);
+  if (lease === null) {
+    return;
+  }
+  try {
+    assistantController.startImageAnalysis(lease.sessionId, (snapshot) => {
+      routeAssistantUpdate(renderer, snapshot, lease.sessionId);
+    });
+  } catch (error) {
+    console.error(
+      "Optional image re-analysis could not be queued:",
+      formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_ASSISTANT_FAILED")),
+    );
+  }
+}
+
+function createSafeThumbnail(image: ValidatedImage): string {
+  const decoded = nativeImage.createFromBuffer(Buffer.from(image.bytes));
+  if (decoded.isEmpty()) {
+    throw new Error("The selected image could not be decoded safely.");
+  }
+  const scale = Math.min(1, 720 / image.width, 440 / image.height);
+  const thumbnail =
+    scale < 1
+      ? decoded.resize({
+          width: Math.max(1, Math.round(image.width * scale)),
+          height: Math.max(1, Math.round(image.height * scale)),
+          quality: "good",
+        })
+      : decoded;
+  const dataUrl = thumbnail.toDataURL();
+  if (!dataUrl.startsWith("data:image/png;base64,")) {
+    throw new Error("The selected image thumbnail was not encoded as a safe PNG.");
+  }
+  return dataUrl;
+}
+
 function sendToFrame(frame: WebFrameMain, channel: string, payload: unknown): boolean {
   try {
     if (frame.isDestroyed() || frame.detached) {
@@ -400,6 +608,13 @@ function revokeAudioStreamOwner(
       formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_LIVE_CLEANUP_PENDING")),
     );
   });
+}
+
+function revokeAssistantOwner(
+  webContentsId: number,
+  frame?: Pick<AssistantSessionOwnerIdentity, "frameTreeNodeId" | "frameToken">,
+): void {
+  assistantSessionOwnership.revokeOwner(webContentsId, frame);
 }
 
 function frameOwnership(
@@ -658,6 +873,12 @@ app.on("before-quit", (event) => {
 
 async function shutdownForExit(): Promise<void> {
   let shutdownFailed = false;
+  const assistantShutdown = assistantController.shutdown().catch((error: unknown) => {
+    console.error(
+      "Optional assistant cleanup did not complete cleanly:",
+      formatSafeDiagnostic(toSafeDiagnostic(error, "OPTIONAL_ASSISTANT_CLEANUP_PENDING")),
+    );
+  });
   try {
     await controller.shutdown();
   } catch (error) {
@@ -702,5 +923,12 @@ async function shutdownForExit(): Promise<void> {
   if (shutdownFailed) {
     process.exitCode = 1;
   }
+  await Promise.race([
+    assistantShutdown,
+    new Promise<void>((resolve) => {
+      const timeout = setTimeout(resolve, 2_000);
+      timeout.unref?.();
+    }),
+  ]);
   app.quit();
 }

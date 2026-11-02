@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import electronPath from "electron";
 
-const child = spawn(electronPath, ["."], {
+const electronArgs = process.getuid?.() === 0 ? ["--no-sandbox", "."] : ["."];
+const child = spawn(electronPath, electronArgs, {
   cwd: process.cwd(),
   env: { ...process.env, SMART_RECORDER_SMOKE_AND_EXIT: "1" },
   stdio: ["ignore", "pipe", "pipe"],

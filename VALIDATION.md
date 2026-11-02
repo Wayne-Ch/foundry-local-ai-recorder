@@ -1,6 +1,8 @@
 # Validation record
 
-Date: 2026-10-30 (Windows 11 x64)
+Core model evidence: 2026-10-30 (Windows 11 x64)
+
+Multimodal branch static/cloud evidence: 2026-11-02 (Linux cloud session)
 
 ## Validated identities
 
@@ -9,6 +11,7 @@ Date: 2026-10-30 (Windows 11 x64)
 | Live captions | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` | `CPUExecutionProvider` | 696 MB |
 | Final transcript | `openai-whisper-tiny-generic-cpu:4` | `CPUExecutionProvider` | 131 MB |
 | Summary | `qwen3-0.6b-generic-gpu:2` | `WebGPUExecutionProvider` | 529 MB |
+| Vision + side chat target | `qwen3.5-0.8b-generic-gpu:2` | GPU / `WebGPUExecutionProvider` | Runtime catalog/task/modality validation required |
 
 SDK: `foundry-local-sdk@2.2.1`
 
@@ -24,11 +27,11 @@ Runtime log evidence:
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 48 files checked |
+| `npm run lint` | Pass; 76 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 11 files, 190 tests |
+| `npm test` | Pass; 22 files, 243 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
-| `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
+| `npm audit --audit-level=moderate` | Pass against the live advisory service; 0 vulnerabilities |
 
 Unit coverage includes:
 
@@ -87,6 +90,24 @@ Unit coverage includes:
 - microphone permission gating;
 - frame-token stream ownership, stale routing, reload, and close behavior;
 - static absence of cloud inference endpoints, `fetch`, and embedded web-service startup.
+- PNG/JPEG/WebP extension-derived MIME plus magic-signature checks, 10 MiB/file dimension/pixel
+  bounds, active/document format rejection, generated ODE fixture validation, sanitized basename,
+  and renderer contracts with no path/original bytes;
+- final transcript versus ephemeral live-draft image/chat context priority, context labels, image
+  and transcript version tokens, stale analysis rejection, and no durable live snapshot text;
+- classroom and clinic prompts, including explicit no diagnosis, urgency assessment, treatment
+  recommendation, or interpreter replacement;
+- bounded serialized assistant queue, active/queued cancellation, owner revocation, Reset, mode
+  changes, and stale generations;
+- exact Foundry Local 2.2.1 text/image request parts, runtime catalog/task/modality/device/EP
+  validation, per-turn session disposal, request cancellation, owned-model-only unload, preloaded
+  model preservation, endpoint guard, and optional-manager isolation;
+- safe plain-text display, inert markup, response bounds, required structured image note, raw
+  assistant trace, accessible tabs/status/keyboard controls, and Electron isolation assertions.
+
+The test environment replaces only SDK-native `Request`, `Item`, and `ItemQueue` constructors with
+typed in-memory equivalents so the cloud suite does not load Windows ONNX native libraries.
+Production/integration builds continue to import the real `foundry-local-sdk@2.2.1`.
 
 ## Exact-model integrations
 
@@ -193,6 +214,11 @@ reasoning mode exhausting the 260-token output budget.
 | `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
 | `npm run capture:ui` | `UI_CAPTURE_OK`; deterministic populated-summary capture inspected successfully |
 
+The 2026-11-02 cloud run used `xvfb-run`. Because the remote process runs as root, the four harness
+launchers add Chromium `--no-sandbox` only in that root-only test environment. Production
+`BrowserWindow` settings remain `sandbox: true`, `contextIsolation: true`, and
+`nodeIntegration: false`; static tests enforce them.
+
 No Electron or recorder process started by these validation commands remained. The shared machine
 already had an OS-installed `foundrylocald` listener started on 2026-10-29, before this worktree
 session; it was not used by the in-process runtime and was not terminated because it is not owned by
@@ -211,6 +237,31 @@ textarea content, or clipped trace text.
 
 The PNG is intentionally untracked under the repository's ignored `artifacts\` directory. The
 tracked `npm run capture:ui` path rebuilds the app and reproduces it at the path above.
+
+The current capture also shows the 1600×900 three-column layout with the readable/collapsible
+**Lesson assistant** panel, Classroom/Clinic selector, Ask AI/Image tabs, chips, input, and
+non-color status text while the transcript and summary remain readable.
+
+## Mandatory target-Windows multimodal gates
+
+These were added and typechecked in the cloud session but **not executed there**. Linux cloud
+validation must not be reported as real Windows VLM evidence.
+
+```powershell
+npm run test:vision-integration
+npm run test:assistant-chat-integration
+npm run test:concurrent-assistant-chain-integration
+```
+
+Required success markers:
+
+- `VISION_INTEGRATION_OK`: exact configured model/EP, real `ode-slide.png` bytes, structured visible
+  text/relation/uncertainty note, and ODE/equation recognition.
+- `ASSISTANT_CHAT_INTEGRATION_OK`: exact local model and a substantive one-sentence answer to
+  `What is ODE? Answer in one sentence.`
+- `CONCURRENT_ASSISTANT_CHAIN_OK`: Nemotron partials continue while chat is submitted, Whisper
+  remains authoritative, Qwen receives the exact Whisper final, chat returns independently, and
+  owned temporary WAV residue remains zero.
 
 ## Local inference boundary
 
@@ -239,6 +290,12 @@ still initialize.
 - [ ] Stop and confirm Whisper final.
 - [ ] Generate the Qwen summary; inspect readable display notation and the exact raw Qwen Developer
       Trace entry.
+- [ ] Select `fixtures\ode-slide.png`; confirm safe metadata/thumbnail and a structured ODE image
+      note.
+- [ ] Ask the one-sentence ODE question during active recording; confirm audio/live captions do not
+      pause.
+- [ ] Correct the final transcript and confirm image analysis advances to a new version.
+- [ ] Switch to Clinic mode and confirm the visible non-diagnostic/clinician-led safety statement.
 - [ ] Reset and repeat with `fixtures\ode-lesson.wav`.
 - [ ] Confirm recording and WAV import use the same formatted summary behavior.
 - [ ] Confirm no owned temporary WAV remains.
@@ -256,4 +313,16 @@ cloud endpoint**, not as a completed physically offline rehearsal.
   remain unchanged, raw text remains trace evidence, and the editable summary is not a citation
   source.
 - No transcript/summary export or persistence.
-- No image processing.
+- Multimodal Windows runtime evidence remains unresolved until all three mandatory commands above
+  pass on the target PC with the exact cached model and WebGPU provider.
+
+## Rollback
+
+- Stable `main` remains the rollback branch; this work must be deployed only from
+  `feature/multimodal-classroom-chat`.
+- To disable optional behavior without changing builds, do not open the right-side image/chat
+  panel. The VLM manager/model is lazy and the core chain remains usable.
+- To roll back the feature build, redeploy the previously validated `main` SHA
+  `41e9d365dc6b4a20a17c511b6ea7ccc5ee1f8a38` or a newer approved main SHA.
+- A failed optional cleanup is not a reason to discard a valid Whisper transcript. Close/restart
+  the app, then continue with the stable core path.

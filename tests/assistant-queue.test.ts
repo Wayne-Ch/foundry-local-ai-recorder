@@ -11,6 +11,7 @@ describe("assistant operation queue", () => {
       });
       return "first";
     });
+    await Promise.resolve();
     const second = queue.enqueue("session-1", "chat", async () => "second");
 
     expect(() => queue.enqueue("session-1", "chat", async () => "third")).toThrow("queue is full");
@@ -53,5 +54,23 @@ describe("assistant operation queue", () => {
     queue.reset();
 
     await expect(request.result).rejects.toBeInstanceOf(AssistantCancelledError);
+  });
+
+  it("cancels only chat work when chat history is cleared", async () => {
+    const queue = new AssistantOperationQueue(2);
+    const chat = queue.enqueue("session-1", "chat", async (signal) => {
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new AssistantCancelledError()), {
+          once: true,
+        });
+      });
+      return "unreachable";
+    });
+    const image = queue.enqueue("session-1", "image_analysis", async () => "image");
+
+    queue.cancelKind("chat");
+
+    await expect(chat.result).rejects.toBeInstanceOf(AssistantCancelledError);
+    await expect(image.result).resolves.toBe("image");
   });
 });

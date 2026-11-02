@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAX_IMAGE_BYTES, validateImage } from "../src/assistant/image-security";
 
@@ -11,6 +13,39 @@ describe("image security", () => {
 
     expect(image).toMatchObject({
       basename: "lesson.png",
+      mimeType: "image/png",
+      width: 1_280,
+      height: 720,
+    });
+  });
+
+  it("accepts bounded JPEG and WebP headers only with matching declarations", () => {
+    expect(
+      validateImage({
+        basename: "lesson.jpeg",
+        declaredMimeType: "image/jpeg",
+        bytes: jpegHeader(1_024, 768),
+      }),
+    ).toMatchObject({ mimeType: "image/jpeg", width: 1_024, height: 768 });
+    expect(
+      validateImage({
+        basename: "lesson.webp",
+        declaredMimeType: "image/webp",
+        bytes: webpHeader(800, 600),
+      }),
+    ).toMatchObject({ mimeType: "image/webp", width: 800, height: 600 });
+  });
+
+  it("validates the generated ODE slide fixture", async () => {
+    const bytes = await readFile(path.resolve("fixtures", "ode-slide.png"));
+
+    expect(
+      validateImage({
+        basename: "ode-slide.png",
+        declaredMimeType: "image/png",
+        bytes,
+      }),
+    ).toMatchObject({
       mimeType: "image/png",
       width: 1_280,
       height: 720,
@@ -93,4 +128,39 @@ function writeUint32BigEndian(bytes: Uint8Array, offset: number, value: number):
   bytes[offset + 1] = (value >>> 16) & 0xff;
   bytes[offset + 2] = (value >>> 8) & 0xff;
   bytes[offset + 3] = value & 0xff;
+}
+
+function jpegHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(21);
+  bytes.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08], 0);
+  bytes[7] = (height >>> 8) & 0xff;
+  bytes[8] = height & 0xff;
+  bytes[9] = (width >>> 8) & 0xff;
+  bytes[10] = width & 0xff;
+  bytes[11] = 3;
+  return bytes;
+}
+
+function webpHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(30);
+  bytes.set([0x52, 0x49, 0x46, 0x46], 0);
+  writeUint32LittleEndian(bytes, 4, bytes.byteLength - 8);
+  bytes.set([0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x58], 8);
+  writeUint32LittleEndian(bytes, 16, 10);
+  writeUint24LittleEndian(bytes, 24, width - 1);
+  writeUint24LittleEndian(bytes, 27, height - 1);
+  return bytes;
+}
+
+function writeUint32LittleEndian(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = value & 0xff;
+  bytes[offset + 1] = (value >>> 8) & 0xff;
+  bytes[offset + 2] = (value >>> 16) & 0xff;
+  bytes[offset + 3] = (value >>> 24) & 0xff;
+}
+
+function writeUint24LittleEndian(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = value & 0xff;
+  bytes[offset + 1] = (value >>> 8) & 0xff;
+  bytes[offset + 2] = (value >>> 16) & 0xff;
 }

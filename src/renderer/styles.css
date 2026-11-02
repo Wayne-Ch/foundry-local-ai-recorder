@@ -393,6 +393,62 @@ h2 span {
   line-height: 1.4;
 }
 
+.assistant-status-success {
+  border-color: var(--cyan);
+}
+
+.assistant-status-warning {
+  border-color: var(--amber);
+}
+
+.assistant-status-error {
+  border-color: var(--red);
+}
+
+.assistant-message {
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.assistant-message + .assistant-message {
+  margin-top: 8px;
+}
+
+.assistant-message-user {
+  border-color: rgba(112, 167, 255, 0.25);
+}
+
+.assistant-message-assistant {
+  border-color: rgba(103, 232, 213, 0.25);
+}
+
+.assistant-message-role {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--cyan);
+  font-size: 10px;
+}
+
+.assistant-message-text,
+.image-analysis-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-context-labels {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.image-analysis-line {
+  margin-top: 7px;
+}
+
 .assistant-limit {
   margin: 7px 2px 9px;
 }

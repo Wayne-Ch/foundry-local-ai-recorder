@@ -5,9 +5,13 @@ Windows-first Electron prototype for a complete local recording workflow:
 1. **Nemotron live draft** while the microphone is active.
 2. **Whisper authoritative final transcript** after Stop, using the same owned capture.
 3. **Qwen post-session summary** generated only from the reviewed Whisper final transcript.
+4. **Optional local lesson assistant** for bounded image understanding and side chat while capture
+   continues.
 
 The core record-then-transcribe path remains usable when live captions are disabled or Nemotron
-preparation fails. There are no canned transcript or summary fallbacks.
+preparation fails. Image/chat use a separate manager, model lifecycle, queue, and renderer-session
+lease; their failure or cleanup cannot unload or mutate the Nemotron → Whisper → Qwen chain. There
+are no canned transcript, summary, image-analysis, or chat fallbacks.
 
 ## What is real
 
@@ -17,6 +21,7 @@ preparation fails. There are no canned transcript or summary fallbacks.
 | Live draft | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` / `CPUExecutionProvider` |
 | Final ASR | `openai-whisper-tiny-generic-cpu:4` / `CPUExecutionProvider` |
 | Summary | `qwen3-0.6b-generic-gpu:2` / `WebGPUExecutionProvider` |
+| Vision + side chat | exact configurable `vision-language-chat`; built-in candidate `qwen3.5-0.8b-generic-gpu:2` / GPU / `WebGPUExecutionProvider`, accepted only after runtime task/modality/EP validation |
 | Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded eight-chunk renderer/native queues |
 | Whisper input | Application-owned validated temporary WAV passed through `Item.audioFromUri(...)` |
 | Summary input | Exact, untrimmed Whisper string/version captured by `TranscriptStore.submitForSummary()` |
@@ -44,6 +49,20 @@ unbraced exponents, repairs only simple attached exponent closers, and normalize
 whitespace outside protected regions. A non-`stop`, empty, stale-version, or oversized result
 fails visibly.
 
+The optional assistant uses the exact Foundry Local 2.2.1 multimodal shape:
+`Item.userMessage([Item.text(...), Item.imageFromData(...)])`, `ChatSession`,
+`preflightRequest()`, and cancellable `processStreamingRequest()`. Each request gets a fresh
+`ChatSession`, so Clear removes the only durable chat memory and clinic/classroom safety applies to
+every turn. The VLM model is loaded and unloaded only by its separate optional runtime; a preloaded
+or core model is never unloaded by that lane.
+
+Images are selected only by a main-process file dialog. PNG/JPEG/WebP extension-derived MIME and
+magic signatures must agree; input is capped at 10 MiB, 8,192 px per side, and 24 million pixels.
+SVG, HTML, PDF, and Office files are rejected. The renderer receives only a PNG thumbnail plus
+sanitized basename, original MIME, byte size, and dimensions—never a filesystem path or original
+bytes. Analysis attaches to an exact image/context version and is discarded when stale. A final
+transcript is preferred; otherwise a labeled ephemeral live-draft snapshot is used.
+
 ## Windows setup
 
 Validated on Wayne Chuang's Windows 11 x64 machine with Node.js `26.13.0`.
@@ -51,6 +70,7 @@ Validated on Wayne Chuang's Windows 11 x64 machine with Node.js `26.13.0`.
 ```powershell
 npm install
 npm run fixture:generate
+npm run fixture:image
 npm run start
 ```
 
@@ -79,6 +99,9 @@ npm run test:whisper-integration
 npm run test:nemotron-integration
 npm run test:summary-integration
 npm run test:chain-integration
+npm run test:vision-integration
+npm run test:assistant-chat-integration
+npm run test:concurrent-assistant-chain-integration
 npm audit --audit-level=low
 ```
 
@@ -87,7 +110,9 @@ final transcript, formatted summary, and exact raw-summary trace evidence. It wr
 reproducible artifact to `artifacts\smart-ai-recorder-populated-summary.png`.
 
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
-Synthesis from original ODE teaching text. No copyrighted lecture material is included.
+Synthesis from original ODE teaching text, and `fixtures/ode-slide.png`, generated from original
+bitmap drawing code in `scripts/generate-ode-image-fixture.mjs`. No copyrighted lecture material is
+included.
 
 ## Product behavior
 
@@ -104,12 +129,23 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
   summary.
 - **Generate summary** submits only the current final transcript version. Recorded audio and
   imported WAV files converge on this same summary path.
+- **Ask AI** remains available during recording. It snapshots the current live draft for that
+  request only, stores only the label `live draft snapshot (may change)` in chat history, and never
+  writes the draft into final transcript or summary state.
+- Chat is memory-only, bounded, serialized, cancellable, and independent from summary generation.
+  Suggested prompts include a one-sentence ODE definition, a practical example, and one-sentence
+  explanation of the selected image.
+- **Image** accepts a bounded lecture/blackboard/diagram/slide screenshot. Analysis returns three
+  concise fields: visible text/objects, relation to lesson context, and uncertainty. A saved
+  transcript correction automatically queues re-analysis; stale image/context results are rejected.
+- Classroom mode explains lesson material. Clinic mode is educational and clinician-led only: no
+  diagnosis, urgency assessment, treatment recommendation, or interpreter replacement.
 - Developer Trace keeps the exact raw Qwen response and records whether display formatting was
   applied. The editable Summary textarea receives the formatted text, and user edits continue from
   that formatted value.
 - **Delete / reset** cancels and discards an active recording without calling Nemotron finish,
   Whisper, or Qwen; it then removes owned temporary audio and clears transcript, summary, timing,
-  and trace state.
+  assistant chat/image bytes/thumbnail/analysis, timing, and trace state.
 - Transcript and summary state are memory-only. There is intentionally no automatic retention,
   export, account sync, or background upload in this prototype.
 - A local PCM16LE/16 kHz/mono WAV can be opened as a stage fallback and follows the same temporary
@@ -125,7 +161,13 @@ Synthesis from original ODE teaching text. No copyrighted lecture material is in
 - deny-by-default navigation and window creation
 - short-lived microphone authorization bound to the active main frame
 - main-process stream leases bound to webContents, process, frame tree node, and frame token
+- separate assistant session leases bound to the same exact renderer identity and an unguessable
+  session generation
 - cancellation on reload, navigation, render loss, webContents destruction, and window close
+- copied VLM image buffers remain pinned and unmodified through request settlement, then are
+  zero-filled; replace/remove/reset/shutdown also zero-fill the retained original
+- assistant responses are rendered only with `textContent`/text nodes; exact raw local model output
+  remains Developer Trace evidence
 - deterministic queue, session, model, manager, and temporary-file cleanup
 - request cancellation, session disposal, operation settlement, and temporary-file deletion are
   attempted independently so one cleanup failure cannot skip the rest
@@ -158,8 +200,11 @@ overrides fail; they never silently fall back.
 | Whisper | `SMART_RECORDER_WHISPER_MODEL_ID` | `SMART_RECORDER_WHISPER_EXECUTION_PROVIDER` |
 | Nemotron | `SMART_RECORDER_NEMOTRON_MODEL_ID` | `SMART_RECORDER_NEMOTRON_EXECUTION_PROVIDER` |
 | Summary | `SMART_RECORDER_SUMMARY_MODEL_ID` | `SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER` |
+| Vision/chat | `SMART_RECORDER_VISION_MODEL_ID` | `SMART_RECORDER_VISION_EXECUTION_PROVIDER` |
 
 Overrides are labeled not stage-validated unless they exactly match the built-in pair.
+Vision/chat overrides also require `SMART_RECORDER_VISION_DEVICE_TYPE` (`CPU`, `GPU`, or `NPU`);
+all three variables must be supplied together.
 
 Other paths:
 
@@ -180,6 +225,8 @@ Other paths:
 - Physical network-disconnect rehearsal remains a manual release gate. Passing integration tests
   proves in-process local inference and no application cloud endpoint, not that every machine-level
   network path was physically disconnected.
+- Cloud validation cannot prove the Windows WebGPU VLM. The three multimodal integration commands
+  above are mandatory on the target Windows machine before claiming real image/chat evidence.
 - Foundry Local logs show nonessential telemetry disabled, while SDK process information may still
   initialize. This is separate from inference and is documented rather than hidden.
 
@@ -191,12 +238,13 @@ ownership, transcript versioning, summary submission policy, rendering, trace, a
 **Foundry Local-owned:** catalog resolution, model download/cache/load, execution-provider
 registration, `AudioSession`/`ChatSession`, token preflight, and native inference.
 
-## Later image-processing boundary
+## Rollback
 
-Image processing is deliberately absent. A later feature should add a separate typed image-ingest
-service and model slot, then attach extracted evidence to a finalized transcript version. It must
-not share microphone stream ownership, mutate live caption drafts, or bypass the existing
-transcript-version/summary boundary.
+The feature is isolated on `feature/multimodal-classroom-chat`; `main` remains unchanged. To return
+to the stable recorder, launch/build `main` or the previously deployed SHA. Within this feature
+build, simply avoid the optional right-side panel: the core chain does not prepare the VLM until an
+image/chat request is made. If optional native cleanup fails, close the app and restart; the core
+recorder remains the authoritative recovery path.
 
 See [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md), [CODE-WALKTHROUGH.md](CODE-WALKTHROUGH.md), and
 [VALIDATION.md](VALIDATION.md).

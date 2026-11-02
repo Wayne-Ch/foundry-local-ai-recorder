@@ -1,4 +1,5 @@
 import "../renderer/styles.css";
+import type { AssistantLaneSnapshot, AssistantTraceEntry } from "../assistant/assistant-types";
 import {
   AUDIO_CHANNELS,
   AUDIO_FORMAT,
@@ -400,7 +401,13 @@ const elements = {
 
 const populatedSummaryCapture =
   new URLSearchParams(window.location.search).get("capture") === "populated-summary";
-let snapshot: RecorderSnapshot = await api.getBootstrap();
+const [initialRecorderSnapshot, initialAssistantBootstrap] = await Promise.all([
+  api.getBootstrap(),
+  api.getAssistantBootstrap().catch(() => null),
+]);
+let snapshot: RecorderSnapshot = initialRecorderSnapshot;
+const assistantSessionId = initialAssistantBootstrap?.sessionId ?? null;
+let assistantSnapshot: AssistantLaneSnapshot | null = initialAssistantBootstrap?.snapshot ?? null;
 let recording: RecordingOperation | null = null;
 let operationGeneration = 0;
 let prepared = populatedSummaryCapture;
@@ -410,8 +417,16 @@ let resetting = false;
 let summaryDraft = "";
 let progressDetail = "";
 let transcriptEditorDirty = false;
+let assistantUiPending = false;
+let assistantStatusMessage =
+  initialAssistantBootstrap === null
+    ? "Optional assistant IPC is unavailable; the core recorder remains usable."
+    : "Optional assistant lane is ready on demand.";
+let assistantStatusTone: "neutral" | "working" | "success" | "warning" | "error" =
+  initialAssistantBootstrap === null ? "error" : "neutral";
 
 render(snapshot);
+renderAssistant();
 if (populatedSummaryCapture) {
   elements.traceToggle.setAttribute("aria-expanded", "true");
   elements.traceToggle.textContent = "Hide trace";
@@ -431,6 +446,13 @@ api.onAudioPartial((event) => {
   elements.liveDraft.textContent = event.text;
   elements.liveDraft.classList.remove("empty");
   elements.firstCaption.textContent = `First caption ${formatMilliseconds(event.firstPartialMs)}`;
+});
+api.onAssistantUpdate((event) => {
+  if (event.sessionId !== assistantSessionId) {
+    return;
+  }
+  assistantSnapshot = event.snapshot;
+  renderAssistant();
 });
 
 elements.prepare.addEventListener("click", () => void prepareModels());
@@ -468,12 +490,21 @@ for (const chip of document.querySelectorAll<HTMLButtonElement>(".assistant-chip
   });
 }
 elements.assistantMode.addEventListener("change", () => {
-  elements.assistantSafety.textContent =
-    elements.assistantMode.value === "clinic"
-      ? "Educational and clinician-led only: no diagnosis, urgency, treatment, or interpreter replacement."
-      : "Classroom explanations use local context and state uncertainty.";
+  void setAssistantMode();
 });
 elements.assistantInput.addEventListener("input", updateControls);
+elements.assistantInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void askAssistant();
+  }
+});
+elements.assistantAsk.addEventListener("click", () => void askAssistant());
+elements.assistantCancel.addEventListener("click", () => void cancelAssistant());
+elements.assistantClear.addEventListener("click", () => void clearAssistantChat());
+elements.imageSelect.addEventListener("click", () => void selectAssistantImage());
+elements.imageAnalyze.addEventListener("click", () => void analyzeAssistantImage());
+elements.imageRemove.addEventListener("click", () => void removeAssistantImage());
 elements.traceToggle.addEventListener("click", () => {
   const expanded = elements.traceToggle.getAttribute("aria-expanded") === "true";
   elements.traceToggle.setAttribute("aria-expanded", String(!expanded));
@@ -830,6 +861,146 @@ async function generateSummary(): Promise<void> {
   }
 }
 
+async function setAssistantMode(): Promise<void> {
+  const sessionId = assistantSessionId;
+  if (sessionId === null || assistantSnapshot === null || assistantUiPending) {
+    renderAssistant();
+    return;
+  }
+  assistantUiPending = true;
+  updateControls();
+  try {
+    assistantSnapshot = await api.setAssistantMode({
+      sessionId,
+      mode: elements.assistantMode.value === "clinic" ? "clinic" : "classroom",
+    });
+  } catch (error) {
+    setAssistantStatus(errorMessage(error), "error");
+  } finally {
+    assistantUiPending = false;
+    renderAssistant();
+  }
+}
+
+async function askAssistant(): Promise<void> {
+  const sessionId = assistantSessionId;
+  const question = elements.assistantInput.value.trim();
+  if (sessionId === null || assistantSnapshot === null || !question || assistantUiPending) {
+    return;
+  }
+  assistantUiPending = true;
+  updateControls();
+  try {
+    const started = await api.askAssistant({ sessionId, question });
+    assistantSnapshot = started.snapshot;
+    elements.assistantInput.value = "";
+    setAssistantStatus("Question queued for local inference. Recording continues.", "working");
+  } catch (error) {
+    setAssistantStatus(errorMessage(error), "error");
+  } finally {
+    assistantUiPending = false;
+    renderAssistant();
+  }
+}
+
+async function cancelAssistant(): Promise<void> {
+  const sessionId = assistantSessionId;
+  const requestId = assistantSnapshot?.activeRequestId;
+  if (sessionId === null || requestId === null || requestId === undefined || assistantUiPending) {
+    return;
+  }
+  assistantUiPending = true;
+  updateControls();
+  try {
+    assistantSnapshot = await api.cancelAssistant({ sessionId, requestId });
+    setAssistantStatus("Cancelling the active optional request.", "working");
+  } catch (error) {
+    setAssistantStatus(errorMessage(error), "error");
+  } finally {
+    assistantUiPending = false;
+    renderAssistant();
+  }
+}
+
+async function clearAssistantChat(): Promise<void> {
+  const sessionId = assistantSessionId;
+  if (sessionId === null || assistantSnapshot === null || assistantUiPending) {
+    return;
+  }
+  assistantUiPending = true;
+  updateControls();
+  try {
+    assistantSnapshot = await api.clearAssistantChat({ sessionId });
+    setAssistantStatus("Memory-only chat history cleared.", "success");
+  } catch (error) {
+    setAssistantStatus(errorMessage(error), "error");
+  } finally {
+    assistantUiPending = false;
+    renderAssistant();
+  }
+}
+
+async function selectAssistantImage(): Promise<void> {
+  const sessionId = assistantSessionId;
+  if (sessionId === null || assistantSnapshot === null || assistantUiPending) {
+    return;
+  }
+  assistantUiPending = true;
+  updateControls();
+  setAssistantStatus("Opening the main-process image picker…", "working");
+  try {
+    const selected = await api.selectAssistantImage({ sessionId });
+    if (selected === null) {
+      setAssistantStatus("Image selection cancelled.", "neutral");
+      return;
+    }
+    assistantSnapshot = selected;
+    setAssistantStatus("Image selected safely. Analyze it when ready.", "success");
+  } catch (error) {
+    setAssistantStatus(errorMessage(error), "error");
+  } finally {
+    assistantUiPending = false;
+    renderAssistant();
+  }
+}
+
+async function analyzeAssistantImage(): Promise<void> {
+  const sessionId = assistantSessionId;
+  if (sessionId === null || assistantSnapshot?.image === null || assistantUiPending) {
+    return;
+  }
+  assistantUiPending = true;
+  updateControls();
+  try {
+    const started = await api.analyzeAssistantImage({ sessionId });
+    assistantSnapshot = started.snapshot;
+    setAssistantStatus("Image analysis queued. Audio capture remains independent.", "working");
+  } catch (error) {
+    setAssistantStatus(errorMessage(error), "error");
+  } finally {
+    assistantUiPending = false;
+    renderAssistant();
+  }
+}
+
+async function removeAssistantImage(): Promise<void> {
+  const sessionId = assistantSessionId;
+  if (sessionId === null || assistantSnapshot?.image === null || assistantUiPending) {
+    return;
+  }
+  assistantUiPending = true;
+  updateControls();
+  try {
+    assistantSnapshot = await api.removeAssistantImage({ sessionId });
+    setAssistantStatus("Image bytes, thumbnail, and analysis were removed.", "success");
+  } catch (error) {
+    setAssistantStatus(errorMessage(error), "error");
+  } finally {
+    assistantUiPending = false;
+    renderAssistant();
+  }
+}
+
 async function resetRecorder(): Promise<void> {
   if (busy) {
     return;
@@ -837,6 +1008,7 @@ async function resetRecorder(): Promise<void> {
   busy = true;
   resetting = true;
   operationGeneration += 1;
+  elements.assistantInput.value = "";
   const active = recording;
   recording = null;
   if (active !== null) {
@@ -951,7 +1123,145 @@ function render(next: RecorderSnapshot): void {
       ? "No submitted version"
       : `Built from transcript v${transcript.summary.transcriptVersion} · ${transcript.summary.durationMs} ms generation`;
 
-  renderTrace(snapshot.trace);
+  renderTrace(snapshot.trace, assistantSnapshot?.trace ?? []);
+  updateControls();
+}
+
+function renderAssistant(): void {
+  const state = assistantSnapshot;
+  elements.assistantPanel.setAttribute(
+    "aria-busy",
+    String(assistantUiPending || state?.activeRequestId != null),
+  );
+  if (state === null) {
+    elements.assistantHistory.replaceChildren(
+      textElement(
+        "p",
+        "assistant-empty",
+        "The optional assistant is unavailable. Recording, Whisper, and summary remain usable.",
+      ),
+    );
+    elements.imagePreview.replaceChildren(textElement("span", "", "No lesson image selected."));
+    elements.imagePreview.classList.add("empty");
+    elements.imageMetadata.replaceChildren();
+    elements.imageAnalysis.replaceChildren(
+      textElement("p", "assistant-empty", "No image analysis is available."),
+    );
+    renderAssistantStatus();
+    renderTrace(snapshot.trace, []);
+    updateControls();
+    return;
+  }
+
+  elements.assistantMode.value = state.mode;
+  elements.assistantSafety.textContent =
+    state.mode === "clinic"
+      ? "Educational and clinician-led only: no diagnosis, urgency, treatment, or interpreter replacement."
+      : "Classroom explanations use local context and state uncertainty.";
+  if (state.chatMessages.length === 0) {
+    elements.assistantHistory.replaceChildren(
+      textElement(
+        "p",
+        "assistant-empty",
+        "Ask while recording continues. Live draft context is snapshotted only for that request.",
+      ),
+    );
+  } else {
+    elements.assistantHistory.replaceChildren(
+      ...state.chatMessages.map((message) => {
+        const row = document.createElement("article");
+        row.className = `assistant-message assistant-message-${message.role}`;
+        const role = textElement(
+          "strong",
+          "assistant-message-role",
+          message.role === "user" ? "You" : "Local AI",
+        );
+        const text = textElement("p", "assistant-message-text", message.text);
+        const labels = textElement(
+          "small",
+          "assistant-context-labels",
+          `Context: ${message.contextLabels.map((label) => label.label).join(" · ")}`,
+        );
+        row.append(role, text, labels);
+        return row;
+      }),
+    );
+    elements.assistantHistory.scrollTop = elements.assistantHistory.scrollHeight;
+  }
+
+  const image = state.image;
+  if (image === null) {
+    elements.imagePreview.replaceChildren(textElement("span", "", "No lesson image selected."));
+    elements.imagePreview.classList.add("empty");
+    elements.imageMetadata.replaceChildren();
+  } else {
+    const preview = document.createElement("img");
+    preview.src = image.thumbnailDataUrl;
+    preview.alt = `Preview of ${image.basename}`;
+    elements.imagePreview.replaceChildren(preview);
+    elements.imagePreview.classList.remove("empty");
+    elements.imageMetadata.replaceChildren(
+      metadataTerm("File"),
+      metadataValue(image.basename),
+      metadataTerm("Type"),
+      metadataValue(image.mimeType),
+      metadataTerm("Size"),
+      metadataValue(`${(image.sizeBytes / 1024).toFixed(1)} KiB`),
+      metadataTerm("Dimensions"),
+      metadataValue(`${image.width} × ${image.height}`),
+    );
+  }
+
+  const analysis = state.imageAnalysis;
+  if (analysis === null) {
+    elements.imageAnalysis.replaceChildren(
+      textElement(
+        "p",
+        "assistant-empty",
+        "Analysis will show visible text/objects, lesson relation, and uncertainty.",
+      ),
+    );
+  } else {
+    elements.imageAnalysis.replaceChildren(
+      analysisLine("Visible text/objects", analysis.visibleTextAndObjects),
+      analysisLine("Relation to lesson", analysis.relationToLesson),
+      analysisLine("Uncertainty", analysis.uncertainty),
+      textElement(
+        "small",
+        "assistant-context-labels",
+        `Image analysis v${analysis.version} · ${analysis.contextLabels
+          .map((label) => label.label)
+          .join(" · ")}`,
+      ),
+    );
+  }
+
+  if (state.activeOperation !== null) {
+    assistantStatusMessage =
+      state.activeOperation === "chat"
+        ? "Local chat is running; audio capture continues independently."
+        : "Local image analysis is running; audio capture continues independently.";
+    assistantStatusTone = "working";
+  } else {
+    const latest = state.trace.at(-1);
+    if (latest?.severity === "error") {
+      assistantStatusMessage = latest.detail;
+      assistantStatusTone = "error";
+    } else if (latest?.phase === "chat-raw") {
+      assistantStatusMessage = "Local chat answer is ready.";
+      assistantStatusTone = "success";
+    } else if (latest?.phase === "image-analysis-raw" && analysis !== null) {
+      assistantStatusMessage = `Image analysis v${analysis.version} is ready.`;
+      assistantStatusTone = "success";
+    }
+  }
+  if (state.queuedRequests > 0) {
+    assistantStatusMessage += ` ${state.queuedRequests} request${
+      state.queuedRequests === 1 ? "" : "s"
+    } waiting.`;
+  }
+  renderAssistantStatus();
+  renderTrace(snapshot.trace, state.trace);
   updateControls();
 }
 
@@ -961,10 +1271,21 @@ function renderModel(role: "whisper" | "nemotron" | "summary", readiness: ModelR
   elements.model[role].state.className = `state-chip state-${readiness.status}`;
 }
 
-function renderTrace(trace: readonly TraceEntry[]): void {
+function renderTrace(trace: readonly TraceEntry[], assistantTrace: readonly AssistantTraceEntry[]): void {
+  const combined: TraceEntry[] = [
+    ...trace,
+    ...assistantTrace.map((entry) => ({
+      at: entry.at,
+      responsibility: "Foundry Local" as const,
+      phase: `assistant:${entry.phase}`,
+      detail: entry.detail,
+      severity: entry.severity,
+    })),
+  ];
   elements.traceContent.replaceChildren(
-    ...trace
+    ...combined
       .slice()
+      .sort((left, right) => left.at.localeCompare(right.at))
       .reverse()
       .map((entry) => {
         const row = document.createElement("div");
@@ -996,6 +1317,49 @@ function renderTrace(trace: readonly TraceEntry[]): void {
   );
 }
 
+function renderAssistantStatus(): void {
+  elements.assistantStatus.textContent = assistantStatusMessage;
+  elements.assistantStatus.className = `assistant-status assistant-status-${assistantStatusTone}`;
+}
+
+function setAssistantStatus(
+  message: string,
+  tone: "neutral" | "working" | "success" | "warning" | "error",
+): void {
+  assistantStatusMessage = message;
+  assistantStatusTone = tone;
+  renderAssistantStatus();
+}
+
+function textElement<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className: string,
+  text: string,
+): HTMLElementTagNameMap[K] {
+  const element = document.createElement(tagName);
+  if (className) {
+    element.className = className;
+  }
+  element.textContent = text;
+  return element;
+}
+
+function metadataTerm(text: string): HTMLElement {
+  return textElement("dt", "", text);
+}
+
+function metadataValue(text: string): HTMLElement {
+  return textElement("dd", "", text);
+}
+
+function analysisLine(label: string, value: string): HTMLElement {
+  const line = document.createElement("p");
+  line.className = "image-analysis-line";
+  const strong = textElement("strong", "", `${label}: `);
+  line.append(strong, document.createTextNode(value));
+  return line;
+}
+
 function updateControls(): void {
   const hasFinal = Boolean(snapshot.transcript.finalText);
   const transcriptChanged = hasFinal && transcriptEditorDirty;
@@ -1006,12 +1370,20 @@ function updateControls(): void {
   elements.liveToggle.disabled = busy || recording !== null;
   elements.saveTranscript.disabled = busy || !transcriptChanged;
   elements.summary.disabled = busy || !hasFinal;
-  elements.assistantAsk.disabled = true;
-  elements.assistantCancel.disabled = true;
-  elements.assistantClear.disabled = true;
-  elements.imageSelect.disabled = true;
-  elements.imageAnalyze.disabled = true;
-  elements.imageRemove.disabled = true;
+  const assistantReady = assistantSessionId !== null && assistantSnapshot !== null;
+  const assistantQueueFull =
+    assistantSnapshot !== null && assistantSnapshot.queuedRequests >= assistantSnapshot.maxQueuedRequests;
+  elements.assistantMode.disabled = !assistantReady || assistantUiPending;
+  elements.assistantAsk.disabled =
+    !assistantReady || assistantUiPending || assistantQueueFull || !elements.assistantInput.value.trim();
+  elements.assistantCancel.disabled =
+    !assistantReady || assistantUiPending || assistantSnapshot?.activeRequestId === null;
+  elements.assistantClear.disabled =
+    !assistantReady || assistantUiPending || (assistantSnapshot?.chatMessages.length ?? 0) === 0;
+  elements.imageSelect.disabled = !assistantReady || assistantUiPending;
+  elements.imageAnalyze.disabled =
+    !assistantReady || assistantUiPending || assistantQueueFull || assistantSnapshot?.image === null;
+  elements.imageRemove.disabled = !assistantReady || assistantUiPending || assistantSnapshot?.image === null;
   elements.reset.disabled = busy;
   elements.reset.textContent = resetting
     ? "Cancelling / resetting…"

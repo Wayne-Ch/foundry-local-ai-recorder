@@ -1,6 +1,8 @@
 export const SAFE_DIAGNOSTIC_CODES = [
   "OPTIONAL_LIVE_FAILED",
   "OPTIONAL_LIVE_CLEANUP_PENDING",
+  "OPTIONAL_ASSISTANT_FAILED",
+  "OPTIONAL_ASSISTANT_CLEANUP_PENDING",
   "OPERATION_ABORTED",
   "TIMEOUT",
   "RESOURCE_BUSY",
@@ -35,6 +37,10 @@ export interface SafeDiagnostic {
 const SAFE_SUMMARIES: Readonly<Record<SafeDiagnosticCode, string>> = {
   OPTIONAL_LIVE_FAILED: "Optional live captions failed; Whisper audio remains authoritative.",
   OPTIONAL_LIVE_CLEANUP_PENDING: "Optional live-caption cleanup is still draining.",
+  OPTIONAL_ASSISTANT_FAILED:
+    "The optional local assistant failed; recording, transcription, and summary remain available.",
+  OPTIONAL_ASSISTANT_CLEANUP_PENDING:
+    "Optional assistant cleanup is still draining; the core recorder remains available.",
   OPERATION_ABORTED: "The local operation was aborted.",
   TIMEOUT: "The local operation did not finish within its bounded wait.",
   RESOURCE_BUSY: "A local native resource is still busy.",

@@ -90,7 +90,21 @@ export function buildAssistantContext(
 }
 
 export function buildImageAnalysisContext(transcript: TranscriptSnapshot): AssistantRequestContext {
-  return buildAssistantContext(transcript, null);
+  const context = buildAssistantContext(transcript, null);
+  const labels = context.labels.filter(
+    (label) => label.kind === "live_draft" || label.kind === "final_transcript" || label.kind === "none",
+  );
+  return {
+    ...context,
+    summaryText: null,
+    summaryVersion: null,
+    labels,
+    fingerprint: [
+      context.transcript.kind,
+      context.transcript.version ?? "-",
+      context.transcript.liveSequence ?? "-",
+    ].join(":"),
+  };
 }
 
 export function durableChatMessageContext(
