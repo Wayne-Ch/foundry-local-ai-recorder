@@ -152,7 +152,7 @@ Message:
 ## 10:45-12:15 — Side chat is separate from capture and summary
 
 **Files:** `src/assistant/assistant-queue.ts`, `src/main/assistant-controller.ts`,
-`src/foundry/optional-vision-chat-runtime.ts`, `src/foundry/foundry-assistant-runtime.ts`
+`src/foundry/optional-vision-chat-runtime.ts`, `src/foundry/foundry-runtime.ts`
 
 Show:
 
@@ -161,14 +161,19 @@ Show:
 - explicit memory-only chat history used to build the next prompt;
 - one fresh `ChatSession` per turn;
 - exact `Item.userMessage` text/image parts;
-- separate manager/endpoint guard and owned-model-only unload;
+- one shared validated manager and manager generation;
+- text chat reusing the loaded summary slot, with summary priority on the shared text lane;
+- exact `qwen3.5-0.8b-generic-cpu:3` vision model in a separate optional slot;
+- immediate visible Reset plus internal cancellation/draining and vision-only unload;
 - clinic prompt prohibitions.
 
 Message:
 
-> Asking during recording never enters the audio controller or summary slot. The request captures a
-> temporary context snapshot, while audio callbacks continue. Clear cancels queued chat and removes
-> the only chat history. Clinic mode is explanatory and clinician-led, never diagnostic.
+> Asking during recording never enters the audio controller. Text chat deliberately reuses the
+> loaded summary model through a fresh session, while image requests use the scoped CPU vision slot.
+> The request captures a temporary context snapshot while audio callbacks continue. Clear cancels
+> queued chat and removes the only chat history. Clinic mode is explanatory and clinician-led,
+> never diagnostic.
 
 ## 12:15-13:15 — Model preparation preserves working slots
 
@@ -212,7 +217,9 @@ Show:
 - reset clearing derived state without processing captured audio;
 - optional assistant reset immediately clearing chat/image state and cancelling its queue without
   waiting on core cleanup;
-- best-effort optional VLM/session/model/manager disposal that cannot block core shutdown;
+- optional session drain and vision-slot-only unload under the existing manager cleanup barrier;
+- Reset hiding stale assistant activity immediately while the native drain rejects only new
+  optional work;
 - startup `capture-*.wav` orphan recovery and locked-file warning.
 
 ## 15:30-17:00 — Evidence, not claims

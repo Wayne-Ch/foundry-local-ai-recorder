@@ -128,7 +128,10 @@ describe("optional vision/chat adapter", () => {
     }
 
     expect(createChatSession).toHaveBeenCalledTimes(2);
-    for (const [index, session] of [createChatSession.mock.results[0]?.value, createChatSession.mock.results[1]?.value].entries()) {
+    for (const [index, session] of [
+      createChatSession.mock.results[0]?.value,
+      createChatSession.mock.results[1]?.value,
+    ].entries()) {
       expect(session?.processRequest.mock.calls[0]?.[0].getItem(0)).toMatchObject({
         type: "message",
         role: "system",
@@ -300,14 +303,16 @@ function fakeSession(
   options: { readonly processRequest?: (request: Request) => Promise<Response> } = {},
 ): FakeSession {
   return {
-    preflightRequest: vi.fn(async (): Promise<RequestPreflightResult> => ({
-      promptTokens: 10,
-      outputReserveTokens: 64,
-      requiredTokens: 74,
-      contextLimitTokens: 4_096,
-      fits: true,
-      deficitTokens: 0,
-    })),
+    preflightRequest: vi.fn(
+      async (): Promise<RequestPreflightResult> => ({
+        promptTokens: 10,
+        outputReserveTokens: 64,
+        requiredTokens: 74,
+        contextLimitTokens: 4_096,
+        fits: true,
+        deficitTokens: 0,
+      }),
+    ),
     processRequest: vi.fn(options.processRequest ?? (async () => textResponse("An ODE answer."))),
     dispose: vi.fn(),
   };
@@ -338,10 +343,7 @@ function summaryIdentity() {
   };
 }
 
-function textResponse(
-  text: string,
-  finishReason: Response["finishReason"] = "stop",
-): Response {
+function textResponse(text: string, finishReason: Response["finishReason"] = "stop"): Response {
   return {
     output: [{ type: "text", text }],
     finishReason,

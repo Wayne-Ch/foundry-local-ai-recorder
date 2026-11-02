@@ -1269,9 +1269,7 @@ describe("FoundryRecorderRuntime", () => {
       source: "summary_slot",
       task: "chat-completion",
     });
-    expect(manager.catalog.getModelVariant).not.toHaveBeenCalledWith(
-      QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-    );
+    expect(manager.catalog.getModelVariant).not.toHaveBeenCalledWith(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
     await runtime.shutdown();
   });
 
@@ -1386,11 +1384,8 @@ describe("FoundryRecorderRuntime", () => {
 
     for (let sequence = 0; sequence < 3; sequence += 1) {
       expect(
-        runtime.appendLiveChunk(
-          live.streamId,
-          sequence,
-          new Uint8Array(AUDIO_STREAM_CHUNK_BYTES),
-        ).acceptedSequence,
+        runtime.appendLiveChunk(live.streamId, sequence, new Uint8Array(AUDIO_STREAM_CHUNK_BYTES))
+          .acceptedSequence,
       ).toBe(sequence);
     }
 
@@ -1574,12 +1569,8 @@ class FakeModel implements IModel {
       cached: true,
       task,
       runtime: { deviceType, executionProvider },
-      ...(metadata.inputModalities === undefined
-        ? {}
-        : { inputModalities: metadata.inputModalities }),
-      ...(metadata.outputModalities === undefined
-        ? {}
-        : { outputModalities: metadata.outputModalities }),
+      ...(metadata.inputModalities === undefined ? {} : { inputModalities: metadata.inputModalities }),
+      ...(metadata.outputModalities === undefined ? {} : { outputModalities: metadata.outputModalities }),
       fileSizeMb: 1,
       createdAtUnix: 0,
       isTestModel: true,

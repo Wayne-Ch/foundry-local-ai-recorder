@@ -17,10 +17,7 @@ export interface VisionChatRuntimeTarget {
   readonly executionProvider: string;
 }
 
-export type VisionChatSessionHandle = Pick<
-  ChatSession,
-  "preflightRequest" | "processRequest" | "dispose"
->;
+export type VisionChatSessionHandle = Pick<ChatSession, "preflightRequest" | "processRequest" | "dispose">;
 
 export type VisionModelCompatibilityField =
   | "model.id"
@@ -160,12 +157,14 @@ export async function processAssistantTurn(
   validateTurnInput(input);
   throwIfAborted(options.signal);
   const built = buildRequest(input, options.requestOptions);
-  const session = options.createChatSession(model);
   const cancel = () => built.request.cancel();
   options.signal?.addEventListener("abort", cancel, { once: true });
-  const errors: unknown[] = [];
-  let operationError: unknown | null = null;
+  let session: VisionChatSessionHandle | null = null;
+  let outcome:
+    | { readonly ok: true; readonly value: VisionChatTurnResult }
+    | { readonly ok: false; readonly error: unknown };
   try {
+    session = options.createChatSession(model);
     options.assertCurrent?.();
     const preflight = await session.preflightRequest(built.request);
     throwIfAborted(options.signal);
@@ -185,32 +184,38 @@ export async function processAssistantTurn(
     if (!text.trim()) {
       throw new Error("The local assistant returned no default text.");
     }
-    return { text, model: modelIdentity, preflight, response };
+    outcome = {
+      ok: true,
+      value: { text, model: modelIdentity, preflight, response },
+    };
   } catch (error) {
-    operationError = error;
-    throw error;
-  } finally {
-    options.signal?.removeEventListener("abort", cancel);
-    try {
-      built.request.cancel();
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      session.dispose();
-    } catch (error) {
-      errors.push(error);
-    }
-    for (const bytes of built.retainedImageBytes) {
-      bytes.fill(0);
-    }
-    if (errors.length > 0) {
-      throw new AggregateError(
-        operationError === null ? errors : [operationError, ...errors],
-        "Assistant request cleanup failed.",
-      );
-    }
+    outcome = { ok: false, error };
   }
+
+  options.signal?.removeEventListener("abort", cancel);
+  const cleanupErrors: unknown[] = [];
+  try {
+    built.request.cancel();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    session?.dispose();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  for (const bytes of built.retainedImageBytes) {
+    bytes.fill(0);
+  }
+  if (!outcome.ok) {
+    throw cleanupErrors.length === 0
+      ? outcome.error
+      : new AggregateError([outcome.error, ...cleanupErrors], "Assistant request and cleanup failed.");
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, "Assistant request cleanup failed.");
+  }
+  return outcome.value;
 }
 
 function buildRequest(

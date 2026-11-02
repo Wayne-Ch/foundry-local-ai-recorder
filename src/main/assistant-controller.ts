@@ -7,10 +7,7 @@ import type { AssistantLaneSnapshot, AssistantMode, ImageAnalysisNote } from "..
 import type { ValidatedImage } from "../assistant/image-security";
 import { formatAssistantPlainText } from "../assistant/plain-text";
 import type { AssistantRuntimeStatus } from "../foundry/foundry-runtime";
-import type {
-  VisionChatTurnInput,
-  VisionChatTurnResult,
-} from "../foundry/optional-vision-chat-runtime";
+import type { VisionChatTurnInput, VisionChatTurnResult } from "../foundry/optional-vision-chat-runtime";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import type { TranscriptSnapshot } from "../transcript/transcript-store";
 

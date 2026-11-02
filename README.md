@@ -9,9 +9,11 @@ Windows-first Electron prototype for a complete local recording workflow:
    continues.
 
 The core record-then-transcribe path remains usable when live captions are disabled or Nemotron
-preparation fails. Image/chat use a separate manager, model lifecycle, queue, and renderer-session
-lease; their failure or cleanup cannot unload or mutate the Nemotron → Whisper → Qwen chain. There
-are no canned transcript, summary, image-analysis, or chat fallbacks.
+preparation fails. Image/chat share the one validated Foundry manager but use a separate optional
+operation generation, vision model slot, queue, and renderer-session lease. Text chat reuses the
+already-loaded summary model. Assistant failure or cleanup cannot unload or mutate the
+Nemotron → Whisper → Qwen slots. There are no canned transcript, summary, image-analysis, or chat
+fallbacks.
 
 ## What is real
 
@@ -21,7 +23,8 @@ are no canned transcript, summary, image-analysis, or chat fallbacks.
 | Live draft | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` / `CPUExecutionProvider` |
 | Final ASR | `openai-whisper-tiny-generic-cpu:4` / `CPUExecutionProvider` |
 | Summary | `qwen3-0.6b-generic-gpu:2` / `WebGPUExecutionProvider` |
-| Vision + side chat | exact configurable `vision-language-chat`; built-in candidate `qwen3.5-0.8b-generic-gpu:2` / GPU / `WebGPUExecutionProvider`, accepted only after runtime task/modality/EP validation |
+| Vision + image chat | exact configurable `vision-language-chat`; required built-in candidate `qwen3.5-0.8b-generic-cpu:3` / CPU / `CPUExecutionProvider`, accepted only after runtime task/modality/EP validation |
+| Text side chat | existing loaded summary slot `qwen3-0.6b-generic-gpu:2`; fresh per-turn `ChatSession` |
 | Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded eight-chunk renderer/native queues |
 | Whisper input | Application-owned validated temporary WAV passed through `Item.audioFromUri(...)` |
 | Summary input | Exact, untrimmed Whisper string/version captured by `TranscriptStore.submitForSummary()` |
@@ -51,10 +54,12 @@ fails visibly.
 
 The optional assistant uses the exact Foundry Local 2.2.1 multimodal shape:
 `Item.userMessage([Item.text(...), Item.imageFromData(...)])`, `ChatSession`,
-`preflightRequest()`, and cancellable `processStreamingRequest()`. Each request gets a fresh
+`preflightRequest()`, `processRequest()`, and request cancellation. Each request gets a fresh
 `ChatSession`, so Clear removes the only durable chat memory and clinic/classroom safety applies to
-every turn. The VLM model is loaded and unloaded only by its separate optional runtime; a preloaded
-or core model is never unloaded by that lane.
+every turn. Text-only chat uses the existing summary `ModelSlot`; it never creates another manager
+or loads another text model. Image analysis/direct image chat use a separate vision `ModelSlot`
+owned by the same manager generation. Reset can unload only that vision slot after its native
+request settles; core slots remain loaded.
 
 Images are selected only by a main-process file dialog. PNG/JPEG/WebP extension-derived MIME and
 magic signatures must agree; input is capped at 10 MiB, 8,192 px per side, and 24 million pixels.
@@ -78,6 +83,9 @@ The project pins patched Electron `42.11.18`. The root `postinstall` runs
 `scripts/ensure-electron.ps1`, which guards the Node 26 archive-extraction edge encountered during
 initial setup: it first uses Electron's installer, then repairs from Electron's verified local cache
 with Windows `Expand-Archive` when necessary.
+
+Repository `.gitattributes` enforces LF for text and marks image/audio/native artifacts binary, so
+a fresh Windows checkout remains lint-clean even when global `core.autocrlf=true`.
 
 Select **Prepare local models** before recording. Preparation can use the network to download an
 uncached model or the WebGPU execution-provider bundle. Once cached and loaded, inference uses
@@ -132,6 +140,8 @@ included.
 - **Ask AI** remains available during recording. It snapshots the current live draft for that
   request only, stores only the label `live draft snapshot (may change)` in chat history, and never
   writes the draft into final transcript or summary state.
+- Assistant inference is enabled after **Prepare local models** so text chat can reuse the loaded
+  summary slot and image requests can use the same validated manager generation.
 - Chat is memory-only, bounded, serialized, cancellable, and independent from summary generation.
   Suggested prompts include a one-sentence ODE definition, a practical example, and one-sentence
   explanation of the selected image.
@@ -166,6 +176,13 @@ included.
 - cancellation on reload, navigation, render loss, webContents destruction, and window close
 - copied VLM image buffers remain pinned and unmodified through request settlement, then are
   zero-filled; replace/remove/reset/shutdown also zero-fill the retained original
+- one global manager/endpoint guard/shutdown lifecycle for core and assistant; there is no second
+  `FoundryLocalManager`
+- text chat is serialized with summary-model text work; a core summary request cancels optional
+  text work before taking the shared text lane
+- Reset immediately clears visible assistant active/image/chat state. Native cancellation and
+  vision-slot unload may continue under an explicit optional-draining status, which rejects new
+  assistant work without blocking recording, Whisper, or core cleanup
 - assistant responses are rendered only with `textContent`/text nodes; exact raw local model output
   remains Developer Trace evidence
 - deterministic queue, session, model, manager, and temporary-file cleanup
@@ -225,8 +242,11 @@ Other paths:
 - Physical network-disconnect rehearsal remains a manual release gate. Passing integration tests
   proves in-process local inference and no application cloud endpoint, not that every machine-level
   network path was physically disconnected.
-- Cloud validation cannot prove the Windows WebGPU VLM. The three multimodal integration commands
+- Cloud validation cannot prove the Windows CPU VLM. The three multimodal integration commands
   above are mandatory on the target Windows machine before claiming real image/chat evidence.
+- The GPU catalog variant remains available only through an exact three-variable environment
+  override and is unvalidated after an isolated Windows WebGPU device-loss failure. There is no
+  silent CPU/GPU fallback.
 - Foundry Local logs show nonessential telemetry disabled, while SDK process information may still
   initialize. This is separate from inference and is documented rather than hidden.
 
@@ -242,9 +262,9 @@ registration, `AudioSession`/`ChatSession`, token preflight, and native inferenc
 
 The feature is isolated on `feature/multimodal-classroom-chat`; `main` remains unchanged. To return
 to the stable recorder, launch/build `main` or the previously deployed SHA. Within this feature
-build, simply avoid the optional right-side panel: the core chain does not prepare the VLM until an
-image/chat request is made. If optional native cleanup fails, close the app and restart; the core
-recorder remains the authoritative recovery path.
+build, simply avoid the optional right-side panel: text chat does not load another model, and the
+CPU vision slot is not prepared until an image request is made. If optional native cleanup fails,
+close the app and restart; the core recorder remains the authoritative recovery path.
 
 See [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md), [CODE-WALKTHROUGH.md](CODE-WALKTHROUGH.md), and
 [VALIDATION.md](VALIDATION.md).

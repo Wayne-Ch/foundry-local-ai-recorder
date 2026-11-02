@@ -43,6 +43,14 @@ describe("assistant UI and Electron isolation", () => {
     expect(contracts).not.toMatch(/readonly\s+(?:file)?path:/i);
     expect(contracts).not.toMatch(/readonly\s+bytes:/i);
   });
+
+  it("enforces LF text checkouts and preserves binary fixtures on Windows", async () => {
+    const attributes = await read(".gitattributes");
+
+    expect(attributes).toContain("* text=auto eol=lf");
+    expect(attributes).toContain("*.png binary");
+    expect(attributes).toContain("*.wav binary");
+  });
 });
 
 async function read(file: string): Promise<string> {

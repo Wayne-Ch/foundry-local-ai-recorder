@@ -27,6 +27,7 @@ import type {
   AudioStreamStartRequest,
 } from "../audio/audio-types";
 import { AUDIO_MAX_PCM_BYTES } from "../audio/audio-types";
+import { FoundryRecorderRuntime } from "../foundry/foundry-runtime";
 import {
   type AssistantAskRequest,
   type AssistantCancelRequest,
@@ -42,7 +43,6 @@ import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnosti
 import { AssistantController } from "./assistant-controller";
 import { type AssistantSessionOwnerIdentity, AssistantSessionOwnership } from "./assistant-session-owner";
 import { type AudioStreamOwnerIdentity, AudioStreamOwnership } from "./audio-stream-owner";
-import { FoundryRecorderRuntime } from "../foundry/foundry-runtime";
 import {
   isAllowedAppNavigation,
   MicrophonePermissionGate,

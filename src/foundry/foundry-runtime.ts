@@ -1,12 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import type {
-  EpDownloadResult,
-  EpInfo,
-  FoundryLocalConfig,
-  IModel,
-  RequestOptions,
-} from "foundry-local-sdk";
+import type { EpDownloadResult, EpInfo, FoundryLocalConfig, IModel, RequestOptions } from "foundry-local-sdk";
 import {
   AudioSession,
   ChatSession,
@@ -43,10 +37,7 @@ import { TempAudioStore, withTemporaryWav } from "../audio/temp-audio-store";
 import type { ModelIdentity, ModelReadiness, ProgressEvent, RuntimeReadiness } from "../shared/contracts";
 import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../summary/summary-prompt";
-import {
-  type AssistantRuntimeTarget,
-  resolveAssistantRuntimeTarget,
-} from "./assistant-runtime-config";
+import { type AssistantRuntimeTarget, resolveAssistantRuntimeTarget } from "./assistant-runtime-config";
 import { ModelSlot } from "./model-slot";
 import {
   inspectVisionChatModel,
@@ -264,9 +255,7 @@ export class FoundryRecorderRuntime {
     const active = this.#activeAssistantOperation;
     return {
       active: active !== null && !active.controller.signal.aborted,
-      draining:
-        this.#assistantCleanupPromise !== null ||
-        (active !== null && active.controller.signal.aborted),
+      draining: this.#assistantCleanupPromise !== null || active?.controller.signal.aborted === true,
       visionModelId: this.#visionSlot.active?.id ?? null,
     };
   }
@@ -324,9 +313,7 @@ export class FoundryRecorderRuntime {
         return this.#withTextLane(operationSignal, () =>
           processAssistantTurn(model, identity, input, {
             signal: operationSignal,
-            ...(options.requestOptions === undefined
-              ? {}
-              : { requestOptions: options.requestOptions }),
+            ...(options.requestOptions === undefined ? {} : { requestOptions: options.requestOptions }),
             createChatSession: this.#createChatSession,
             assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
           }),
@@ -336,9 +323,7 @@ export class FoundryRecorderRuntime {
       const prepared = await this.#prepareVisionModel(manager, operationSignal);
       return processAssistantTurn(prepared.model, prepared.identity, input, {
         signal: operationSignal,
-        ...(options.requestOptions === undefined
-          ? {}
-          : { requestOptions: options.requestOptions }),
+        ...(options.requestOptions === undefined ? {} : { requestOptions: options.requestOptions }),
         createChatSession: this.#createChatSession,
         assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
       });
@@ -1199,10 +1184,7 @@ export class FoundryRecorderRuntime {
     }
   }
 
-  async #prepareVisionModel(
-    manager: ManagerContext,
-    signal: AbortSignal,
-  ): Promise<PreparedVisionSlot> {
+  async #prepareVisionModel(manager: ManagerContext, signal: AbortSignal): Promise<PreparedVisionSlot> {
     const target = this.#assistantTarget;
     const current = this.#visionSlot.activeFor(manager);
     let candidate: IModel | null = null;
@@ -1291,8 +1273,7 @@ export class FoundryRecorderRuntime {
     const provider = manager
       .discoverEps()
       .find(
-        (candidate) =>
-          canonicalExecutionProvider(candidate.name) === this.#assistantTarget.executionProvider,
+        (candidate) => canonicalExecutionProvider(candidate.name) === this.#assistantTarget.executionProvider,
       );
     if (provider === undefined) {
       throw new Error(
@@ -2021,10 +2002,7 @@ function describeVisionCompatibility(
     .join("; ")}.`;
 }
 
-function forwardAbortSignal(
-  signal: AbortSignal | undefined,
-  controller: AbortController,
-): () => void {
+function forwardAbortSignal(signal: AbortSignal | undefined, controller: AbortController): () => void {
   if (signal === undefined) {
     return () => {};
   }

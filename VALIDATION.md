@@ -11,7 +11,8 @@ Multimodal branch static/cloud evidence: 2026-11-02 (Linux cloud session)
 | Live captions | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` | `CPUExecutionProvider` | 696 MB |
 | Final transcript | `openai-whisper-tiny-generic-cpu:4` | `CPUExecutionProvider` | 131 MB |
 | Summary | `qwen3-0.6b-generic-gpu:2` | `WebGPUExecutionProvider` | 529 MB |
-| Vision + side chat target | `qwen3.5-0.8b-generic-gpu:2` | GPU / `WebGPUExecutionProvider` | Runtime catalog/task/modality validation required |
+| Vision + image chat target | `qwen3.5-0.8b-generic-cpu:3` | CPU / `CPUExecutionProvider` | Runtime catalog/task/modality validation required |
+| Text side chat | Reuses `qwen3-0.6b-generic-gpu:2` summary slot | Existing WebGPU provider | No second manager/model |
 
 SDK: `foundry-local-sdk@2.2.1`
 
@@ -27,9 +28,9 @@ Runtime log evidence:
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 76 files checked |
+| `npm run lint` | Pass; 74 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 22 files, 243 tests |
+| `npm test` | Pass; 21 files, 242 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=moderate` | Pass against the live advisory service; 0 vulnerabilities |
 
@@ -100,8 +101,11 @@ Unit coverage includes:
 - bounded serialized assistant queue, active/queued cancellation, owner revocation, Reset, mode
   changes, and stale generations;
 - exact Foundry Local 2.2.1 text/image request parts, runtime catalog/task/modality/device/EP
-  validation, per-turn session disposal, request cancellation, owned-model-only unload, preloaded
-  model preservation, endpoint guard, and optional-manager isolation;
+  validation, per-turn session disposal, request cancellation, CPU vision-slot-only unload,
+  summary-slot reuse, core model preservation, one manager creation, and the shared endpoint guard;
+- concurrent Nemotron chunk acceptance while text chat runs, Whisper completion during assistant
+  drain, summary-model identity for text chat, CPU vision identity for image requests, and immediate
+  Reset snapshots with no stale active request while cleanup settles once;
 - safe plain-text display, inert markup, response bounds, required structured image note, raw
   assistant trace, accessible tabs/status/keyboard controls, and Electron isolation assertions.
 
@@ -245,7 +249,7 @@ non-color status text while the transcript and summary remain readable.
 ## Mandatory target-Windows multimodal gates
 
 These were added and typechecked in the cloud session but **not executed there**. Linux cloud
-validation must not be reported as real Windows VLM evidence.
+validation must not be reported as real Windows CPU VLM evidence.
 
 ```powershell
 npm run test:vision-integration
@@ -255,13 +259,18 @@ npm run test:concurrent-assistant-chain-integration
 
 Required success markers:
 
-- `VISION_INTEGRATION_OK`: exact configured model/EP, real `ode-slide.png` bytes, structured visible
-  text/relation/uncertainty note, and ODE/equation recognition.
+- `VISION_INTEGRATION_OK`: exact
+  `qwen3.5-0.8b-generic-cpu:3` / `CPUExecutionProvider`, real `ode-slide.png` bytes, structured
+  visible text/relation/uncertainty note, and ODE/equation recognition.
 - `ASSISTANT_CHAT_INTEGRATION_OK`: exact local model and a substantive one-sentence answer to
-  `What is ODE? Answer in one sentence.`
+  `What is ODE? Answer in one sentence.`, using the existing summary slot.
 - `CONCURRENT_ASSISTANT_CHAIN_OK`: Nemotron partials continue while chat is submitted, Whisper
-  remains authoritative, Qwen receives the exact Whisper final, chat returns independently, and
-  owned temporary WAV residue remains zero.
+  remains authoritative, Qwen receives the exact Whisper final, only one manager exists, chat
+  returns independently, and owned temporary WAV residue remains zero.
+
+The earlier collision-induced `Device is lost` run is not evidence. An isolated Windows WebGPU
+vision run also lost the device, so the GPU vision catalog variant is unvalidated and optional only
+through an exact environment override. No silent fallback is permitted.
 
 ## Local inference boundary
 
@@ -284,7 +293,8 @@ still initialize.
 
 ## Manual release gates
 
-- [ ] Disconnect the PC from network after all three exact models and WebGPU EP are cached.
+- [ ] Disconnect the PC from network after the three core models, CPU vision model, and summary
+      WebGPU EP are cached.
 - [ ] Launch the built app.
 - [ ] Record the ODE segment with live captions.
 - [ ] Stop and confirm Whisper final.
@@ -314,14 +324,15 @@ cloud endpoint**, not as a completed physically offline rehearsal.
   source.
 - No transcript/summary export or persistence.
 - Multimodal Windows runtime evidence remains unresolved until all three mandatory commands above
-  pass on the target PC with the exact cached model and WebGPU provider.
+  pass on the target PC with the exact cached CPU vision model/provider.
 
 ## Rollback
 
 - Stable `main` remains the rollback branch; this work must be deployed only from
   `feature/multimodal-classroom-chat`.
 - To disable optional behavior without changing builds, do not open the right-side image/chat
-  panel. The VLM manager/model is lazy and the core chain remains usable.
+  panel. Text chat reuses the summary slot and the CPU vision slot is lazy; the core chain remains
+  usable.
 - To roll back the feature build, redeploy the previously validated `main` SHA
   `41e9d365dc6b4a20a17c511b6ea7ccc5ee1f8a38` or a newer approved main SHA.
 - A failed optional cleanup is not a reason to discard a valid Whisper transcript. Close/restart

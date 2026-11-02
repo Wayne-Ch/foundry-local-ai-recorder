@@ -578,6 +578,7 @@ async function prepareModels(): Promise<void> {
   } finally {
     busy = false;
     render(snapshot);
+    renderAssistant();
   }
 }
 
@@ -1236,10 +1237,12 @@ function renderAssistant(): void {
     );
   }
 
-  if (state.cleanupPending) {
+  if (!prepared && !state.cleanupPending && state.activeOperation === null) {
+    assistantStatusMessage = "Prepare local models to enable local chat and image analysis.";
+    assistantStatusTone = "neutral";
+  } else if (state.cleanupPending) {
     assistantStatusMessage =
-      state.cleanupDetail ??
-      "Optional assistant cleanup is draining; the core recorder remains available.";
+      state.cleanupDetail ?? "Optional assistant cleanup is draining; the core recorder remains available.";
     assistantStatusTone = "warning";
   } else if (state.activeOperation !== null) {
     assistantStatusMessage =
@@ -1258,6 +1261,9 @@ function renderAssistant(): void {
     } else if (latest?.phase === "image-analysis-raw" && analysis !== null) {
       assistantStatusMessage = `Image analysis v${analysis.version} is ready.`;
       assistantStatusTone = "success";
+    } else if (assistantStatusMessage.startsWith("Prepare local models")) {
+      assistantStatusMessage = "Optional assistant lane is ready.";
+      assistantStatusTone = "neutral";
     }
   }
   if (state.queuedRequests > 0) {
@@ -1382,6 +1388,7 @@ function updateControls(): void {
   elements.assistantMode.disabled = !assistantReady || assistantCleanupPending || assistantUiPending;
   elements.assistantAsk.disabled =
     !assistantReady ||
+    !prepared ||
     assistantCleanupPending ||
     assistantUiPending ||
     assistantQueueFull ||
@@ -1399,15 +1406,13 @@ function updateControls(): void {
   elements.imageSelect.disabled = !assistantReady || assistantCleanupPending || assistantUiPending;
   elements.imageAnalyze.disabled =
     !assistantReady ||
+    !prepared ||
     assistantCleanupPending ||
     assistantUiPending ||
     assistantQueueFull ||
     assistantSnapshot?.image === null;
   elements.imageRemove.disabled =
-    !assistantReady ||
-    assistantCleanupPending ||
-    assistantUiPending ||
-    assistantSnapshot?.image === null;
+    !assistantReady || assistantCleanupPending || assistantUiPending || assistantSnapshot?.image === null;
   elements.reset.disabled = busy;
   elements.reset.textContent = resetting
     ? "Cancelling / resetting…"
