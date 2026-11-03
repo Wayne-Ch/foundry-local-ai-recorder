@@ -40,11 +40,9 @@ describe("assistant prompts", () => {
     expect(prompt).toContain("Visible text/objects:");
     expect(prompt).toContain("Relation to lesson:");
     expect(prompt).toContain("Uncertainty:");
-    expect(prompt).toContain("Put a newline after line 1 and line 2");
-    expect(prompt).toContain("Never place two headings on the same line");
-    expect(prompt).toContain("at most 3 concise observations");
+    expect(prompt).toContain("1 to 3 concise image-grounded observations");
     expect(prompt).toContain("Do not repeat any phrase");
-    expect(prompt).toContain("Stop after line 3");
+    expect(prompt).toContain("Stop immediately after the Uncertainty section");
   });
 
   it("uses the exact bounded topic for the problematic transcript while fingerprinting its full text", () => {
@@ -81,12 +79,12 @@ describe("assistant prompts", () => {
         "Use only visible image evidence and the bounded lesson topic below.",
         `LESSON TOPIC (first complete sentences, maximum ${IMAGE_LESSON_TOPIC_MAX_CHARS} characters)`,
         BOUNDED_PROBLEMATIC_TOPIC,
-        "Return exactly three lines and no other text. Put a newline after line 1 and line 2. Never place two headings on the same line.",
-        "Line 1 must begin exactly: Visible text/objects:",
-        "Line 2 must begin exactly: Relation to lesson:",
-        "Line 3 must begin exactly: Uncertainty:",
-        "Use at most 3 concise observations, at most 2 lesson connections, and one uncertainty statement.",
-        "Do not repeat any phrase. Stop after line 3.",
+        "Return exactly these three ordered plain-text sections and no other text:",
+        "Visible text/objects: 1 to 3 concise image-grounded observations.",
+        "Relation to lesson: 1 to 2 concise connections to the lesson topic.",
+        "Uncertainty: 1 concise uncertainty statement, or the words None visible.",
+        "Do not repeat any phrase, sentence, or section.",
+        "Stop immediately after the Uncertainty section.",
       ].join("\n"),
     );
     expect(context.transcript.text).toBe(PROBLEMATIC_TRANSCRIPT);
