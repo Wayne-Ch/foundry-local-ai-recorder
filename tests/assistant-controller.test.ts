@@ -763,12 +763,15 @@ describe("AssistantController", () => {
   });
 
   it("re-analyzes the selected image in Clinic and preserves raw output behind the handoff", async () => {
-    const rawClinicAnswer = "This image alone does not establish a diagnosis or determine a treatment plan.";
+    const rawClinicOutput =
+      "\r\nThis image alone does not establish a diagnosis or determine a treatment plan.\r\n";
+    const formattedClinicAnswer =
+      "This image alone does not establish a diagnosis or determine a treatment plan.";
     const runtime = new FakeRuntime([
       "Visible text/objects: UNSAFE CLASSROOM NOTE\nRelation to lesson: Classroom only\nUncertainty: None",
       "UNSAFE CLASSROOM ANSWER",
       "Visible text/objects: CLINIC X-RAY NOTE\nRelation to lesson: Educational clinical image\nUncertainty: Requires clinician interpretation",
-      rawClinicAnswer,
+      rawClinicOutput,
       "The visible feature is educational context only.",
     ]);
     const controller = new AssistantController({
@@ -828,17 +831,18 @@ describe("AssistantController", () => {
         .chatMessages.find(
           (message) => message.requestId === clinicChat.requestId && message.role === "assistant",
         )?.text,
-    ).toBe(`${rawClinicAnswer}\n\n${CLINICIAN_HANDOFF_SENTENCE}`);
+    ).toBe(`${formattedClinicAnswer}\n\n${CLINICIAN_HANDOFF_SENTENCE}`);
     expect(
       controller
         .snapshot()
         .trace.find((entry) => entry.phase === "chat-raw" && entry.requestId === clinicChat.requestId)
         ?.detail,
-    ).toBe(rawClinicAnswer);
+    ).toBe(rawClinicOutput);
 
     controller.startChat("session-1", "What visible feature is being explained?", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(5));
-    expect(runtime.inputs[4]?.prompt).toContain(rawClinicAnswer);
+    expect(runtime.inputs[4]?.prompt).toContain(formattedClinicAnswer);
+    expect(runtime.inputs[4]?.prompt).not.toContain("\r");
     expect(runtime.inputs[4]?.prompt).not.toContain(CLINICIAN_HANDOFF_SENTENCE);
   });
 

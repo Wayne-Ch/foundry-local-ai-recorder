@@ -78,11 +78,11 @@ Classroom/Clinic safety is supplied once as the system message. The image turn u
 sampling, `earlyStopping: true`, and a 180-token output reserve; its user prompt requires exactly
 three ordered, bounded sections, rejects repetition, and stops immediately after Uncertainty.
 Parsing remains fail-closed with the existing section and size bounds. For Clinic questions that
-use bounded diagnosis, urgency/emergency, treatment, medication/prescription, or direct
-`what should the patient do/start/take` wording, the application appends one fixed clinician
-handoff to the visible answer when it is absent. The addition is not written into later model chat
-history, and the exact local-model output remains unchanged in the `chat-raw` Developer Trace
-entry.
+use bounded diagnosis, urgency/emergency, treatment, medication/prescription, or direct patient
+`do/start/take` decision wording, the application normalizes any equivalent model-supplied
+clinician referral and appends one fixed clinician handoff to the visible answer. The addition is
+not written into later model chat history, and the exact local-model output remains unchanged in
+the `chat-raw` Developer Trace entry.
 
 The renderer's existing PNG thumbnail is a UI-only safety boundary. The reproduced repetition used
 the 13.6 KiB, 1280×720 `ode-slide.png`, so this mitigation intentionally does not add image
@@ -196,6 +196,7 @@ included. The separate Clinic playtest fixture is the CC0, metadata-free
   image explicitly unanalyzed until it is processed again in the new mode. Bounded medical-decision
   questions in Clinic mode visibly end with
   `Diagnosis, urgency, and treatment decisions must be made by the treating clinician.`
+  Equivalent model-supplied clinician referrals are normalized to that single final sentence.
 - Developer Trace keeps the exact raw Qwen response and records whether display formatting was
   applied. It also keeps exact raw optional-assistant output before the Clinic handoff is added.
   The editable Summary textarea receives the formatted text, and user edits continue from that

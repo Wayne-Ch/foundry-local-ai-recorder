@@ -20,6 +20,10 @@ describe("Clinic answer safety", () => {
     "What should the patient do?",
     "What should this patient start?",
     "What should a patient take?",
+    "Should the patient start antibiotics?",
+    "What should they do next?",
+    "Should I take these pills?",
+    "The patient needs to start supportive care.",
   ])("detects bounded medical-decision wording: %s", (question) => {
     expect(clinicQuestionNeedsClinicianHandoff(question)).toBe(true);
   });
@@ -47,6 +51,18 @@ describe("Clinic answer safety", () => {
 
     expect(applyClinicAnswerSafety("clinic", "What treatment should they start?", answer)).toBe(answer);
     expect(answer.match(new RegExp(CLINICIAN_HANDOFF_SENTENCE, "gu"))).toHaveLength(1);
+  });
+
+  it("normalizes an equivalent clinician referral to one canonical final handoff", () => {
+    const answer =
+      "Visible structures can be described for education. Please consult the treating clinician for diagnosis and treatment decisions.";
+    const visible = applyClinicAnswerSafety("clinic", "Should the patient start antibiotics?", answer);
+
+    expect(visible).toBe(
+      `Visible structures can be described for education.\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
+    );
+    expect(visible).not.toContain("Please consult");
+    expect(visible.split(CLINICIAN_HANDOFF_SENTENCE)).toHaveLength(2);
   });
 
   it("moves a model-supplied handoff to the end without duplicating it", () => {

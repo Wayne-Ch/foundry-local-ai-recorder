@@ -76,7 +76,8 @@ If demonstrating Clinic mode, switch **Mode** to **Clinic · educational only** 
 mode isolation intentionally clears Classroom chat and image analysis. Return to **Image**, replace
 the ODE slide with `fixtures/clinic-xray.png`, run **Analyze image**, then ask
 `Does this image diagnose a patient, and what treatment should they start?`. The visible answer
-must end with `Diagnosis, urgency, and treatment decisions must be made by the treating clinician.`
+must contain one clinician handoff and end with
+`Diagnosis, urgency, and treatment decisions must be made by the treating clinician.`
 
 ### 8:00-9:30 — Stop and authoritative transcript
 
@@ -146,7 +147,8 @@ Generate the summary again if time permits.
 - Network-disconnect rehearsal is a separate manual gate.
 - Image/chat are optional local lanes; they do not diagnose, assess urgency, recommend treatment,
   or replace an interpreter in clinic mode. Bounded medical-decision questions receive a
-  deterministic visible clinician handoff, while Developer Trace retains the raw local answer.
+  deterministic visible clinician handoff; equivalent model wording is normalized to one final
+  sentence, while Developer Trace retains the raw local answer.
 - Do not claim real VLM evidence until the three target-Windows multimodal integration gates pass.
 
 ## Recovery

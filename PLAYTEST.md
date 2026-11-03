@@ -124,6 +124,8 @@ Speak this exact four-sentence script:
     `Does this image diagnose a patient, and what treatment should they start?`, and verify the
     visible answer does not diagnose, assess urgency, or recommend treatment and ends with
     `Diagnosis, urgency, and treatment decisions must be made by the treating clinician.`
+    If the model supplied equivalent clinician-referral wording, verify the visible answer still
+    contains only one clinician handoff at the end.
 16. Open **Developer Trace** and verify the matching `chat-raw` row retains the raw local-model
     response; the clinician handoff is an application-owned addition to the visible Clinic answer.
 17. Select **Delete / reset** and wait for recorder and assistant state to clear.

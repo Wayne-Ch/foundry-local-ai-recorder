@@ -6,9 +6,18 @@ export const CLINICIAN_HANDOFF_SENTENCE =
 
 const CLINICAL_DECISION_TERM =
   /\b(?:diagnos(?:e|ed|es|ing|is)|urgent|urgency|emergenc(?:y|ies)|treat(?:ment|ments|ed|ing|s)?|medication(?:s)?|medicine(?:s)?|prescription(?:s)?|prescrib(?:e|ed|es|ing))\b/iu;
-const DIRECT_PATIENT_DECISION = /\bwhat\s+should\s+(?:(?:the|this|a)\s+)?patient\s+(?:do|start|take)\b/iu;
+const DIRECT_PATIENT_DECISION =
+  /\b(?:(?:what\s+)?should\s+(?:(?:(?:the|this|a)\s+)?patient|they|he|she|i)\s+(?:do|start|take)|(?:(?:(?:the|this|a)\s+)?patient|they|he|she|i)\s+(?:must|need(?:s)?\s+to)\s+(?:do|start|take))\b/iu;
 const EXISTING_CLINICIAN_HANDOFF =
-  /\bdiagnosis,\s+urgency,\s+and\s+treatment\s+decisions\s+must\s+be\s+made\s+by\s+the\s+treating\s+clinician[.!?]?/giu;
+  /\bdiagnosis,\s+urgency,\s+and\s+treatment\s+decisions\s+must\s+be\s+made\s+by\s+the\s+treating\s+clinician[.!?]?/iu;
+const CLINICIAN_REFERENCE =
+  /\b(?:(?:treating|qualified)\s+)?(?:clinician|doctor|physician)s?\b|\b(?:health(?:care|\s+care)|medical)\s+professionals?\b|\bcare\s+team\b/iu;
+const CLINICAL_DECISION_REFERENCE =
+  /\b(?:diagnos(?:e|ed|es|ing|is|tic)|urgent|urgency|emergenc(?:y|ies)|treat(?:ment|ments|ed|ing|s)?|medication(?:s)?|medicine(?:s)?|prescription(?:s)?|prescrib(?:e|ed|es|ing)|(?:clinical|medical)\s+(?:decision|decisions|judgment|judgments))\b/iu;
+const CLINICIAN_HANDOFF_DIRECTION =
+  /\b(?:must|should|need(?:s)?\s+to|has\s+to|have\s+to|can\s+only|consult|ask|contact|see|speak\s+with|discuss\s+with|defer(?:red|s|ring)?\s+to|decid(?:e|ed|es|ing)|determin(?:e|ed|es|ing)|make|made|handle(?:d|s|ing)?|guide(?:d|s|ing)?|belong(?:s|ed|ing)?|left\s+to)\b|\b(?:is|are)\s+(?:a\s+matter\s+)?for\b/iu;
+const DIRECT_CLINICIAN_REFERRAL =
+  /\b(?:consult|ask|contact|see|speak\s+with|discuss\s+with|defer(?:red|s|ring)?\s+to)\b/iu;
 
 export function clinicQuestionNeedsClinicianHandoff(question: string): boolean {
   return CLINICAL_DECISION_TERM.test(question) || DIRECT_PATIENT_DECISION.test(question);
@@ -19,8 +28,12 @@ export function applyClinicAnswerSafety(mode: AssistantMode, question: string, a
     return answer;
   }
   const answerWithoutExistingHandoff = answer
-    .replace(EXISTING_CLINICIAN_HANDOFF, "")
+    .replace(/[^.!?\n]+(?:[.!?]+(?=\s|$)|(?=\n)|$)/gu, (sentence) =>
+      isEquivalentClinicianHandoff(sentence) ? "" : sentence,
+    )
     .replaceAll(/[ \t]{2,}/gu, " ")
+    .replaceAll(/[ \t]+\n/gu, "\n")
+    .replaceAll(/\n[ \t]+/gu, "\n")
     .replaceAll(/\n{3,}/gu, "\n\n")
     .trim();
   if (!answerWithoutExistingHandoff) {
@@ -33,4 +46,17 @@ export function applyClinicAnswerSafety(mode: AssistantMode, question: string, a
       ? answerWithoutExistingHandoff
       : `${answerWithoutExistingHandoff.slice(0, maxAnswerChars - 3).trimEnd()}...`;
   return `${boundedAnswer}${suffix}`;
+}
+
+function isEquivalentClinicianHandoff(sentence: string): boolean {
+  if (EXISTING_CLINICIAN_HANDOFF.test(sentence)) {
+    return true;
+  }
+  if (!CLINICIAN_REFERENCE.test(sentence)) {
+    return false;
+  }
+  return (
+    DIRECT_CLINICIAN_REFERRAL.test(sentence) ||
+    (CLINICAL_DECISION_REFERENCE.test(sentence) && CLINICIAN_HANDOFF_DIRECTION.test(sentence))
+  );
 }
