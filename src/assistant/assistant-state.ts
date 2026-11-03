@@ -25,6 +25,11 @@ export interface ImageSelectionInput {
   readonly thumbnailDataUrl: string;
 }
 
+interface StoredAssistantChatMessage {
+  readonly visible: AssistantChatMessage;
+  readonly historyText: string;
+}
+
 export class AssistantMemoryState {
   #generation = 0;
   #chatGeneration = 0;
@@ -33,7 +38,7 @@ export class AssistantMemoryState {
   #analysisVersion = 0;
   #image: AssistantLaneSnapshot["image"] = null;
   #imageAnalysis: ImageAnalysisSnapshot | null = null;
-  readonly #chatMessages: AssistantChatMessage[] = [];
+  readonly #chatMessages: StoredAssistantChatMessage[] = [];
   readonly #trace: AssistantTraceEntry[] = [];
 
   snapshot(
@@ -47,7 +52,7 @@ export class AssistantMemoryState {
       mode: this.#mode,
       image: this.#image,
       imageAnalysis: this.#imageAnalysis,
-      chatMessages: [...this.#chatMessages],
+      chatMessages: this.#chatMessages.map((message) => message.visible),
       activeRequestId: queue?.activeRequestId ?? null,
       activeOperation: queue?.activeOperation ?? null,
       queuedRequests: queue?.queuedRequests ?? 0,
@@ -176,26 +181,33 @@ export class AssistantMemoryState {
       contextLabels: durableChatMessageContext(token.context),
       createdAt: new Date().toISOString(),
     };
-    this.#appendChat(message);
+    this.#appendChat({ visible: message, historyText: message.text });
     return message;
   }
 
-  applyChatAnswer(token: AssistantOperationToken, answer: string): boolean {
+  applyChatAnswer(
+    token: AssistantOperationToken,
+    visibleAnswer: string,
+    historyAnswer: string = visibleAnswer,
+  ): boolean {
     if (!this.isChatOperationCurrent(token)) {
       return false;
     }
     this.#appendChat({
-      id: randomUUID(),
-      requestId: token.requestId,
-      role: "assistant",
-      text: answer,
-      mode: token.mode,
-      contextFingerprint: token.contextFingerprint,
-      dependsOnImage: token.dependsOnImage,
-      imageId: token.imageId,
-      imageVersion: token.imageVersion,
-      contextLabels: durableChatMessageContext(token.context),
-      createdAt: new Date().toISOString(),
+      visible: {
+        id: randomUUID(),
+        requestId: token.requestId,
+        role: "assistant",
+        text: visibleAnswer,
+        mode: token.mode,
+        contextFingerprint: token.contextFingerprint,
+        dependsOnImage: token.dependsOnImage,
+        imageId: token.imageId,
+        imageVersion: token.imageVersion,
+        contextLabels: durableChatMessageContext(token.context),
+        createdAt: new Date().toISOString(),
+      },
+      historyText: historyAnswer,
     });
     return true;
   }
@@ -265,14 +277,16 @@ export class AssistantMemoryState {
   }
 
   chatHistoryFor(token: AssistantOperationToken): readonly AssistantChatMessage[] {
-    return this.#chatMessages.filter(
-      (message) =>
-        message.mode === token.mode &&
-        message.contextFingerprint === token.contextFingerprint &&
-        message.dependsOnImage === token.dependsOnImage &&
-        message.imageId === token.imageId &&
-        message.imageVersion === token.imageVersion,
-    );
+    return this.#chatMessages
+      .filter(
+        (message) =>
+          message.visible.mode === token.mode &&
+          message.visible.contextFingerprint === token.contextFingerprint &&
+          message.visible.dependsOnImage === token.dependsOnImage &&
+          message.visible.imageId === token.imageId &&
+          message.visible.imageVersion === token.imageVersion,
+      )
+      .map((message) => ({ ...message.visible, text: message.historyText }));
   }
 
   isChatOperationCurrent(token: AssistantOperationToken): boolean {
@@ -312,7 +326,7 @@ export class AssistantMemoryState {
     return generation === this.#generation && imageVersion === this.#imageVersion;
   }
 
-  #appendChat(message: AssistantChatMessage): void {
+  #appendChat(message: StoredAssistantChatMessage): void {
     this.#chatMessages.push(message);
     if (this.#chatMessages.length > CHAT_LIMIT) {
       this.#chatMessages.splice(0, this.#chatMessages.length - CHAT_LIMIT);

@@ -5,6 +5,7 @@ import type { RequestOptions } from "foundry-local-sdk";
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { assistantSystemPrompt } from "../src/assistant/assistant-prompts";
+import { CLINICIAN_HANDOFF_SENTENCE } from "../src/assistant/clinic-safety";
 import type {
   AssistantImageByteLifecycle,
   AssistantImageBytePurpose,
@@ -761,11 +762,14 @@ describe("AssistantController", () => {
     );
   });
 
-  it("clears unsafe classroom output on Clinic switch and requires image reanalysis", async () => {
+  it("re-analyzes the selected image in Clinic and preserves raw output behind the handoff", async () => {
+    const rawClinicAnswer = "This image alone does not establish a diagnosis or determine a treatment plan.";
     const runtime = new FakeRuntime([
       "Visible text/objects: UNSAFE CLASSROOM NOTE\nRelation to lesson: Classroom only\nUncertainty: None",
       "UNSAFE CLASSROOM ANSWER",
-      "Clinic-safe educational answer.",
+      "Visible text/objects: CLINIC X-RAY NOTE\nRelation to lesson: Educational clinical image\nUncertainty: Requires clinician interpretation",
+      rawClinicAnswer,
+      "The visible feature is educational context only.",
     ]);
     const controller = new AssistantController({
       getTranscript: () => snapshot({ finalText: "shared lesson", version: 1 }),
@@ -790,10 +794,100 @@ describe("AssistantController", () => {
     expect(JSON.stringify(clinic.trace)).not.toContain("UNSAFE CLASSROOM");
     expect(clinic.trace.at(-1)?.phase).toBe("mode-isolation");
 
-    controller.startChat("session-1", "Explain the term.", () => {});
-    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(3));
-    expect(runtime.inputs[2]?.systemPrompt).toContain("must not diagnose");
-    expect(runtime.inputs[2]?.prompt).not.toContain("UNSAFE CLASSROOM");
+    controller.selectImage(
+      { ...image([4, 5, 6]), basename: "clinic-xray.png" },
+      "data:image/png;base64,clinic",
+    );
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() =>
+      expect(controller.snapshot().imageAnalysis?.visibleTextAndObjects).toBe("CLINIC X-RAY NOTE"),
+    );
+    expect(controller.snapshot().image?.basename).toBe("clinic-xray.png");
+    expect(controller.snapshot().imageAnalysis?.mode).toBe("clinic");
+
+    const question = "Does this image diagnose a patient, and what treatment should they start?";
+    const clinicChat = controller.startChat("session-1", question, () => {});
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === clinicChat.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+
+    expect(runtime.inputs[3]?.systemPrompt).toContain("must not diagnose");
+    expect(runtime.inputs[3]?.prompt).toContain(question);
+    expect(runtime.inputs[3]?.prompt).toContain("CLINIC X-RAY NOTE");
+    expect(runtime.inputs[3]?.prompt).not.toContain("UNSAFE CLASSROOM");
+    expect(runtime.inputs[3]?.images?.[0]).toMatchObject({ kind: "data", format: "png" });
+    expect(
+      controller
+        .snapshot()
+        .chatMessages.find(
+          (message) => message.requestId === clinicChat.requestId && message.role === "assistant",
+        )?.text,
+    ).toBe(`${rawClinicAnswer}\n\n${CLINICIAN_HANDOFF_SENTENCE}`);
+    expect(
+      controller
+        .snapshot()
+        .trace.find((entry) => entry.phase === "chat-raw" && entry.requestId === clinicChat.requestId)
+        ?.detail,
+    ).toBe(rawClinicAnswer);
+
+    controller.startChat("session-1", "What visible feature is being explained?", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(5));
+    expect(runtime.inputs[4]?.prompt).toContain(rawClinicAnswer);
+    expect(runtime.inputs[4]?.prompt).not.toContain(CLINICIAN_HANDOFF_SENTENCE);
+  });
+
+  it("does not duplicate a model handoff or mutate the same decision answer in Classroom", async () => {
+    const classroomAnswer = "The model returned this classroom answer unchanged.";
+    const clinicAnswer = `This is educational context only.\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
+    const runtime = new FakeRuntime([classroomAnswer, clinicAnswer]);
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({}),
+      runtime,
+    });
+    const question = "What treatment should the patient start?";
+
+    const classroomChat = controller.startChat("session-1", question, () => {});
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === classroomChat.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+    expect(
+      controller
+        .snapshot()
+        .chatMessages.find(
+          (message) => message.requestId === classroomChat.requestId && message.role === "assistant",
+        )?.text,
+    ).toBe(classroomAnswer);
+
+    controller.setMode("clinic");
+    const clinicChat = controller.startChat("session-1", question, () => {});
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === clinicChat.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+    const visibleClinicAnswer = controller
+      .snapshot()
+      .chatMessages.find(
+        (message) => message.requestId === clinicChat.requestId && message.role === "assistant",
+      )?.text;
+    expect(visibleClinicAnswer).toBe(clinicAnswer);
+    expect(visibleClinicAnswer?.split(CLINICIAN_HANDOFF_SENTENCE)).toHaveLength(2);
   });
 
   it("parses inline structured image notes", () => {

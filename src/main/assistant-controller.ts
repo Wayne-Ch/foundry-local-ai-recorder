@@ -11,6 +11,7 @@ import type {
   AssistantRequestContext,
   ImageAnalysisNote,
 } from "../assistant/assistant-types";
+import { applyClinicAnswerSafety } from "../assistant/clinic-safety";
 import {
   type AssistantImageByteLifecycle,
   secureAssistantImageByteLifecycle,
@@ -298,8 +299,9 @@ export class AssistantController {
               }),
         };
         const result = await this.#runTurn(input, signal, CHAT_REQUEST_OPTIONS);
-        const answer = formatAssistantPlainText(result.text);
-        if (!signal.aborted && this.#state.applyChatAnswer(operationToken, answer)) {
+        const modelAnswer = formatAssistantPlainText(result.text);
+        const answer = applyClinicAnswerSafety(operationToken.mode, normalizedQuestion, modelAnswer);
+        if (!signal.aborted && this.#state.applyChatAnswer(operationToken, answer, modelAnswer)) {
           this.#state.trace("chat-raw", result.text, "info", operationToken.requestId);
         } else if (this.#state.isGenerationCurrent(operationToken)) {
           this.#state.trace(

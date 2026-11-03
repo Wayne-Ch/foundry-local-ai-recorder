@@ -100,6 +100,23 @@ describe("assistant context and memory", () => {
     ).toEqual([["final transcript v3"], ["final transcript v3"]]);
   });
 
+  it("keeps application-owned display additions out of model chat history", () => {
+    const state = new AssistantMemoryState();
+    const context = buildAssistantContext(transcript({}), null);
+    const token = state.createOperationToken("request-1", "chat", context, {
+      dependsOnImage: false,
+      requiresImageBytes: false,
+    });
+    const modelAnswer = "Raw local answer.";
+    const visibleAnswer = `${modelAnswer}\n\nTreating-clinician handoff.`;
+
+    state.appendUserMessage(token, "Question");
+    expect(state.applyChatAnswer(token, visibleAnswer, modelAnswer)).toBe(true);
+
+    expect(state.snapshot().chatMessages.at(-1)?.text).toBe(visibleAnswer);
+    expect(state.chatHistoryFor(token).at(-1)?.text).toBe(modelAnswer);
+  });
+
   it("rejects stale image analysis after image or transcript context changes", () => {
     const state = new AssistantMemoryState();
     state.selectImage({

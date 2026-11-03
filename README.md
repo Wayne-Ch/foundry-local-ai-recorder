@@ -77,7 +77,12 @@ complete sentence(s) that fit within 160 characters, with a word-safe cap when n
 Classroom/Clinic safety is supplied once as the system message. The image turn uses deterministic
 sampling, `earlyStopping: true`, and a 180-token output reserve; its user prompt requires exactly
 three ordered, bounded sections, rejects repetition, and stops immediately after Uncertainty.
-Parsing remains fail-closed with the existing section and size bounds.
+Parsing remains fail-closed with the existing section and size bounds. For Clinic questions that
+use bounded diagnosis, urgency/emergency, treatment, medication/prescription, or direct
+`what should the patient do/start/take` wording, the application appends one fixed clinician
+handoff to the visible answer when it is absent. The addition is not written into later model chat
+history, and the exact local-model output remains unchanged in the `chat-raw` Developer Trace
+entry.
 
 The renderer's existing PNG thumbnail is a UI-only safety boundary. The reproduced repetition used
 the 13.6 KiB, 1280×720 `ode-slide.png`, so this mitigation intentionally does not add image
@@ -104,7 +109,10 @@ a fresh Windows checkout remains lint-clean even when global `core.autocrlf=true
 The tracked fixtures are ready to use. `fixtures/ode-slide.png` is deterministically generated from
 original repository bitmap code by `scripts/generate-ode-image-fixture.mjs`;
 `fixtures/ode-lesson.wav` is generated from original teaching text by
-`scripts/generate-ode-fixture.ps1`. Normal setup does not regenerate either file.
+`scripts/generate-ode-fixture.ps1`. `fixtures/clinic-xray.png` is a metadata-free CC0 PA chest
+radiograph for the Clinic safety flow; its pinned source, transformation, checksum, and
+de-identification review are in `fixtures/clinic-xray.provenance.md`. Normal setup does not
+regenerate these fixtures.
 
 For local Windows validation, use a genuinely fresh checkout created after `.gitattributes` was
 added. Do not mass-rewrite an existing working tree. Only for a clean, disposable validation
@@ -151,7 +159,8 @@ reproducible artifact to `artifacts\smart-ai-recorder-populated-summary.png`.
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
 Synthesis from original ODE teaching text, and `fixtures/ode-slide.png`, generated from original
 bitmap drawing code in `scripts/generate-ode-image-fixture.mjs`. No copyrighted lecture material is
-included.
+included. The separate Clinic playtest fixture is the CC0, metadata-free
+`fixtures/clinic-xray.png`; it is not diagnostic reference data.
 
 ## Product behavior
 
@@ -177,17 +186,20 @@ included.
 - Chat is memory-only, bounded, serialized, cancellable, and independent from summary generation.
   Suggested prompts include a one-sentence ODE definition, a practical example, and one-sentence
   explanation of the selected image.
-- **Image** accepts a bounded lecture/blackboard/diagram/slide screenshot. Analysis returns three
-  concise fields: visible text/objects, relation to lesson context, and uncertainty. A saved
-  transcript correction immediately marks prior analysis unavailable and queues re-analysis; stale
-  image/context results are rejected.
+- **Image** accepts a bounded lecture/blackboard/diagram/slide screenshot or the pinned Clinic
+  X-ray fixture. Analysis returns three concise fields: visible text/objects, relation to lesson
+  context, and uncertainty. A saved transcript correction immediately marks prior analysis
+  unavailable and queues re-analysis; stale image/context results are rejected.
 - Classroom mode explains lesson material. Clinic mode is educational and clinician-led only: no
   diagnosis, urgency assessment, treatment recommendation, or interpreter replacement.
   Switching modes cancels every assistant request, clears chat/analysis, and leaves any selected
-  image explicitly unanalyzed until it is processed again in the new mode.
+  image explicitly unanalyzed until it is processed again in the new mode. Bounded medical-decision
+  questions in Clinic mode visibly end with
+  `Diagnosis, urgency, and treatment decisions must be made by the treating clinician.`
 - Developer Trace keeps the exact raw Qwen response and records whether display formatting was
-  applied. The editable Summary textarea receives the formatted text, and user edits continue from
-  that formatted value.
+  applied. It also keeps exact raw optional-assistant output before the Clinic handoff is added.
+  The editable Summary textarea receives the formatted text, and user edits continue from that
+  formatted value.
 - **Delete / reset** cancels and discards an active recording without calling Nemotron finish,
   Whisper, or Qwen; it then removes owned temporary audio and clears transcript, summary, timing,
   assistant chat/image bytes/thumbnail/analysis, timing, and trace state.

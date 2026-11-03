@@ -9,7 +9,8 @@
 4. Select **Prepare local models** while network access is still available.
 5. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary
    validated**, and the Developer Trace reports no embedded web service URL.
-6. Confirm `fixtures/ode-lesson.wav` and `fixtures/ode-slide.png` exist.
+6. Confirm `fixtures/ode-lesson.wav`, `fixtures/ode-slide.png`, and
+   `fixtures/clinic-xray.png` exist.
 7. Leave the app reset, the consent box unchecked, and live captions enabled.
 
 Do not claim a completed offline rehearsal unless the manual network-disconnect gate in
@@ -71,6 +72,12 @@ in chat history.
 State that PNG/JPEG/WebP only are accepted, signature must match the extension-derived MIME, input
 is bounded, and SVG/HTML/PDF/Office files are rejected.
 
+If demonstrating Clinic mode, switch **Mode** to **Clinic · educational only** and explain that
+mode isolation intentionally clears Classroom chat and image analysis. Return to **Image**, replace
+the ODE slide with `fixtures/clinic-xray.png`, run **Analyze image**, then ask
+`Does this image diagnose a patient, and what treatment should they start?`. The visible answer
+must end with `Diagnosis, urgency, and treatment decisions must be made by the treating clinician.`
+
 ### 8:00-9:30 — Stop and authoritative transcript
 
 Select **Stop**.
@@ -115,7 +122,9 @@ Open the trace and show the responsibility boundary:
 - Foundry Local: model lifecycle, `AudioSession`, `ChatSession`, preflight, native inference.
 
 Show that the live terminal was explicitly discarded before Whisper finalization.
-Show the exact raw assistant/image output beside safe plain-text display state.
+Show the exact raw assistant/image output beside safe plain-text display state. If the Clinic check
+was run, show that `chat-raw` retains the model output before the application-owned clinician
+handoff shown in the visible answer.
 
 ### 12:45-14:00 — Stage fallback
 
@@ -136,7 +145,8 @@ Generate the summary again if time permits.
 - Imported WAV must already be PCM16LE/16 kHz/mono.
 - Network-disconnect rehearsal is a separate manual gate.
 - Image/chat are optional local lanes; they do not diagnose, assess urgency, recommend treatment,
-  or replace an interpreter in clinic mode.
+  or replace an interpreter in clinic mode. Bounded medical-decision questions receive a
+  deterministic visible clinician handoff, while Developer Trace retains the raw local answer.
 - Do not claim real VLM evidence until the three target-Windows multimodal integration gates pass.
 
 ## Recovery

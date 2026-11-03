@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -50,6 +51,25 @@ describe("image security", () => {
       mimeType: "image/png",
       width: 1_280,
       height: 720,
+    });
+  });
+
+  it("validates the pinned CC0 Clinic X-ray fixture", async () => {
+    const bytes = await readFile(path.resolve("fixtures", "clinic-xray.png"));
+
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      "aec7a9ff0a1880c27df73d2cb726485e4ed4905e2e1847113eb7b9baa2cef287",
+    );
+    expect(
+      validateImage({
+        basename: "clinic-xray.png",
+        declaredMimeType: "image/png",
+        bytes,
+      }),
+    ).toMatchObject({
+      mimeType: "image/png",
+      width: 1_929,
+      height: 2_207,
     });
   });
 

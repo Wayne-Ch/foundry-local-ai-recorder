@@ -1,4 +1,4 @@
-const MAX_ASSISTANT_DISPLAY_CHARS = 4_000;
+export const MAX_ASSISTANT_DISPLAY_CHARS = 4_000;
 
 export function formatAssistantPlainText(value: string): string {
   const normalized = [...value.replaceAll("\r\n", "\n").replaceAll("\r", "\n")]
