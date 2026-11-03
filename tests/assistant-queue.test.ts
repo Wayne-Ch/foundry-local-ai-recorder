@@ -15,7 +15,7 @@ describe("assistant operation queue", () => {
     });
 
     expect(queue.pendingOperations).toEqual([
-      { requestId: firstToken.requestId, kind: "chat", status: "queued" },
+      { requestId: firstToken.requestId, kind: "chat", status: "queued", phase: "queued" },
     ]);
     await Promise.resolve();
     const secondToken = token("image_analysis", {
@@ -25,8 +25,18 @@ describe("assistant operation queue", () => {
     const second = queue.enqueue("session-1", secondToken, async () => "second");
 
     expect(queue.pendingOperations).toEqual([
-      { requestId: firstToken.requestId, kind: "chat", status: "active" },
-      { requestId: secondToken.requestId, kind: "image_analysis", status: "queued" },
+      {
+        requestId: firstToken.requestId,
+        kind: "chat",
+        status: "active",
+        phase: "initializing_runtime",
+      },
+      {
+        requestId: secondToken.requestId,
+        kind: "image_analysis",
+        status: "queued",
+        phase: "queued",
+      },
     ]);
     release();
     await expect(first.result).resolves.toBe("first");

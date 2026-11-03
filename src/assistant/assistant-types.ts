@@ -2,10 +2,22 @@ export type AssistantMode = "classroom" | "clinic";
 
 export type AssistantOperationKind = "image_analysis" | "chat";
 
+export type AssistantOperationPhase =
+  | "queued"
+  | "initializing_runtime"
+  | "checking_catalog"
+  | "checking_cache"
+  | "downloading_model"
+  | "checking_provider"
+  | "registering_provider"
+  | "loading_model"
+  | "running_inference";
+
 export interface AssistantPendingOperation {
   readonly requestId: string;
   readonly kind: AssistantOperationKind;
   readonly status: "active" | "queued";
+  readonly phase: AssistantOperationPhase;
 }
 
 export type AssistantContextKind = "live_draft" | "final_transcript" | "summary" | "image_analysis" | "none";

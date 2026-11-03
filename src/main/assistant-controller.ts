@@ -7,6 +7,7 @@ import { AssistantMemoryState } from "../assistant/assistant-state";
 import type {
   AssistantLaneSnapshot,
   AssistantMode,
+  AssistantOperationPhase,
   AssistantOperationToken,
   AssistantRequestContext,
   ImageAnalysisNote,
@@ -49,7 +50,11 @@ export interface AssistantRuntime {
   readonly assistantStatus: AssistantRuntimeStatus;
   runAssistantTurn(
     input: VisionChatTurnInput,
-    options?: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions },
+    options?: {
+      readonly signal?: AbortSignal;
+      readonly requestOptions?: RequestOptions;
+      readonly onProgress?: (phase: AssistantOperationPhase) => void;
+    },
   ): Promise<VisionChatTurnResult>;
   cancelAssistantOperations(reason?: unknown): Promise<void> | null;
   resetAssistant(): Promise<void>;
@@ -210,7 +215,11 @@ export class AssistantController {
       dependsOnImage: true,
       requiresImageBytes: true,
     });
+    this.#state.setOperationPhase(token, "queued");
     const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
+      if (this.#state.setOperationPhase(operationToken, "initializing_runtime")) {
+        onUpdate(this.snapshot());
+      }
       const currentContext = buildImageAnalysisContext(this.#getTranscript());
       this.#assertImageAnalysisOperationCurrent(operationToken, currentContext, signal);
       const ownedImage = this.#copyOperationImage(operationToken);
@@ -229,6 +238,11 @@ export class AssistantController {
           },
           signal,
           IMAGE_REQUEST_OPTIONS,
+          (phase) => {
+            if (this.#state.setOperationPhase(operationToken, phase)) {
+              onUpdate(this.snapshot());
+            }
+          },
         );
         const note = parseImageAnalysisNote(result.text);
         const completionContext = buildImageAnalysisContext(this.#getTranscript());
@@ -278,8 +292,12 @@ export class AssistantController {
       dependsOnImage,
       requiresImageBytes: asksAboutImage,
     });
+    this.#state.setOperationPhase(token, "queued");
     const history = this.#state.chatHistoryFor(token);
     const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
+      if (this.#state.setOperationPhase(operationToken, "initializing_runtime")) {
+        onUpdate(this.snapshot());
+      }
       this.#assertChatOperationCurrent(operationToken, signal);
       const ownedImage = operationToken.requiresImageBytes ? this.#copyOperationImage(operationToken) : null;
       try {
@@ -298,7 +316,11 @@ export class AssistantController {
                 ],
               }),
         };
-        const result = await this.#runTurn(input, signal, CHAT_REQUEST_OPTIONS);
+        const result = await this.#runTurn(input, signal, CHAT_REQUEST_OPTIONS, (phase) => {
+          if (this.#state.setOperationPhase(operationToken, phase)) {
+            onUpdate(this.snapshot());
+          }
+        });
         const modelAnswer = formatAssistantPlainText(result.text);
         const answer = applyClinicAnswerSafety(operationToken.mode, normalizedQuestion, modelAnswer);
         if (!signal.aborted && this.#state.applyChatAnswer(operationToken, answer, modelAnswer)) {
@@ -371,17 +393,20 @@ export class AssistantController {
     input: VisionChatTurnInput,
     signal: AbortSignal,
     requestOptions: RequestOptions,
+    onProgress: (phase: AssistantOperationPhase) => void,
   ): Promise<VisionChatTurnResult> {
-    return this.#runtime.runAssistantTurn(input, { signal, requestOptions });
+    return this.#runtime.runAssistantTurn(input, { signal, requestOptions, onProgress });
   }
 
   #watch(result: Promise<void>, requestId: string, onUpdate: UpdateCallback): void {
     void result.then(
       () => {
+        this.#state.clearOperationPhase(requestId);
         onUpdate(this.snapshot());
         queueMicrotask(() => onUpdate(this.snapshot()));
       },
       (error: unknown) => {
+        this.#state.clearOperationPhase(requestId);
         if (!(error instanceof AssistantCancelledError)) {
           this.#state.trace(
             "assistant-failure",

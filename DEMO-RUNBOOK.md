@@ -7,11 +7,14 @@
    `VALIDATION.md`.
 3. Start with `npm run start:built`.
 4. Select **Prepare local models** while network access is still available.
-5. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary
+5. Confirm the button/card detail visibly advances through runtime initialization, endpoint
+   validation, catalog/cache lookup, provider registration, and exact model load. A static wait is
+   a failed rehearsal.
+6. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary
    validated**, and the Developer Trace reports no embedded web service URL.
-6. Confirm `fixtures/ode-lesson.wav`, `fixtures/ode-slide.png`, and
+7. Confirm `fixtures/ode-lesson.wav`, `fixtures/ode-slide.png`, and
    `fixtures/clinic-xray.png` exist.
-7. Leave the app reset, the consent box unchecked, and live captions enabled.
+8. Leave the app reset, the consent box unchecked, and live captions enabled.
 
 Do not claim a completed offline rehearsal unless the manual network-disconnect gate in
 `VALIDATION.md` has been performed for this exact build and cache.
@@ -48,6 +51,7 @@ Select **Start** and say this original segment at a natural pace:
 
 While speaking:
 
+- point out the explicit first-caption waiting state before Nemotron emits its first hypothesis;
 - point to the changing **Live draft — Nemotron** text;
 - point to first-caption timing;
 - state that each partial replaces the prior hypothesis;
@@ -58,7 +62,8 @@ Open **Ask AI** without stopping and select the chip:
 > What is ODE? Answer in one sentence.
 
 Point out that recording and live captions continue while the separate local chat request runs. The
-request-bound Local AI row shows **Thinking locally…** (or **Waiting locally…** while queued), and
+request-bound Local AI row distinguishes **Waiting locally…**, assistant model/provider loading,
+and active **Thinking locally…**, and
 the chat context label must say **live draft snapshot (may change)**; the actual snapshot is not
 stored in chat history. If time permits, submit
 `Render this decay equation: $y(t) = y_0 e^{-2t}$.` and show that the chat renders the subscript and
@@ -70,7 +75,8 @@ exponent without literal delimiters or braces.
 2. Choose `fixtures/ode-slide.png`.
 3. Show basename, PNG type, byte size, dimensions, and thumbnail—never a filesystem path.
 4. Select **Analyze image**.
-5. Point out **Analyzing…** on the button and **Analysis: Analyzing** in metadata.
+5. Point out queued work, assistant model/provider loading, then **Analyzing…** on the button and
+   **Analysis: Analyzing** in metadata.
 6. Show the three fields: visible text/objects, relation to lesson, and uncertainty.
 
 State that PNG/JPEG/WebP only are accepted, signature must match the extension-derived MIME, input
@@ -87,11 +93,12 @@ must contain one clinician handoff and end with
 
 Select **Stop**.
 
-1. Nemotron finalizes for evidence only.
-2. If Nemotron finalization fails, the warning remains visible but cannot block Whisper.
-3. The same exact bounded PCM capture runs through Whisper.
-4. Point to **Final transcript — Whisper**, its version, and stop-to-final timing.
-5. Explain that Whisper's returned string is preserved exactly, including whitespace, and that the
+1. The control first shows capture finalization, then **Transcribing…** when Whisper owns the wait.
+2. Nemotron finalizes for evidence only.
+3. If Nemotron finalization fails, the warning remains visible but cannot block Whisper.
+4. The same exact bounded PCM capture runs through Whisper.
+5. Point to **Final transcript — Whisper**, its version, and stop-to-final timing.
+6. Explain that Whisper's returned string is preserved exactly, including whitespace, and that the
    application-owned temporary WAV is already deleted.
 
 ### 9:30-10:30 — Correction and image re-analysis
@@ -102,7 +109,8 @@ Point out:
 
 - the transcript version increments;
 - a prior summary would be removed;
-- the selected image is automatically re-analyzed against the corrected final version;
+- the selected image is automatically re-analyzed against the corrected final version and visibly
+  re-enters queued/model-loading/active analysis state;
 - the live draft never appears in this versioned state.
 
 ### 10:30-11:45 — Local summary
@@ -111,6 +119,7 @@ Select **Generate summary**.
 
 Point to:
 
+- **Saving correction…** before **Generating summary…** when unsaved edits exist;
 - the submitted transcript version;
 - transcript-final-to-summary timing;
 - Qwen's exact model/EP card;
@@ -134,11 +143,13 @@ handoff shown in the visible answer.
 ### 12:45-14:00 — Stage fallback
 
 Optionally start a short recording and select **Cancel / reset** to show that cancellation discards
-audio without Whisper or Qwen. Then select **Open stage fallback WAV** and choose
+audio without Whisper or Qwen; the control shows **Cancelling and unloading** until cleanup
+settles. Then select **Open stage fallback WAV** and choose
 `fixtures/ode-lesson.wav`.
 
 The fixture is Windows-synthesized original text. It goes through the same validated PCM and
-Whisper temporary-WAV path; it is not a canned transcript.
+Whisper temporary-WAV path; show select/read/decode/**Transcribing WAV…** progress. It is not a
+canned transcript.
 
 Generate the summary again if time permits.
 
@@ -159,6 +170,7 @@ Generate the summary again if time permits.
 
 | Symptom | Recovery |
 |---|---|
+| `FOUNDRY_NATIVE_RUNTIME_MISSING` | Fully close the app, run `npm ci`, `npm rebuild foundry-local-sdk`, `npm run build`, and `npm run probe:prepare-ui`. Never use `--ignore-scripts`. |
 | Nemotron preparation fails | Continue with the visible Whisper-only fallback. Do not unload or reprepare the working core model. |
 | Microphone denied or absent | Use **Open stage fallback WAV**. |
 | Live captions fail mid-recording | Keep speaking; Stop still sends the complete application-owned capture to Whisper. |

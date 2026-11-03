@@ -4,9 +4,11 @@ import { describe, expect, it } from "vitest";
 
 describe("assistant UI and Electron isolation", () => {
   it("keeps the side panel keyboard-readable and exposes non-color status text", async () => {
-    const [source, progress, styles] = await Promise.all([
+    const [source, progress, controlProgress, recorderProgress, styles] = await Promise.all([
       read("src/renderer/app.ts"),
       read("src/renderer/assistant-progress.ts"),
+      read("src/renderer/assistant-control-progress.ts"),
+      read("src/renderer/recorder-progress.ts"),
       read("src/renderer/styles.css"),
     ]);
 
@@ -20,12 +22,30 @@ describe("assistant UI and Electron isolation", () => {
     expect(source).toContain("document.createTextNode(value)");
     expect(source).toContain("renderAssistantChatRows(state)");
     expect(source).toContain("renderImageAnalyzeButton(elements.imageAnalyze, imageProgress)");
+    expect(source).toContain('setRecorderOperation({ kind: "transcribing" })');
+    expect(source).toContain('setRecorderOperation({ kind: "summary_generating" })');
+    expect(source).toContain('setRecorderOperation({ kind: "resetting" })');
+    expect(source.match(/generation !== operationGeneration/g)?.length).toBeGreaterThanOrEqual(10);
+    expect(source).toContain('elements.reset.disabled = recorderOperation.kind === "resetting"');
+    expect(recorderProgress).toContain('elements.modelRail.setAttribute("aria-busy"');
+    expect(recorderProgress).toContain('elements.liveDraft.setAttribute("aria-busy"');
+    expect(recorderProgress).toContain('elements.finalTranscript.setAttribute("aria-busy"');
+    expect(recorderProgress).toContain('elements.summaryOutput.setAttribute("aria-busy"');
     expect(progress).toContain('"Thinking locally…"');
+    expect(progress).toContain('"Loading the local assistant model…"');
     expect(progress).toContain('"Waiting locally…"');
     expect(progress).toContain('"Analyzing…"');
+    expect(controlProgress).toContain('"Queuing…"');
+    expect(controlProgress).toContain('"Cancelling…"');
+    expect(controlProgress).toContain('"Opening picker…"');
+    expect(controlProgress).toContain('"Queuing analysis…"');
     expect(progress).toContain('row.setAttribute("aria-busy", "true")');
     expect(progress).toContain('value.setAttribute("role", "status")');
     expect(progress).toContain("row.append(role, text, contextLabels(message))");
+    expect(recorderProgress).toContain('"Recording · waiting for caption"');
+    expect(recorderProgress).toContain('"Transcribing with Whisper"');
+    expect(recorderProgress).toContain('"Generating summary"');
+    expect(recorderProgress).toContain('"Cancelling and unloading"');
     expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
     expect(source).not.toContain("assistantHistory.innerHTML");
     expect(source).not.toContain("imageAnalysis.innerHTML");
@@ -41,7 +61,7 @@ describe("assistant UI and Electron isolation", () => {
     expect(main).toContain("frame !== event.sender.mainFrame");
     expect(main).toContain("assistantSessionOwnership.assertOwned");
     expect(main.match(/new FoundryRecorderRuntime\(\)/g)).toHaveLength(1);
-    expect(main).toContain("new RecorderController(foundryRuntime)");
+    expect(main).toContain("new RecorderController(foundryRuntime, createRecorderOperationJournal())");
     expect(main).toContain("runtime: foundryRuntime");
     expect(main).not.toContain("FoundryAssistantRuntime");
     expect(main).toContain("setWindowOpenHandler(() =>");

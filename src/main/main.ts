@@ -30,11 +30,17 @@ import {
   type AssistantSetModeRequest,
   type AssistantUpdateEvent,
   type EditTranscriptRequest,
+  type ImportProgressEvent,
   ipcChannels,
   type MicrophoneAuthorizationRequest,
   type PrepareRecorderRequest,
 } from "../shared/contracts";
-import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
+import {
+  formatSafeDiagnostic,
+  type SafeDiagnosticCode,
+  serializeSafeDiagnostic,
+  toSafeDiagnostic,
+} from "../shared/safe-diagnostic";
 import { AssistantController } from "./assistant-controller";
 import { pickAssistantImage } from "./assistant-image-picker";
 import { type AssistantSessionOwnerIdentity, AssistantSessionOwnership } from "./assistant-session-owner";
@@ -44,6 +50,8 @@ import {
   MicrophonePermissionGate,
   permissionOriginForDocument,
 } from "./microphone-permission";
+import { createRecorderOperationJournal } from "./operation-journal";
+import { runPrepareUiProbe } from "./prepare-ui-probe";
 import { RecorderController } from "./recorder-controller";
 import { createPopulatedSummaryCaptureSnapshot } from "./ui-capture-fixture";
 
@@ -52,7 +60,7 @@ let mainWebContents: WebContents | null = null;
 let microphonePermissionGate: MicrophonePermissionGate | null = null;
 let shutdownStarted = false;
 const foundryRuntime = new FoundryRecorderRuntime();
-const controller = new RecorderController(foundryRuntime);
+const controller = new RecorderController(foundryRuntime, createRecorderOperationJournal());
 const assistantController = new AssistantController({
   runtime: foundryRuntime,
   getTranscript: () => controller.bootstrap().transcript,
@@ -76,6 +84,7 @@ const rendererDocumentUrl = (() => {
 const rendererPermissionOrigin = permissionOriginForDocument(rendererDocumentUrl);
 const microphonePermissionProbeEnabled = process.env.SMART_RECORDER_MIC_PERMISSION_PROBE === "1";
 const streamOwnerProbeEnabled = process.env.SMART_RECORDER_STREAM_OWNER_PROBE === "1";
+const prepareUiProbeEnabled = process.env.SMART_RECORDER_PREPARE_UI_PROBE === "1";
 const streamOwnerReloadProbeId = "00000000-0000-4000-8000-000000000001";
 const streamOwnerCloseProbeId = "00000000-0000-4000-8000-000000000002";
 const streamOwnerProbeIds = new Set([streamOwnerReloadProbeId, streamOwnerCloseProbeId]);
@@ -201,7 +210,7 @@ function createWindow(): BrowserWindow {
 
   void webContents.loadURL(rendererDocumentUrl);
   window.once("ready-to-show", () => {
-    if (!window.isDestroyed()) {
+    if (!window.isDestroyed() && !prepareUiProbeEnabled) {
       window.show();
     }
   });
@@ -213,6 +222,20 @@ function createWindow(): BrowserWindow {
   }
   if (streamOwnerProbeEnabled) {
     webContents.once("did-finish-load", () => void runStreamOwnerProbe(window, webContents, webContentsId));
+  }
+  if (prepareUiProbeEnabled) {
+    webContents.once(
+      "did-finish-load",
+      () =>
+        void runPrepareUiProbe(window, webContents, async () => {
+          assistantController.shutdown();
+          await controller.shutdown();
+          const deferredCleanup = controller.cleanupCompletion;
+          if (deferredCleanup !== null) {
+            await deferredCleanup;
+          }
+        }),
+    );
   }
   if (process.env.SMART_RECORDER_OPEN_DEVTOOLS === "1") {
     webContents.openDevTools({ mode: "detach" });
@@ -249,9 +272,11 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.prepare, (event, request: PrepareRecorderRequest) => {
     const renderer = assertTrustedRendererIpc(event);
-    return controller.prepare(request, (progress) => {
-      sendToFrame(renderer.frame, ipcChannels.progress, progress);
-    });
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", () =>
+      controller.prepare(request, (progress) => {
+        sendToFrame(renderer.frame, ipcChannels.progress, progress);
+      }),
+    );
   });
   ipcMain.handle(ipcChannels.authorizeMicrophone, (event, request: MicrophoneAuthorizationRequest) => {
     const window = mainWindow;
@@ -321,35 +346,44 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.transcribeCapture, async (event, request: AudioCapturePayload) => {
     const renderer = assertTrustedRendererIpc(event);
-    const response = await controller.transcribeCapture(request);
-    queueCurrentImageReanalysis(renderer);
-    return response;
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", async () => {
+      const response = await controller.transcribeCapture(request);
+      queueCurrentImageReanalysis(renderer);
+      return response;
+    });
   });
   ipcMain.handle(ipcChannels.importWav, async (event) => {
     const renderer = assertTrustedRendererIpc(event);
-    const owner = mainWindow;
-    if (owner === null || owner.isDestroyed()) {
-      throw new Error("The application window is not available.");
-    }
-    const result = await dialog.showOpenDialog(owner, {
-      title: "Open a 16 kHz mono PCM WAV",
-      properties: ["openFile"],
-      filters: [{ name: "WAV audio", extensions: ["wav"] }],
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", async () => {
+      const owner = mainWindow;
+      if (owner === null || owner.isDestroyed()) {
+        throw new Error("The application window is not available.");
+      }
+      const importToken = controller.captureOperationToken();
+      sendImportProgress(renderer.frame, "selecting_file", "Waiting for a bounded local WAV selection.");
+      const result = await dialog.showOpenDialog(owner, {
+        title: "Open a 16 kHz mono PCM WAV",
+        properties: ["openFile"],
+        filters: [{ name: "WAV audio", extensions: ["wav"] }],
+      });
+      const filePath = result.filePaths[0];
+      if (result.canceled || filePath === undefined) {
+        return null;
+      }
+      sendImportProgress(renderer.frame, "reading_file", "Reading the selected local WAV.");
+      const file = await stat(filePath);
+      if (file.size > AUDIO_MAX_PCM_BYTES + 1_048_576) {
+        throw new Error("The selected WAV exceeds the bounded 30-second import limit.");
+      }
+      const response = await controller.transcribeImportedWav(
+        path.basename(filePath),
+        await readFile(filePath),
+        importToken,
+        (stage, detail) => sendImportProgress(renderer.frame, stage, detail),
+      );
+      queueCurrentImageReanalysis(renderer);
+      return response;
     });
-    const filePath = result.filePaths[0];
-    if (result.canceled || filePath === undefined) {
-      return null;
-    }
-    const file = await stat(filePath);
-    if (file.size > AUDIO_MAX_PCM_BYTES + 1_048_576) {
-      throw new Error("The selected WAV exceeds the bounded 30-second import limit.");
-    }
-    const response = await controller.transcribeImportedWav(
-      path.basename(filePath),
-      await readFile(filePath),
-    );
-    queueCurrentImageReanalysis(renderer);
-    return response;
   });
   ipcMain.handle(ipcChannels.editTranscript, (event, request: EditTranscriptRequest) => {
     const renderer = assertTrustedRendererIpc(event);
@@ -362,7 +396,7 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.generateSummary, (event) => {
     assertTrustedRendererIpc(event);
-    return controller.generateSummary();
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", () => controller.generateSummary());
   });
   ipcMain.handle(ipcChannels.reset, async (event) => {
     const renderer = assertTrustedRendererIpc(event);
@@ -428,15 +462,19 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.assistantAnalyzeImage, (event, request: AssistantSessionRequest) => {
     const renderer = assertAssistantSession(event, request);
-    return assistantController.startImageAnalysis(request.sessionId, (snapshot) => {
-      routeAssistantUpdate(renderer, snapshot, request.sessionId);
-    });
+    return safeIpcInvoke("OPTIONAL_ASSISTANT_FAILED", () =>
+      assistantController.startImageAnalysis(request.sessionId, (snapshot) => {
+        routeAssistantUpdate(renderer, snapshot, request.sessionId);
+      }),
+    );
   });
   ipcMain.handle(ipcChannels.assistantAsk, (event, request: AssistantAskRequest) => {
     const renderer = assertAssistantSession(event, request);
-    return assistantController.startChat(request.sessionId, request.question, (snapshot) => {
-      routeAssistantUpdate(renderer, snapshot, request.sessionId);
-    });
+    return safeIpcInvoke("OPTIONAL_ASSISTANT_FAILED", () =>
+      assistantController.startChat(request.sessionId, request.question, (snapshot) => {
+        routeAssistantUpdate(renderer, snapshot, request.sessionId);
+      }),
+    );
   });
   ipcMain.handle(ipcChannels.assistantCancel, (event, request: AssistantCancelRequest) => {
     const renderer = assertAssistantSession(event, request);
@@ -456,6 +494,27 @@ function registerIpc(): void {
     routeAssistantUpdate(renderer, snapshot, request.sessionId);
     return snapshot;
   });
+}
+
+async function safeIpcInvoke<T>(
+  fallbackCode: SafeDiagnosticCode,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throw new Error(serializeSafeDiagnostic(error, fallbackCode));
+  }
+}
+
+function sendImportProgress(frame: WebFrameMain, stage: ImportProgressEvent["stage"], detail: string): void {
+  const progress: ImportProgressEvent = {
+    operation: "import",
+    phase: `import:${stage}`,
+    stage,
+    detail,
+  };
+  sendToFrame(frame, ipcChannels.progress, progress);
 }
 
 function assertTrustedRendererIpc(event: IpcMainInvokeEvent): {
@@ -782,6 +841,7 @@ async function runStreamOwnerProbe(
     if (!(await audioStreamOwnership.activate(lease, streamOwnerReloadProbeId))) {
       throw new Error("The initial renderer frame could not acquire the probe stream.");
     }
+
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Timed out waiting for renderer reload.")), 10_000);
       webContents.once("did-finish-load", () => {
@@ -861,7 +921,7 @@ function failStreamOwnerProbe(kind: string, error: unknown): void {
 }
 
 app.on("window-all-closed", () => {
-  if (streamOwnerProbeEnabled) {
+  if (streamOwnerProbeEnabled || prepareUiProbeEnabled) {
     return;
   }
   if (process.platform !== "darwin") {

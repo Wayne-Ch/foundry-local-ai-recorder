@@ -5,6 +5,8 @@ import type {
   AudioClient,
   ChatClient,
   EmbeddingClient,
+  EpDownloadResult,
+  EpInfo,
   IModel,
   ModelInfo,
   Request,
@@ -39,6 +41,158 @@ afterEach(async () => {
 });
 
 describe("FoundryRecorderRuntime", () => {
+  it("reports runtime initialization before the first awaited setup step", async () => {
+    const root = await createTempRoot();
+    const paths = deferred<ReturnType<typeof pathsFor>>();
+    const manager = new FakeManager(createModels());
+    const progress: Array<{ readonly stage: string; readonly role?: string }> = [];
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: () => paths.promise,
+      createManager: () => manager,
+      assertNativeRuntime: () => {},
+      createAudioSession: () => fakeAudioSession(),
+      createChatSession: () => fakeChatSession(),
+    });
+
+    const preparing = runtime.prepare(false, (event) => {
+      progress.push({
+        stage: event.stage,
+        ...(event.role === undefined ? {} : { role: event.role }),
+      });
+    });
+
+    expect(progress).toEqual([{ stage: "initializing_runtime" }]);
+    paths.resolve(pathsFor(root));
+    await preparing;
+    await runtime.shutdown();
+  });
+
+  it("reports catalog and cache waits before their promises settle", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const whisper = models.get(WHISPER_AUDIO_MODEL_ID);
+    if (whisper === undefined) {
+      throw new Error("Expected fake Whisper model.");
+    }
+    const catalog = deferred<IModel>();
+    const cache = deferred<IModel[]>();
+    vi.mocked(manager.catalog.getModelVariant).mockImplementation(async (modelId) => {
+      if (modelId === WHISPER_AUDIO_MODEL_ID) {
+        return catalog.promise;
+      }
+      const model = models.get(modelId);
+      if (model === undefined) {
+        throw new Error(`Unknown fake model ${modelId}`);
+      }
+      return model;
+    });
+    vi.mocked(manager.catalog.getCachedModels).mockReturnValue(cache.promise);
+    const progress: Array<{ readonly stage: string; readonly role?: string }> = [];
+    const runtime = createRuntime(root, [manager]);
+    const preparing = runtime.prepare(false, (event) => {
+      progress.push({
+        stage: event.stage,
+        ...(event.role === undefined ? {} : { role: event.role }),
+      });
+    });
+
+    await vi.waitFor(() => expect(progress).toContainEqual({ stage: "checking_catalog", role: "whisper" }));
+    catalog.reject(new Error("catalog unavailable"));
+    await vi.waitFor(() => expect(progress).toContainEqual({ stage: "checking_cache", role: "whisper" }));
+    cache.resolve([...models.values()]);
+    await preparing;
+
+    expect(runtime.readiness.whisper.status).toBe("ready");
+    await runtime.shutdown();
+  });
+
+  it.each([
+    {
+      name: "catalog and cache lookup",
+      role: "whisper" as const,
+      phase: "cache_lookup" as const,
+      arrange(manager: FakeManager) {
+        vi.mocked(manager.catalog.getModelVariant).mockRejectedValue(new Error("catalog failed"));
+        vi.mocked(manager.catalog.getCachedModels).mockRejectedValue(new Error("cache failed"));
+      },
+    },
+    {
+      name: "model download",
+      role: "whisper" as const,
+      phase: "model_download" as const,
+      arrange(_manager: FakeManager, models: ReadonlyMap<string, FakeModel>) {
+        const model = models.get(WHISPER_AUDIO_MODEL_ID);
+        if (model === undefined) {
+          throw new Error("Expected fake Whisper model.");
+        }
+        model.cached = false;
+        vi.spyOn(model, "download").mockRejectedValue(new Error("download failed"));
+      },
+    },
+    {
+      name: "provider discovery",
+      role: "summary" as const,
+      phase: "provider_discovery" as const,
+      arrange(manager: FakeManager) {
+        vi.spyOn(manager, "discoverEps").mockReturnValue([]);
+      },
+    },
+    {
+      name: "provider registration",
+      role: "summary" as const,
+      phase: "provider_registration" as const,
+      arrange(manager: FakeManager) {
+        vi.spyOn(manager, "discoverEps").mockReturnValue([
+          { name: SUMMARY_EXECUTION_PROVIDER, isRegistered: false } as never,
+        ]);
+        vi.spyOn(manager, "downloadAndRegisterEps").mockResolvedValue({
+          success: false,
+          status: "failed",
+          registeredEps: [],
+          failedEps: [SUMMARY_EXECUTION_PROVIDER],
+        });
+      },
+    },
+    {
+      name: "model load",
+      role: "whisper" as const,
+      phase: "model_load" as const,
+      arrange(_manager: FakeManager, models: ReadonlyMap<string, FakeModel>) {
+        const model = models.get(WHISPER_AUDIO_MODEL_ID);
+        if (model === undefined) {
+          throw new Error("Expected fake Whisper model.");
+        }
+        vi.spyOn(model, "load").mockRejectedValue(new Error("load failed"));
+      },
+    },
+  ])("returns safe role and phase metadata for $name failure", async ({ arrange, role, phase }) => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    arrange(manager, models);
+    const runtime = createRuntime(root, [manager]);
+
+    const failure = await captureFailure(runtime.prepare(false));
+    const diagnostic = toSafeDiagnostic(failure, "LOCAL_OPERATION_FAILED");
+
+    expect(diagnostic).toMatchObject({
+      code: "MODEL_PREPARATION_FAILED",
+      context: {
+        operation: "prepare",
+        modelRole: role,
+        phase,
+      },
+    });
+    expect(runtime.readiness[role]).toMatchObject({
+      status: "error",
+      loaded: false,
+    });
+    expect(runtime.readiness[role].detail).toContain(`model=${role}`);
+    expect(runtime.readiness[role].detail).toContain(`phase=${phase}`);
+    await runtime.shutdown().catch(() => undefined);
+  });
+
   it("preserves exact Whisper text through the controller and exact Qwen prompt input", async () => {
     const root = await createTempRoot();
     const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
@@ -93,6 +247,13 @@ describe("FoundryRecorderRuntime", () => {
 
     const firstFailure = await captureFailure(runtime.prepare(false));
     expect(errorMessages(firstFailure)).toContainEqual(expect.stringContaining("endpoint guard"));
+    expect(toSafeDiagnostic(firstFailure, "LOCAL_OPERATION_FAILED")).toMatchObject({
+      code: "ENDPOINT_VALIDATION_FAILED",
+      context: {
+        operation: "prepare",
+        phase: "endpoint_validation",
+      },
+    });
     expect(rejected.shutdown).toHaveBeenCalledOnce();
     expect(rejected.dispose).toHaveBeenCalledOnce();
     expect(rejected.catalog.getModelVariant).not.toHaveBeenCalled();
@@ -1591,11 +1752,11 @@ class FakeManager {
     });
   }
 
-  discoverEps() {
+  discoverEps(): EpInfo[] {
     return [{ name: SUMMARY_EXECUTION_PROVIDER, isRegistered: true }];
   }
 
-  async downloadAndRegisterEps() {
+  async downloadAndRegisterEps(): Promise<EpDownloadResult> {
     return {
       success: true,
       status: "registered",

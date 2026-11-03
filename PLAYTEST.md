@@ -75,7 +75,10 @@ git diff --exit-code -- .\fixtures\ode-slide.png
 
 1. Keep the PC online for the first preparation.
 2. Select **Prepare local models**.
-3. Wait until the Whisper, Nemotron, and Qwen model cards all show **READY** and the top-right pill
+3. Confirm the button changes immediately and each card exposes its current step: runtime/endpoint
+   initialization, catalog/cache lookup, download, provider registration, or model load. Do not
+   accept a static screen with no visible working state.
+4. Wait until the Whisper, Nemotron, and Qwen model cards all show **READY** and the top-right pill
    says **In-process boundary validated**.
 
 The first preparation has no fixed latency. It may take several minutes because the three core
@@ -102,25 +105,28 @@ Speak this exact four-sentence script:
 1. Confirm all three core cards are **READY** and **In-process boundary validated** is visible.
 2. Leave **Live English captions** enabled.
 3. Check **I have consent to record this audio**, then select **Start**.
-4. Speak the first two sentences of the script. Confirm **Live draft — Nemotron** begins changing.
+4. Before the first caption, confirm the recorder says it is waiting for the first caption and the
+   Live draft region is visibly busy. Speak the first two sentences and confirm the draft changes.
 5. While recording continues, open **Ask AI**, enter exactly `What is ODE?`, and select **Ask**.
 6. Immediately verify a **Local AI** row shows **Thinking locally…**. If another optional request is
    already running, it first shows **Waiting locally…** and changes when that exact request starts.
 7. Speak the final two sentences, then select **Stop** before the 30-second limit.
+   Verify Stop first shows capture finalization and then **Transcribing…** while Whisper runs.
 8. In the assistant reply, verify the context label says **live draft snapshot (may change)**.
 9. Wait for **Final transcript — Whisper** to contain the authoritative final transcript. Minor
    speech-recognition wording differences are acceptable; it must reflect the spoken ODE content.
 10. Select **Generate summary** and wait for the editable local Qwen summary.
+    If the transcript is dirty, verify **Saving correction…** appears before
+    **Generating summary…**.
 11. Return to **Ask AI**, enter exactly
     `Render this decay equation: $y(t) = y_0 e^{-2t}$.`, and select **Ask**. Verify the submitted
     equation renders with a subscript and exponent instead of literal dollar signs, underscore, or
     braces. Supported math repeated in the Local AI reply should render the same way.
 12. Open the **Image** tab, select **Choose PNG, JPEG, or WebP**, and choose the repository-relative
     file `fixtures\ode-slide.png`.
-13. Select **Analyze image**. While it runs, verify the button shows **Analyzing…** and the image
-    metadata shows **Analysis: Analyzing**; a queued request is explicitly labeled queued. Then
-    verify the result has **Visible text/objects**, **Relation to lesson**, and **Uncertainty**
-    sections.
+13. Select **Analyze image**. While it runs, verify the button/metadata distinguish queued work,
+    lazy assistant model/provider loading, and active **Analyzing…**. Then verify the result has
+    **Visible text/objects**, **Relation to lesson**, and **Uncertainty** sections.
 14. Return to **Ask AI**, select **Explain image**, and verify the answer refers to the analyzed ODE
     slide rather than inventing unrelated content.
 15. Change **Mode** to **Clinic · educational only**. Mode isolation intentionally clears the
@@ -162,7 +168,23 @@ Speak this exact four-sentence script:
 4. Relaunch the app, check the in-app consent box, and select **Start** again.
 
 If no microphone is available, select **Open stage fallback WAV** and choose
-`fixtures\ode-lesson.wav`; it follows the same Whisper final-transcription path.
+`fixtures\ode-lesson.wav`; verify the button advances through file selection/read/decode and
+**Transcribing WAV…** before the same Whisper final-transcription path completes.
+
+### `FOUNDRY_NATIVE_RUNTIME_MISSING`
+
+This means the SDK package exists but required ONNX Runtime/GenAI files were skipped or are
+incompatible. Fully close the app, then run:
+
+```powershell
+npm ci
+npm rebuild foundry-local-sdk
+npm run build
+npm run probe:prepare-ui
+```
+
+Do not use `npm install --ignore-scripts`. A passing Prepare probe ends with
+`PREPARE_UI_PROBE_OK` and all three core model states equal to `READY`.
 
 ### `OPTIONAL_ASSISTANT_FAILED`
 
@@ -183,6 +205,7 @@ From the repository root in PowerShell:
 
 ```powershell
 npm ci
+powershell -NoProfile -Command "npm rebuild foundry-local-sdk"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ensure-electron.ps1
 Test-Path .\node_modules\electron\dist\electron.exe
 ```

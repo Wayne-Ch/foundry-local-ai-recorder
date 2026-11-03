@@ -55,6 +55,7 @@ export class AssistantOperationQueue {
               requestId: this.#active.id,
               kind: this.#active.token.kind,
               status: "active" as const,
+              phase: "initializing_runtime" as const,
             },
           ]
         : [];
@@ -66,6 +67,7 @@ export class AssistantOperationQueue {
           requestId: task.id,
           kind: task.token.kind,
           status: "queued" as const,
+          phase: "queued" as const,
         })),
     ];
   }

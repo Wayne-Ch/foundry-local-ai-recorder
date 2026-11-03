@@ -663,7 +663,10 @@ describe("audio recorder state and draft behavior", () => {
     expect(audioModeDisplay(whisper)).toBe(`${WHISPER_AUDIO_MODEL_ID} · WHISPER FALLBACK`);
     expect(shouldOfferWhisperFallback(whisper)).toBe(false);
 
-    const renderer = await readFile(path.resolve("src/renderer/app.ts"), "utf8");
+    const [renderer, recorderProgress] = await Promise.all([
+      readFile(path.resolve("src/renderer/app.ts"), "utf8"),
+      readFile(path.resolve("src/renderer/recorder-progress.ts"), "utf8"),
+    ]);
     const preload = await readFile(path.resolve("src/preload/preload.ts"), "utf8");
     expect(renderer).toContain("Live draft <span>Nemotron</span>");
     expect(renderer).toContain("Final transcript <span>Whisper</span>");
@@ -671,7 +674,7 @@ describe("audio recorder state and draft behavior", () => {
     expect(renderer).toContain("Whisper-only fallback is ready");
     expect(renderer).toContain("Endpoint guard pending");
     expect(renderer).toContain("locked temporary audio");
-    expect(renderer).toContain("Cancel / reset");
+    expect(recorderProgress).toContain("Cancel / reset");
     expect(renderer).toContain("transcriptEditorDirty");
     expect(renderer).toContain("LiveCaptionFailureState");
     expect(renderer).toContain("Whisper final succeeded; live captions failed");

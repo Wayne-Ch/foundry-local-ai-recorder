@@ -37,7 +37,14 @@ const chatState = {
   ],
   activeRequestId: "pending-chat",
   activeOperation: "chat",
-  pendingOperations: [{ requestId: "pending-chat", kind: "chat", status: "active" }],
+  pendingOperations: [
+    {
+      requestId: "pending-chat",
+      kind: "chat",
+      status: "active",
+      phase: "running_inference",
+    },
+  ],
   queuedRequests: 0,
   maxQueuedRequests: 3,
   cleanupPending: false,
@@ -49,7 +56,14 @@ const imageState = {
   chatMessages: [],
   activeRequestId: "pending-image",
   activeOperation: "image_analysis",
-  pendingOperations: [{ requestId: "pending-image", kind: "image_analysis", status: "active" }],
+  pendingOperations: [
+    {
+      requestId: "pending-image",
+      kind: "image_analysis",
+      status: "active",
+      phase: "running_inference",
+    },
+  ],
 };
 
 app.disableHardwareAcceleration();
@@ -61,6 +75,7 @@ void run();
 
 async function run() {
   await app.whenReady();
+  let exitCode = 0;
   try {
     await rm(runtimeDirectory, { recursive: true, force: true });
     await mkdir(runtimeDirectory, { recursive: true });
@@ -88,10 +103,10 @@ async function run() {
     console.log(`ASSISTANT_UI_RENDER_OK ${JSON.stringify({ ...result, screenshotPath })}`);
   } catch (error) {
     console.error("ASSISTANT_UI_RENDER_FAILED", error);
-    process.exitCode = 1;
+    exitCode = 1;
   } finally {
     await rm(runtimeDirectory, { recursive: true, force: true });
-    app.quit();
+    app.exit(exitCode);
   }
 }
 
@@ -109,16 +124,47 @@ async function buildProbeBundle() {
           renderAssistantChatRows,
           renderImageAnalyzeButton,
         } from "./src/renderer/assistant-progress";
+        import { applyAssistantControlProgress } from "./src/renderer/assistant-control-progress";
+        import { applyRecorderProgress } from "./src/renderer/recorder-progress";
 
         const chatRoot = document.querySelector("#chat-probe");
         const imageButton = document.querySelector("#image-analyze-probe");
         const metadataValue = document.querySelector("#image-metadata-value");
         const imageAnalysis = document.querySelector("#image-analysis-probe");
+        const recorderElements = {
+          prepare: document.querySelector("#recorder-prepare"),
+          start: document.querySelector("#recorder-start"),
+          startLabel: document.querySelector("#recorder-start-label"),
+          stop: document.querySelector("#recorder-stop"),
+          importButton: document.querySelector("#recorder-import"),
+          saveTranscript: document.querySelector("#recorder-save"),
+          summary: document.querySelector("#recorder-summary"),
+          reset: document.querySelector("#recorder-reset"),
+          recordingIndicator: document.querySelector("#recorder-indicator"),
+          modelRail: document.querySelector("#recorder-models"),
+          liveDraft: document.querySelector("#recorder-live"),
+          liveCard: document.querySelector("#recorder-live-card"),
+          finalTranscript: document.querySelector("#recorder-final"),
+          finalCard: document.querySelector("#recorder-final-card"),
+          summaryOutput: document.querySelector("#recorder-summary-output"),
+          summaryCard: document.querySelector("#recorder-summary-card"),
+        };
+        const assistantControls = {
+          mode: document.querySelector("#assistant-action-mode"),
+          ask: document.querySelector("#assistant-action-ask"),
+          cancel: document.querySelector("#assistant-action-cancel"),
+          clear: document.querySelector("#assistant-action-clear"),
+          imageSelect: document.querySelector("#assistant-action-select"),
+          imageAnalyze: document.querySelector("#assistant-action-analyze"),
+          imageRemove: document.querySelector("#assistant-action-remove"),
+        };
         if (
           !(chatRoot instanceof HTMLElement) ||
           !(imageButton instanceof HTMLButtonElement) ||
           !(metadataValue instanceof HTMLElement) ||
-          !(imageAnalysis instanceof HTMLElement)
+          !(imageAnalysis instanceof HTMLElement) ||
+          Object.values(recorderElements).some((element) => !(element instanceof HTMLElement)) ||
+          Object.values(assistantControls).some((element) => !(element instanceof HTMLElement))
         ) {
           throw new Error("Missing assistant UI probe root.");
         }
@@ -130,6 +176,56 @@ async function buildProbeBundle() {
         if (progress !== null) {
           imageAnalysis.replaceChildren(imageAnalysisProgressMessage(progress));
         }
+        const recorderStates = [
+          { kind: "prepare", stage: "loading_model", role: "summary" },
+          { kind: "recording_waiting_caption" },
+          { kind: "transcribing" },
+          { kind: "import", stage: "decoding_audio" },
+          { kind: "summary_saving_transcript" },
+          { kind: "summary_generating" },
+          { kind: "resetting" },
+        ];
+        globalThis.__recorderProgressProbe = recorderStates.map((state) => {
+          applyRecorderProgress(recorderElements, state, false);
+          return {
+            kind: state.kind,
+            prepare: recorderElements.prepare.textContent,
+            stop: recorderElements.stop.textContent,
+            importButton: recorderElements.importButton.textContent,
+            summary: recorderElements.summary.textContent,
+            reset: recorderElements.reset.textContent,
+            indicator: recorderElements.recordingIndicator.textContent,
+            modelBusy: recorderElements.modelRail.getAttribute("aria-busy"),
+            liveBusy: recorderElements.liveDraft.getAttribute("aria-busy"),
+            finalBusy: recorderElements.finalTranscript.getAttribute("aria-busy"),
+            summaryBusy: recorderElements.summaryOutput.getAttribute("aria-busy"),
+          };
+        });
+        globalThis.__assistantControlProbe = [
+          "switching_mode",
+          "queuing_chat",
+          "cancelling",
+          "clearing",
+          "selecting_image",
+          "queuing_analysis",
+          "removing_image",
+        ].map((action) => {
+          assistantControls.imageAnalyze.textContent = "Analyze image";
+          assistantControls.imageAnalyze.setAttribute("aria-busy", "false");
+          applyAssistantControlProgress(assistantControls, action);
+          return {
+            action,
+            modeBusy: assistantControls.mode.getAttribute("aria-busy"),
+            ask: assistantControls.ask.textContent,
+            askBusy: assistantControls.ask.getAttribute("aria-busy"),
+            cancel: assistantControls.cancel.textContent,
+            clear: assistantControls.clear.textContent,
+            select: assistantControls.imageSelect.textContent,
+            analyze: assistantControls.imageAnalyze.textContent,
+            analyzeBusy: assistantControls.imageAnalyze.getAttribute("aria-busy"),
+            remove: assistantControls.imageRemove.textContent,
+          };
+        });
         globalThis.__assistantUiProbeReady = true;
       `,
       loader: "ts",
@@ -189,6 +285,31 @@ async function writeProbeDocument() {
         </dl>
         <article id="image-analysis-probe" class="image-analysis" aria-live="polite"></article>
       </section>
+      <section>
+        <h2>Recorder progress probe</h2>
+        <div id="recorder-models"></div>
+        <div id="recorder-live-card"><div id="recorder-live"></div></div>
+        <div id="recorder-final-card"><textarea id="recorder-final"></textarea></div>
+        <div id="recorder-summary-card"><textarea id="recorder-summary-output"></textarea></div>
+        <button id="recorder-prepare"></button>
+        <button id="recorder-start"><span id="recorder-start-label"></span></button>
+        <button id="recorder-stop"></button>
+        <button id="recorder-import"></button>
+        <button id="recorder-save"></button>
+        <button id="recorder-summary"></button>
+        <button id="recorder-reset"></button>
+        <span id="recorder-indicator"></span>
+      </section>
+      <section>
+        <h2>Assistant control progress probe</h2>
+        <select id="assistant-action-mode"><option>Classroom</option></select>
+        <button id="assistant-action-ask">Ask</button>
+        <button id="assistant-action-cancel">Cancel</button>
+        <button id="assistant-action-clear">Clear</button>
+        <button id="assistant-action-select">Choose PNG, JPEG, or WebP</button>
+        <button id="assistant-action-analyze">Analyze image</button>
+        <button id="assistant-action-remove">Remove</button>
+      </section>
     </main>
     <script type="module" src="./probe.js"></script>
   </body>
@@ -246,6 +367,8 @@ async function inspectRenderedUi(window) {
             imageDetailStatus:
               imageAnalysis.querySelector('[role="status"]') instanceof HTMLElement,
             progressIndicators: document.querySelectorAll(".assistant-progress-indicator").length,
+            recorderProgress: globalThis.__recorderProgressProbe,
+            assistantControls: globalThis.__assistantControlProbe,
           };
         })()`,
         true,
@@ -284,6 +407,35 @@ function assertProbeResult(result) {
         `Unexpected ${key}: expected ${JSON.stringify(value)}, got ${JSON.stringify(result[key])}`,
       );
     }
+  }
+  const recorder = new Map(result.recorderProgress.map((entry) => [entry.kind, entry]));
+  if (
+    recorder.get("prepare")?.prepare !== "Loading summary…" ||
+    recorder.get("prepare")?.modelBusy !== "true" ||
+    recorder.get("recording_waiting_caption")?.liveBusy !== "true" ||
+    recorder.get("transcribing")?.stop !== "Transcribing…" ||
+    recorder.get("transcribing")?.finalBusy !== "true" ||
+    recorder.get("import")?.importButton !== "Decoding WAV…" ||
+    recorder.get("summary_saving_transcript")?.summary !== "Saving correction…" ||
+    recorder.get("summary_generating")?.summary !== "Generating summary…" ||
+    recorder.get("resetting")?.reset !== "Cancelling / resetting…" ||
+    recorder.get("resetting")?.summaryBusy !== "true"
+  ) {
+    throw new Error(`Unexpected recorder progress DOM: ${JSON.stringify(result.recorderProgress)}`);
+  }
+  const assistantControls = new Map(result.assistantControls.map((entry) => [entry.action, entry]));
+  if (
+    assistantControls.get("switching_mode")?.modeBusy !== "true" ||
+    assistantControls.get("queuing_chat")?.ask !== "Queuing…" ||
+    assistantControls.get("queuing_chat")?.askBusy !== "true" ||
+    assistantControls.get("cancelling")?.cancel !== "Cancelling…" ||
+    assistantControls.get("clearing")?.clear !== "Clearing…" ||
+    assistantControls.get("selecting_image")?.select !== "Opening picker…" ||
+    assistantControls.get("queuing_analysis")?.analyze !== "Queuing analysis…" ||
+    assistantControls.get("queuing_analysis")?.analyzeBusy !== "true" ||
+    assistantControls.get("removing_image")?.remove !== "Removing…"
+  ) {
+    throw new Error(`Unexpected assistant control progress DOM: ${JSON.stringify(result.assistantControls)}`);
   }
 }
 

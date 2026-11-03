@@ -10,7 +10,9 @@ import {
 } from "../audio/audio-types";
 import type { ModelReadiness, RecorderSnapshot, TraceEntry } from "../shared/contracts";
 import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
+import { type AssistantUiAction, applyAssistantControlProgress } from "./assistant-control-progress";
 import {
+  assistantOperationStatusMessage,
   imageAnalysisMetadataValue,
   imageAnalysisProgress,
   imageAnalysisProgressMessage,
@@ -28,6 +30,7 @@ import {
   recordingLimitDelay,
   releaseMediaStream,
 } from "./audio-capture";
+import { applyRecorderProgress, type RecorderOperationState } from "./recorder-progress";
 
 interface RecordingOperation {
   readonly generation: number;
@@ -62,22 +65,22 @@ root.innerHTML = `
       </div>
     </header>
 
-    <section class="model-rail" aria-label="Local model readiness">
-      <article class="model-card" data-model="nemotron">
+    <section id="model-rail" class="model-rail" aria-label="Local model readiness" aria-live="polite">
+      <article id="nemotron-card" class="model-card" data-model="nemotron">
         <span class="step-number">01</span>
-        <div><p>Live draft</p><strong>Nemotron</strong><small id="nemotron-id"></small></div>
+        <div><p>Live draft</p><strong>Nemotron</strong><small id="nemotron-id"></small><small id="nemotron-detail" class="model-detail"></small></div>
         <span id="nemotron-state" class="state-chip"></span>
       </article>
       <div class="flow-arrow" aria-hidden="true">→</div>
-      <article class="model-card model-card-primary" data-model="whisper">
+      <article id="whisper-card" class="model-card model-card-primary" data-model="whisper">
         <span class="step-number">02</span>
-        <div><p>Authoritative final</p><strong>Whisper</strong><small id="whisper-id"></small></div>
+        <div><p>Authoritative final</p><strong>Whisper</strong><small id="whisper-id"></small><small id="whisper-detail" class="model-detail"></small></div>
         <span id="whisper-state" class="state-chip"></span>
       </article>
       <div class="flow-arrow" aria-hidden="true">→</div>
-      <article class="model-card" data-model="summary">
+      <article id="summary-card-model" class="model-card" data-model="summary">
         <span class="step-number">03</span>
-        <div><p>Post-session</p><strong>Local summary</strong><small id="summary-id"></small></div>
+        <div><p>Post-session</p><strong>Local summary</strong><small id="summary-id"></small><small id="summary-detail" class="model-detail"></small></div>
         <span id="summary-state" class="state-chip"></span>
       </article>
     </section>
@@ -115,7 +118,7 @@ root.innerHTML = `
         <div class="record-controls">
           <button id="start-button" class="record-button" disabled aria-label="Start recording">
             <span class="record-icon"></span>
-            <span>Start</span>
+            <span id="start-button-label">Start</span>
           </button>
           <button id="stop-button" class="button button-danger" disabled>Stop</button>
         </div>
@@ -134,7 +137,7 @@ root.innerHTML = `
 
       <section class="content-panel">
         <div class="transcript-grid">
-          <article class="output-card live-card">
+          <article id="live-card" class="output-card live-card">
             <div class="output-heading">
               <div>
                 <p class="eyebrow">DISPLAY ONLY</p>
@@ -142,12 +145,12 @@ root.innerHTML = `
               </div>
               <span id="first-caption" class="metric-chip">First caption —</span>
             </div>
-            <div id="live-draft" class="live-draft empty">
+            <div id="live-draft" class="live-draft empty" role="status" aria-live="polite" aria-busy="false">
               Live hypotheses will replace each other here. They are never summary input.
             </div>
           </article>
 
-          <article class="output-card final-card">
+          <article id="final-card" class="output-card final-card">
             <div class="output-heading">
               <div>
                 <p class="eyebrow">DURABLE AFTER STOP</p>
@@ -163,7 +166,7 @@ root.innerHTML = `
           </article>
         </div>
 
-        <article class="output-card summary-card">
+        <article id="summary-card" class="output-card summary-card">
           <div class="output-heading">
             <div>
               <p class="eyebrow">AI-GENERATED · EDITABLE</p>
@@ -345,6 +348,7 @@ root.innerHTML = `
 `;
 
 const elements = {
+  modelRail: required("#model-rail"),
   workspace: required("#workspace"),
   clock: required("#clock"),
   privacyState: required("#privacy-state"),
@@ -352,19 +356,23 @@ const elements = {
   liveToggle: required<HTMLInputElement>("#live-toggle"),
   prepare: required<HTMLButtonElement>("#prepare-button"),
   start: required<HTMLButtonElement>("#start-button"),
+  startLabel: required("#start-button-label"),
   stop: required<HTMLButtonElement>("#stop-button"),
   import: required<HTMLButtonElement>("#import-button"),
   elapsed: required("#elapsed"),
   status: required("#status-message"),
   recordingIndicator: required("#recording-indicator"),
   liveDraft: required("#live-draft"),
+  liveCard: required("#live-card"),
   firstCaption: required("#first-caption"),
   finalTranscript: required<HTMLTextAreaElement>("#final-transcript"),
+  finalCard: required("#final-card"),
   transcriptVersion: required("#transcript-version"),
   whisperTiming: required("#whisper-timing"),
   saveTranscript: required<HTMLButtonElement>("#save-transcript"),
   summary: required<HTMLButtonElement>("#summary-button"),
   summaryOutput: required<HTMLTextAreaElement>("#summary-output"),
+  summaryCard: required("#summary-card"),
   summaryTiming: required("#summary-timing"),
   summaryVersion: required("#summary-version"),
   reset: required<HTMLButtonElement>("#reset-button"),
@@ -393,15 +401,21 @@ const elements = {
   imageAnalysis: required("#image-analysis"),
   model: {
     whisper: {
+      card: required("#whisper-card"),
       id: required("#whisper-id"),
+      detail: required("#whisper-detail"),
       state: required("#whisper-state"),
     },
     nemotron: {
+      card: required("#nemotron-card"),
       id: required("#nemotron-id"),
+      detail: required("#nemotron-detail"),
       state: required("#nemotron-state"),
     },
     summary: {
+      card: required("#summary-card-model"),
       id: required("#summary-id"),
+      detail: required("#summary-detail"),
       state: required("#summary-state"),
     },
   },
@@ -421,11 +435,12 @@ let operationGeneration = 0;
 let prepared = populatedSummaryCapture;
 let liveAvailable = populatedSummaryCapture;
 let busy = false;
-let resetting = false;
+let recorderOperation: RecorderOperationState = { kind: "idle" };
 let summaryDraft = "";
 let progressDetail = "";
 let transcriptEditorDirty = false;
 let assistantUiPending = false;
+let assistantUiAction: AssistantUiAction = "idle";
 let assistantStatusMessage =
   initialAssistantBootstrap === null
     ? "Optional assistant IPC is unavailable; the core recorder remains usable."
@@ -444,7 +459,25 @@ if (populatedSummaryCapture) {
 }
 
 api.onProgress((event) => {
-  progressDetail = event.detail;
+  if (event.operation === "prepare") {
+    if (recorderOperation.kind !== "prepare") {
+      return;
+    }
+    progressDetail = event.detail;
+    snapshot = { ...snapshot, readiness: event.readiness };
+    renderReadiness(snapshot);
+    setRecorderOperation({
+      kind: "prepare",
+      stage: event.stage,
+      ...(event.role === undefined ? {} : { role: event.role }),
+    });
+  } else {
+    if (recorderOperation.kind !== "import") {
+      return;
+    }
+    progressDetail = event.detail;
+    setRecorderOperation({ kind: "import", stage: event.stage });
+  }
   setStatus(event.detail, "working");
 });
 api.onAudioPartial((event) => {
@@ -453,6 +486,7 @@ api.onAudioPartial((event) => {
   }
   elements.liveDraft.textContent = event.text;
   elements.liveDraft.classList.remove("empty");
+  setRecorderOperation({ kind: "recording" });
   elements.firstCaption.textContent = `First caption ${formatMilliseconds(event.firstPartialMs)}`;
 });
 api.onAssistantUpdate((event) => {
@@ -552,10 +586,16 @@ async function prepareModels(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation({ kind: "prepare", stage: "initializing_runtime" });
   updateControls();
-  setStatus("Preparing Whisper and Qwen locally…", "working");
+  setStatus("Initializing the Foundry Local in-process runtime…", "working");
   try {
     const response = await api.prepare({ enableLiveCaptions: elements.liveToggle.checked });
+    if (generation !== operationGeneration) {
+      return;
+    }
     snapshot = response.snapshot;
     prepared = true;
     liveAvailable = response.liveCaptionsAvailable;
@@ -575,6 +615,9 @@ async function prepareModels(): Promise<void> {
       setStatus("Local models are ready. Audio remains on this PC.", "success");
     }
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     snapshot = await api.getBootstrap().catch(() => snapshot);
     prepared = false;
     liveAvailable = false;
@@ -584,9 +627,12 @@ async function prepareModels(): Promise<void> {
       "error",
     );
   } finally {
-    busy = false;
-    render(snapshot);
-    renderAssistant();
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+      renderAssistant();
+    }
   }
 }
 
@@ -597,6 +643,7 @@ async function startRecording(): Promise<void> {
   busy = true;
   operationGeneration += 1;
   const generation = operationGeneration;
+  setRecorderOperation({ kind: "requesting_microphone" });
   updateControls();
   setStatus("Requesting microphone permission…", "working");
   let mediaStream: MediaStream | null = null;
@@ -607,6 +654,9 @@ async function startRecording(): Promise<void> {
   const pcm = new BoundedPcmCapture();
   try {
     await api.authorizeMicrophone();
+    if (generation !== operationGeneration) {
+      return;
+    }
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -616,9 +666,14 @@ async function startRecording(): Promise<void> {
       },
       video: false,
     });
+    if (generation !== operationGeneration) {
+      releaseMediaStream(mediaStream);
+      return;
+    }
 
     if (elements.liveToggle.checked && liveAvailable) {
       try {
+        setRecorderOperation({ kind: "starting_live_captions" });
         const stream = await api.startLiveStream({
           format: AUDIO_FORMAT,
           sampleRate: AUDIO_SAMPLE_RATE,
@@ -626,6 +681,11 @@ async function startRecording(): Promise<void> {
           maxDurationMs: AUDIO_MAX_DURATION_MS,
         });
         streamId = stream.streamId;
+        if (generation !== operationGeneration) {
+          void api.cancelLiveStream({ streamId }).catch(() => undefined);
+          releaseMediaStream(mediaStream);
+          return;
+        }
         pump = new BoundedAudioChunkPump(
           (sequence, data) => api.appendLiveChunk({ streamId: stream.streamId, sequence, data }),
           (error) => {
@@ -635,6 +695,7 @@ async function startRecording(): Promise<void> {
             if (recording?.generation === generation) {
               recording.pump = null;
             }
+            setRecorderOperation({ kind: "recording" });
             setStatus(
               `Live captions stopped: ${liveCaptionDiagnostic(error)}. Whisper still records.`,
               "warning",
@@ -643,6 +704,7 @@ async function startRecording(): Promise<void> {
         );
       } catch (error) {
         liveAvailable = false;
+        setRecorderOperation({ kind: "starting_live_captions" });
         setStatus(
           `Nemotron unavailable: ${liveCaptionDiagnostic(error)}. Recording continues for Whisper.`,
           "warning",
@@ -668,6 +730,7 @@ async function startRecording(): Promise<void> {
           if (recording?.generation === generation) {
             recording.pump = null;
           }
+          setRecorderOperation({ kind: "recording" });
           setStatus(
             `Live captions stopped: ${liveCaptionDiagnostic(error)}. Whisper still records.`,
             "warning",
@@ -679,6 +742,14 @@ async function startRecording(): Promise<void> {
       },
       (error) => void failActiveRecording(error),
     );
+    if (generation !== operationGeneration) {
+      releaseMediaStream(mediaStream);
+      await liveCapture.stop().catch(() => undefined);
+      if (streamId !== null) {
+        void api.cancelLiveStream({ streamId }).catch(() => undefined);
+      }
+      return;
+    }
     const operation: RecordingOperation = {
       generation,
       mediaStream,
@@ -702,6 +773,7 @@ async function startRecording(): Promise<void> {
         ? "Whisper-only recording active. No live draft is being stored."
         : "Listening for the first replaceable Nemotron hypothesis…";
     elements.liveDraft.classList.toggle("empty", streamId === null);
+    setRecorderOperation(streamId === null ? { kind: "recording" } : { kind: "recording_waiting_caption" });
     setStatus(
       streamId === null
         ? "Recording locally for Whisper final transcription."
@@ -717,10 +789,15 @@ async function startRecording(): Promise<void> {
       await liveCapture.stop().catch(() => undefined);
     }
     liveCaptionFailure.clear();
-    setStatus(microphoneError(error), "error");
+    if (generation === operationGeneration) {
+      setRecorderOperation({ kind: "idle" });
+      setStatus(microphoneError(error), "error");
+    }
   } finally {
-    busy = false;
-    updateControls();
+    if (generation === operationGeneration) {
+      busy = false;
+      updateControls();
+    }
   }
 }
 
@@ -730,6 +807,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
     return;
   }
   busy = true;
+  setRecorderOperation({ kind: "finalizing_capture" });
   window.clearInterval(active.timerId);
   window.clearTimeout(active.limitId);
   elements.recordingIndicator.textContent = "Finalizing";
@@ -763,6 +841,9 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       },
       releaseStream: releaseMediaStream,
     });
+    if (active.generation !== operationGeneration) {
+      return;
+    }
     if (finalized.liveCaptionCleanup !== null) {
       void finalized.liveCaptionCleanup.then((diagnostic) => {
         if (diagnostic !== null) {
@@ -784,7 +865,12 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       ) as ArrayBuffer,
       liveCaptionFailure: finalized.liveCaptionError,
     };
+    setRecorderOperation({ kind: "transcribing" });
+    setStatus("Running the bounded capture through the local Whisper model…", "working");
     const response = await api.transcribeCapture(payload);
+    if (active.generation !== operationGeneration) {
+      return;
+    }
     snapshot = response.snapshot;
     summaryDraft = "";
     if (finalized.liveCaptionError === null) {
@@ -796,12 +882,18 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       );
     }
   } catch (error) {
+    if (active.generation !== operationGeneration) {
+      return;
+    }
     snapshot = await api.getBootstrap().catch(() => snapshot);
     setStatus(errorMessage(error), "error");
   } finally {
-    recording = null;
-    busy = false;
-    render(snapshot);
+    if (active.generation === operationGeneration) {
+      recording = null;
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -810,10 +902,16 @@ async function importWav(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation({ kind: "import", stage: "selecting_file" });
   updateControls();
-  setStatus("Opening a local WAV through the Whisper pipeline…", "working");
+  setStatus("Waiting for a bounded local WAV selection…", "working");
   try {
     const response = await api.importWav();
+    if (generation !== operationGeneration) {
+      return;
+    }
     if (response === null) {
       setStatus("WAV import cancelled.", "neutral");
       return;
@@ -822,10 +920,16 @@ async function importWav(): Promise<void> {
     summaryDraft = "";
     setStatus("The selected WAV produced a Whisper final transcript.", "success");
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -834,16 +938,28 @@ async function saveTranscript(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation({ kind: "saving_transcript" });
   updateControls();
   try {
     snapshot = await api.editTranscript({ text: elements.finalTranscript.value });
+    if (generation !== operationGeneration) {
+      return;
+    }
     summaryDraft = "";
     setStatus(`Transcript correction saved as version ${snapshot.transcript.version}.`, "success");
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -852,21 +968,45 @@ async function generateSummary(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation(
+    transcriptEditorDirty ? { kind: "summary_saving_transcript" } : { kind: "summary_generating" },
+  );
   updateControls();
-  setStatus("Submitting the exact final transcript to the local summary model…", "working");
+  setStatus(
+    transcriptEditorDirty
+      ? "Saving the transcript correction before summary generation…"
+      : "Submitting the exact final transcript to the local summary model…",
+    "working",
+  );
   try {
     if (transcriptEditorDirty) {
       snapshot = await api.editTranscript({ text: elements.finalTranscript.value });
+      if (generation !== operationGeneration) {
+        return;
+      }
+      setRecorderOperation({ kind: "summary_generating" });
+      setStatus("Generating a local summary from the saved transcript version…", "working");
     }
     const response = await api.generateSummary();
+    if (generation !== operationGeneration) {
+      return;
+    }
     snapshot = response.snapshot;
     summaryDraft = snapshot.transcript.summary?.text ?? "";
     setStatus("Local AI summary is ready and editable.", "success");
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -877,7 +1017,10 @@ async function setAssistantMode(): Promise<void> {
     return;
   }
   assistantUiPending = true;
+  assistantUiAction = "switching_mode";
   updateControls();
+  renderAssistantControlProgress();
+  setAssistantStatus("Switching mode and cancelling incompatible assistant work…", "working");
   try {
     assistantSnapshot = await api.setAssistantMode({
       sessionId,
@@ -887,6 +1030,7 @@ async function setAssistantMode(): Promise<void> {
     setAssistantStatus(errorMessage(error), "error");
   } finally {
     assistantUiPending = false;
+    assistantUiAction = "idle";
     renderAssistant();
   }
 }
@@ -898,7 +1042,10 @@ async function askAssistant(): Promise<void> {
     return;
   }
   assistantUiPending = true;
+  assistantUiAction = "queuing_chat";
   updateControls();
+  renderAssistantControlProgress();
+  setAssistantStatus("Queuing the local assistant request…", "working");
   try {
     const started = await api.askAssistant({ sessionId, question });
     assistantSnapshot = started.snapshot;
@@ -908,6 +1055,7 @@ async function askAssistant(): Promise<void> {
     setAssistantStatus(errorMessage(error), "error");
   } finally {
     assistantUiPending = false;
+    assistantUiAction = "idle";
     renderAssistant();
   }
 }
@@ -919,7 +1067,10 @@ async function cancelAssistant(): Promise<void> {
     return;
   }
   assistantUiPending = true;
+  assistantUiAction = "cancelling";
   updateControls();
+  renderAssistantControlProgress();
+  setAssistantStatus("Cancelling the active optional request…", "working");
   try {
     assistantSnapshot = await api.cancelAssistant({ sessionId, requestId });
     setAssistantStatus("Cancelling the active optional request.", "working");
@@ -927,6 +1078,7 @@ async function cancelAssistant(): Promise<void> {
     setAssistantStatus(errorMessage(error), "error");
   } finally {
     assistantUiPending = false;
+    assistantUiAction = "idle";
     renderAssistant();
   }
 }
@@ -937,7 +1089,10 @@ async function clearAssistantChat(): Promise<void> {
     return;
   }
   assistantUiPending = true;
+  assistantUiAction = "clearing";
   updateControls();
+  renderAssistantControlProgress();
+  setAssistantStatus("Clearing memory-only assistant chat…", "working");
   try {
     assistantSnapshot = await api.clearAssistantChat({ sessionId });
     setAssistantStatus("Memory-only chat history cleared.", "success");
@@ -945,6 +1100,7 @@ async function clearAssistantChat(): Promise<void> {
     setAssistantStatus(errorMessage(error), "error");
   } finally {
     assistantUiPending = false;
+    assistantUiAction = "idle";
     renderAssistant();
   }
 }
@@ -955,7 +1111,9 @@ async function selectAssistantImage(): Promise<void> {
     return;
   }
   assistantUiPending = true;
+  assistantUiAction = "selecting_image";
   updateControls();
+  renderAssistantControlProgress();
   setAssistantStatus("Opening the main-process image picker…", "working");
   try {
     const selected = await api.selectAssistantImage({ sessionId });
@@ -969,6 +1127,7 @@ async function selectAssistantImage(): Promise<void> {
     setAssistantStatus(errorMessage(error), "error");
   } finally {
     assistantUiPending = false;
+    assistantUiAction = "idle";
     renderAssistant();
   }
 }
@@ -979,7 +1138,10 @@ async function analyzeAssistantImage(): Promise<void> {
     return;
   }
   assistantUiPending = true;
+  assistantUiAction = "queuing_analysis";
   updateControls();
+  renderAssistantControlProgress();
+  setAssistantStatus("Queuing local image analysis…", "working");
   try {
     const started = await api.analyzeAssistantImage({ sessionId });
     assistantSnapshot = started.snapshot;
@@ -988,6 +1150,7 @@ async function analyzeAssistantImage(): Promise<void> {
     setAssistantStatus(errorMessage(error), "error");
   } finally {
     assistantUiPending = false;
+    assistantUiAction = "idle";
     renderAssistant();
   }
 }
@@ -998,7 +1161,10 @@ async function removeAssistantImage(): Promise<void> {
     return;
   }
   assistantUiPending = true;
+  assistantUiAction = "removing_image";
   updateControls();
+  renderAssistantControlProgress();
+  setAssistantStatus("Removing image bytes and derived analysis…", "working");
   try {
     assistantSnapshot = await api.removeAssistantImage({ sessionId });
     setAssistantStatus("Image bytes, thumbnail, and analysis were removed.", "success");
@@ -1006,17 +1172,19 @@ async function removeAssistantImage(): Promise<void> {
     setAssistantStatus(errorMessage(error), "error");
   } finally {
     assistantUiPending = false;
+    assistantUiAction = "idle";
     renderAssistant();
   }
 }
 
 async function resetRecorder(): Promise<void> {
-  if (busy) {
+  if (recorderOperation.kind === "resetting") {
     return;
   }
   busy = true;
-  resetting = true;
+  setRecorderOperation({ kind: "resetting" });
   operationGeneration += 1;
+  const generation = operationGeneration;
   elements.assistantInput.value = "";
   const active = recording;
   recording = null;
@@ -1053,6 +1221,9 @@ async function resetRecorder(): Promise<void> {
       void reset.liveCaptionCleanup.then(() => undefined);
     }
     snapshot = reset.result;
+    if (generation !== operationGeneration) {
+      return;
+    }
     summaryDraft = "";
     elements.consent.checked = false;
     setStatus(
@@ -1066,12 +1237,17 @@ async function resetRecorder(): Promise<void> {
       cancellationError === null ? "success" : "warning",
     );
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
     active?.liveCaptionFailure.clear();
-    resetting = false;
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -1093,16 +1269,14 @@ async function failActiveRecording(error: unknown): Promise<void> {
     void api.cancelLiveStream({ streamId: active.streamId }).catch(() => undefined);
   }
   busy = false;
+  setRecorderOperation({ kind: "idle" });
   setStatus(errorMessage(error), "error");
   updateControls();
 }
 
 function render(next: RecorderSnapshot): void {
   snapshot = next;
-  renderModel("whisper", snapshot.readiness.whisper);
-  renderModel("nemotron", snapshot.readiness.nemotron);
-  renderModel("summary", snapshot.readiness.summary);
-  renderPrivacyBoundary(snapshot);
+  renderReadiness(snapshot);
 
   const transcript = snapshot.transcript;
   if (recording === null) {
@@ -1110,6 +1284,7 @@ function render(next: RecorderSnapshot): void {
       transcript.liveDraft || "Live hypotheses will replace each other here. They are never summary input.";
     elements.liveDraft.classList.toggle("empty", !transcript.liveDraft);
   }
+
   elements.finalTranscript.disabled = !transcript.finalText || busy;
   elements.finalTranscript.value = transcript.finalText;
   transcriptEditorDirty = false;
@@ -1136,10 +1311,18 @@ function render(next: RecorderSnapshot): void {
   updateControls();
 }
 
+function renderReadiness(next: RecorderSnapshot): void {
+  renderModel("whisper", next.readiness.whisper);
+  renderModel("nemotron", next.readiness.nemotron);
+  renderModel("summary", next.readiness.summary);
+  renderPrivacyBoundary(next);
+}
+
 function renderAssistant(): void {
   const state = assistantSnapshot;
   const imageProgress = imageAnalysisProgress(state);
   renderImageAnalyzeButton(elements.imageAnalyze, imageProgress);
+  renderAssistantControlProgress();
   elements.assistantPanel.setAttribute(
     "aria-busy",
     String(
@@ -1247,11 +1430,8 @@ function renderAssistant(): void {
     assistantStatusMessage =
       state.cleanupDetail ?? "Optional assistant cleanup is draining; the core recorder remains available.";
     assistantStatusTone = "warning";
-  } else if (state.activeOperation !== null) {
-    assistantStatusMessage =
-      state.activeOperation === "chat"
-        ? "Local chat is running; audio capture continues independently."
-        : "Local image analysis is running; audio capture continues independently.";
+  } else if (state.pendingOperations.length > 0) {
+    assistantStatusMessage = `${assistantOperationStatusMessage(state) ?? "Optional assistant work is running."} Audio capture continues independently.`;
     assistantStatusTone = "working";
   } else {
     const latest = state.trace.at(-1);
@@ -1281,8 +1461,20 @@ function renderAssistant(): void {
 
 function renderModel(role: "whisper" | "nemotron" | "summary", readiness: ModelReadiness): void {
   elements.model[role].id.textContent = `${readiness.target.modelId} · ${readiness.target.executionProvider}`;
+  elements.model[role].detail.textContent = readiness.detail;
+  elements.model[role].detail.title = readiness.detail;
   elements.model[role].state.textContent = stateLabel(readiness.status);
   elements.model[role].state.className = `state-chip state-${readiness.status}`;
+  elements.model[role].state.setAttribute("role", "status");
+  elements.model[role].card.setAttribute(
+    "aria-busy",
+    String(
+      readiness.status === "checking" ||
+        readiness.status === "downloading" ||
+        readiness.status === "registering_provider" ||
+        readiness.status === "loading",
+    ),
+  );
 }
 
 function renderTrace(trace: readonly TraceEntry[], assistantTrace: readonly AssistantTraceEntry[]): void {
@@ -1334,6 +1526,21 @@ function renderTrace(trace: readonly TraceEntry[], assistantTrace: readonly Assi
 function renderAssistantStatus(): void {
   elements.assistantStatus.textContent = assistantStatusMessage;
   elements.assistantStatus.className = `assistant-status assistant-status-${assistantStatusTone}`;
+}
+
+function renderAssistantControlProgress(): void {
+  applyAssistantControlProgress(
+    {
+      mode: elements.assistantMode,
+      ask: elements.assistantAsk,
+      cancel: elements.assistantCancel,
+      clear: elements.assistantClear,
+      imageSelect: elements.imageSelect,
+      imageAnalyze: elements.imageAnalyze,
+      imageRemove: elements.imageRemove,
+    },
+    assistantUiAction,
+  );
 }
 
 function setAssistantStatus(
@@ -1418,22 +1625,39 @@ function updateControls(): void {
     assistantSnapshot?.image === null;
   elements.imageRemove.disabled =
     !assistantReady || assistantCleanupPending || assistantUiPending || assistantSnapshot?.image === null;
-  elements.reset.disabled = busy;
-  elements.reset.textContent = resetting
-    ? "Cancelling / resetting…"
-    : recording === null
-      ? "Delete / reset"
-      : "Cancel / reset";
-  elements.recordingIndicator.textContent = resetting
-    ? "Cancelling"
-    : recording === null
-      ? busy
-        ? "Working"
-        : "Idle"
-      : recording.stopping
-        ? "Finalizing"
-        : "Recording";
+  elements.reset.disabled = recorderOperation.kind === "resetting";
+  renderRecorderProgress();
   elements.recordingIndicator.classList.toggle("active", recording !== null);
+}
+
+function setRecorderOperation(operation: RecorderOperationState): void {
+  recorderOperation = operation;
+  renderRecorderProgress();
+}
+
+function renderRecorderProgress(): void {
+  applyRecorderProgress(
+    {
+      prepare: elements.prepare,
+      start: elements.start,
+      startLabel: elements.startLabel,
+      stop: elements.stop,
+      importButton: elements.import,
+      saveTranscript: elements.saveTranscript,
+      summary: elements.summary,
+      reset: elements.reset,
+      recordingIndicator: elements.recordingIndicator,
+      modelRail: elements.modelRail,
+      liveDraft: elements.liveDraft,
+      liveCard: elements.liveCard,
+      finalTranscript: elements.finalTranscript,
+      finalCard: elements.finalCard,
+      summaryOutput: elements.summaryOutput,
+      summaryCard: elements.summaryCard,
+    },
+    recorderOperation,
+    recording !== null,
+  );
 }
 
 function selectAssistantTab(tab: "chat" | "image"): void {
@@ -1463,6 +1687,7 @@ function setStatus(
 ): void {
   elements.status.textContent = message || progressDetail;
   elements.status.className = `status-message status-${tone}`;
+  elements.status.setAttribute("aria-busy", String(tone === "working"));
 }
 
 function required<T extends Element = HTMLElement>(selector: string): T {

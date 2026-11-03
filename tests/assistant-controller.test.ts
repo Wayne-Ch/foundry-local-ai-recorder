@@ -5,6 +5,7 @@ import type { RequestOptions } from "foundry-local-sdk";
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { assistantSystemPrompt } from "../src/assistant/assistant-prompts";
+import type { AssistantOperationPhase } from "../src/assistant/assistant-types";
 import { CLINICIAN_HANDOFF_SENTENCE } from "../src/assistant/clinic-safety";
 import type {
   AssistantImageByteLifecycle,
@@ -36,11 +37,21 @@ describe("AssistantController", () => {
     const started = controller.startChat("session-1", "Explain the lesson.", () => {});
 
     expect(started.snapshot.pendingOperations).toEqual([
-      { requestId: started.requestId, kind: "chat", status: "queued" },
+      {
+        requestId: started.requestId,
+        kind: "chat",
+        status: "queued",
+        phase: "queued",
+      },
     ]);
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
     expect(controller.snapshot().pendingOperations).toEqual([
-      { requestId: started.requestId, kind: "chat", status: "active" },
+      {
+        requestId: started.requestId,
+        kind: "chat",
+        status: "active",
+        phase: "initializing_runtime",
+      },
     ]);
 
     release();
@@ -54,6 +65,45 @@ describe("AssistantController", () => {
       ).toBe(true),
     );
     expect(controller.snapshot().pendingOperations).toEqual([]);
+  });
+
+  it("reports lazy assistant model loading separately from active inference", async () => {
+    let release = () => {};
+    const runtime = new FakeRuntime(
+      "The answer is ready.",
+      async () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      ["checking_catalog", "checking_provider", "loading_model", "running_inference"],
+    );
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime,
+    });
+    const phases: AssistantOperationPhase[] = [];
+
+    controller.startChat("session-1", "Explain the lesson.", (state) => {
+      const phase = state.pendingOperations[0]?.phase;
+      if (phase !== undefined) {
+        phases.push(phase);
+      }
+    });
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+    expect(phases).toEqual(
+      expect.arrayContaining([
+        "queued",
+        "initializing_runtime",
+        "checking_catalog",
+        "checking_provider",
+        "loading_model",
+        "running_inference",
+      ]),
+    );
+    expect(controller.snapshot().pendingOperations[0]?.phase).toBe("running_inference");
+    release();
+    await vi.waitFor(() => expect(controller.snapshot().pendingOperations).toEqual([]));
   });
 
   it("removes chat progress on cancellation and failure", async () => {
@@ -761,7 +811,12 @@ describe("AssistantController", () => {
       const started = controller.startImageAnalysis("session-1", () => {});
       await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
       expect(controller.snapshot().pendingOperations).toEqual([
-        { requestId: started.requestId, kind: "image_analysis", status: "active" },
+        {
+          requestId: started.requestId,
+          kind: "image_analysis",
+          status: "active",
+          phase: "initializing_runtime",
+        },
       ]);
 
       switch (action) {
@@ -873,6 +928,13 @@ describe("AssistantController", () => {
     expect(controller.snapshot().imageAnalysis).toBeNull();
     expect(controller.snapshot().image?.analysisStatus).toBe("unanalyzed");
     expect(controller.snapshot().queuedRequests).toBe(1);
+    expect(controller.snapshot().pendingOperations).toContainEqual(
+      expect.objectContaining({
+        kind: "image_analysis",
+        status: "queued",
+        phase: "queued",
+      }),
+    );
     expect(runtime.inputs[1]?.prompt).toContain("corrected version two");
     expect(runtime.inputs[1]?.prompt).not.toContain("OLD V1 NOTE");
 
@@ -1186,11 +1248,16 @@ class FakeRuntime implements AssistantRuntime {
   constructor(
     readonly answer: string | readonly string[],
     readonly beforeAnswer: (input: VisionChatTurnInput, index: number) => Promise<void> = async () => {},
+    readonly progressPhases: readonly AssistantOperationPhase[] = [],
   ) {}
 
   async runAssistantTurn(
     input: VisionChatTurnInput,
-    options?: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions },
+    options?: {
+      readonly signal?: AbortSignal;
+      readonly requestOptions?: RequestOptions;
+      readonly onProgress?: (phase: AssistantOperationPhase) => void;
+    },
   ): Promise<VisionChatTurnResult> {
     this.assistantStatus = {
       ...this.assistantStatus,
@@ -1200,6 +1267,9 @@ class FakeRuntime implements AssistantRuntime {
     const index = this.inputs.length;
     this.inputs.push(input);
     this.requestOptions.push(options?.requestOptions);
+    for (const phase of this.progressPhases) {
+      options?.onProgress?.(phase);
+    }
     for (const image of input.images ?? []) {
       if (image.kind === "data") {
         this.imagePayloads.push(Uint8Array.from(image.data));

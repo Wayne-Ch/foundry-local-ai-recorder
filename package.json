@@ -6,7 +6,7 @@
   "main": "dist/main/main.mjs",
   "type": "module",
   "scripts": {
-    "postinstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-electron.ps1",
+    "postinstall": "node scripts/ensure-foundry-native.mjs && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure-electron.ps1",
     "clean": "node scripts/clean.mjs",
     "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/main/main.mjs --external:electron --external:foundry-local-sdk --sourcemap",
     "build:preload": "esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/preload/preload.cjs --external:electron --sourcemap",
@@ -29,6 +29,7 @@
     "probe:microphone-permission": "npm run build && node scripts/probe-electron-microphone.mjs",
     "probe:stream-owner": "npm run build && node scripts/probe-electron-stream-owner.mjs",
     "probe:assistant-ui": "electron scripts/assistant-ui-probe",
+    "probe:prepare-ui": "npm run build && node scripts/probe-electron-prepare.mjs",
     "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
     "capture:ui": "npm run build && node scripts/capture-ui.mjs",
     "start": "npm run build && electron .",

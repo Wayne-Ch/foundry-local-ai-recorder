@@ -4,6 +4,8 @@ Core model evidence: 2026-10-30 (Windows 11 x64)
 
 Multimodal branch static/cloud evidence: 2026-11-02 (Linux cloud session)
 
+Target-Windows Prepare/progress/native recovery evidence: 2026-11-03
+
 ## Validated identities
 
 | Role | Exact model | Execution provider | Catalog size |
@@ -23,15 +25,57 @@ Runtime log evidence:
 - default per-user Foundry model cache
 - nonessential telemetry disabled by configuration
 
+## 2026-11-03 Prepare failure diagnosis and recovery
+
+The original screenshot predated application-level correlation, and the native log contained no
+failure entry at that time, so it cannot be tied conclusively to one exception after the fact. The
+same `e000b86` worktree did reproduce a concrete setup failure:
+
+```text
+ERR_DLOPEN_FAILED: The specified procedure could not be found
+...foundry_local_node.node
+```
+
+The SDK addon files existed, but `onnxruntime.dll`, `onnxruntime-genai.dll`, and
+`onnxruntime_providers_shared.dll` were absent because a dependency update had been run with
+`--ignore-scripts`. `npm rebuild foundry-local-sdk` restored the supported SDK runtime payload and
+the real Whisper gate immediately passed. The persistent checkout now contains those files, and
+the isolated real Electron Prepare probe completes all three core models, so cache corruption and
+second-manager contention were not reproduced.
+
+The repository now prevents and diagnoses this class:
+
+- root `postinstall` invokes the SDK native installer before the Electron runtime guard;
+- Prepare performs a Windows native-file preflight before manager creation;
+- missing/incompatible native files surface canonical `FOUNDRY_NATIVE_RUNTIME_MISSING` recovery,
+  never generic success;
+- catalog/cache/download/provider/load/endpoint failures retain secret-safe operation, model role,
+  and phase metadata across IPC;
+- Prepare/reset/shutdown write correlated secret-safe JSONL lifecycle events without raw paths,
+  URLs, usernames, exception messages, tokens, or credentials.
+
+Real isolated Electron Prepare result:
+
+```text
+PREPARE_UI_PROBE_OK
+elapsedMs=8707
+finalModelStates=["READY","READY","READY"]
+```
+
+Observed button phases included runtime initialization, endpoint validation, Whisper catalog/load,
+summary provider registration/load, and Nemotron catalog/load. The correlated journal recorded one
+Prepare start, every phase, and complete in 8,671 ms; the probe awaited clean native shutdown
+before process exit.
+
 ## Static validation
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 78 files checked |
+| `npm run lint` | Pass; 97 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 23 files, 273 tests |
+| `npm test` | Pass; 30 files, 374 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
-| `npm audit --audit-level=moderate` | Pass against the live advisory service; 0 vulnerabilities |
+| `npm audit --audit-level=low` | Pass after bounded retry of a feed HTTP 429; 0 vulnerabilities |
 | Fresh clone with `core.autocrlf=true` | Pass; `README.md`, `src/main/main.ts`, and `src/foundry/foundry-runtime.ts` all had `CRLF=0` |
 
 Unit coverage includes:
@@ -84,6 +128,13 @@ Unit coverage includes:
 - canonical structured diagnostics for quoted/unquoted Windows drive, spaced UNC, POSIX, Unicode,
   credential-like, and very-long raw messages; status and Developer Trace retain no path suffix,
   username, or arbitrary raw phrase;
+- native SDK materialization preflight, actionable recovery, structured IPC serialization, and
+  Prepare fault/delay matrices for initialization, endpoint validation, catalog, cache, download,
+  provider discovery/registration, and model load;
+- immediate accessible renderer progress for Prepare/model cards, microphone/start, first Nemotron
+  caption wait, Stop/finalize, Whisper final, WAV select/read/decode/transcribe, transcript save,
+  summary save/generation, queued/lazy-loaded assistant inference, image analysis, Reset, cleanup,
+  and stale-generation suppression;
 - temporary WAV creation, recovery, and failure cleanup;
 - EACCES/EBUSY/EPERM startup retention warnings with hidden paths and retry guidance;
 - model-slot replacement failure preserving a working model;
@@ -144,10 +195,10 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,289 ms |
-| Stop to Whisper final | 486 ms |
-| Transcript final to summary | 2,875 ms |
-| Qwen generation | 2,872 ms |
+| First live caption | 1,381 ms |
+| Stop to Whisper final | 376 ms |
+| Transcript final to summary | 3,531 ms |
+| Qwen generation | 3,528 ms |
 | Qwen prompt/completion tokens | 277 / 52 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
@@ -232,6 +283,8 @@ reasoning mode exhausting the 260-token output budget.
 | `npm run smoke:electron` | `ELECTRON_SMOKE_OK` |
 | `npm run probe:microphone-permission` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
 | `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
+| `npm run probe:assistant-ui` | `ASSISTANT_UI_RENDER_OK`; math safety plus immediate recorder/chat/image progress labels and ARIA busy/status states inspected |
+| `npm run probe:prepare-ui` | `PREPARE_UI_PROBE_OK`; isolated real app reached Whisper/Qwen/Nemotron READY, captured intermediate model phases, and shut down cleanly |
 | `npm run capture:ui` | `UI_CAPTURE_OK`; deterministic populated-summary capture inspected successfully |
 
 The 2026-11-02 cloud run used `xvfb-run`. Because the remote process runs as root, the four harness
@@ -248,6 +301,11 @@ Populated-summary screenshot:
 
 `artifacts\smart-ai-recorder-populated-summary.png`
 
+Prepare/progress screenshots:
+
+- `artifacts\prepare-models-ui.png`
+- `artifacts\assistant-ui-rendering.png`
+
 The capture-only bootstrap fixture renders a final transcript, the formatted summary text
 `y′ = −2y` and `e^(−2t)`, and an expanded `summary-raw` trace row containing the exact Qwen-like
 source `$ y' = -2y $` and `$ e^{-2t}} $` with **Summary display formatting applied**. The
@@ -262,10 +320,10 @@ The current capture also shows the 1600×900 three-column layout with the readab
 **Lesson assistant** panel, Classroom/Clinic selector, Ask AI/Image tabs, chips, input, and
 non-color status text while the transcript and summary remain readable.
 
-## Mandatory target-Windows multimodal gates
+## Target-Windows multimodal gates
 
-These were added and typechecked in the cloud session but **not executed there**. Linux cloud
-validation must not be reported as real Windows CPU VLM evidence.
+All three gates were executed successfully on the target Windows 11 machine on 2026-11-03. Linux
+cloud validation remains separate and must not substitute for this real CPU VLM evidence.
 
 Use a genuinely fresh Windows checkout so committed `.gitattributes` applies before files are
 materialized. If an older validation worktree predates the LF attributes, do not mass-convert it.
@@ -297,6 +355,15 @@ Required success markers:
 - `CONCURRENT_ASSISTANT_CHAIN_OK`: Nemotron partials continue while chat is submitted, Whisper
   remains authoritative, Qwen receives the exact Whisper final, only one manager exists, chat
   returns independently, and owned temporary WAV residue remains zero.
+
+Measured target results:
+
+- text chat returned a substantive one-sentence ODE answer from exact
+  `qwen3.5-0.8b-generic-cpu:3`;
+- vision returned all three bounded sections from the real 1280×720 ODE fixture with
+  `finishReason: stop`;
+- concurrent chat completed in 8,504 ms while 92 Nemotron partials continued, Whisper remained
+  authoritative, Qwen summarized its exact final, and temporary WAV residue stayed zero.
 
 The earlier collision-induced `Device is lost` run is not evidence. The assistant target is pinned
 to the exact CPU VLM; alternate model/device/provider overrides and silent fallback are rejected.
@@ -357,8 +424,8 @@ cloud endpoint**, not as a completed physically offline rehearsal.
   and a 180-token output reserve. The reproduced 13.6 KiB, 1280×720 fixture was not size-bound;
   inference resizing for genuinely large photos remains separate future hardening.
 - No transcript/summary export or persistence.
-- Multimodal Windows runtime evidence remains unresolved until all three mandatory commands above
-  pass on the target PC with the exact cached CPU vision model/provider.
+- Optional assistant first-use latency includes exact CPU VLM catalog/provider/load time; the UI
+  now distinguishes that wait from active Thinking/Analyzing.
 
 ## Rollback
 

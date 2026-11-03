@@ -107,10 +107,12 @@ npm run build
 npm run start:built
 ```
 
-The project pins patched Electron `42.11.18`. The root `postinstall` runs
-`scripts/ensure-electron.ps1`, which guards the Node 26 archive-extraction edge encountered during
-initial setup: it first uses Electron's installer, then repairs from Electron's verified local cache
-with Windows `Expand-Archive` when necessary.
+The project pins patched Electron `42.11.18`. The root `postinstall` first runs
+`scripts/ensure-foundry-native.mjs`, which invokes the SDK's supported native installer and verifies
+that ONNX Runtime/GenAI dependencies are materialized, then runs `scripts/ensure-electron.ps1` to
+guard the Node 26 Electron archive-extraction edge. Do not install with `--ignore-scripts`: that
+skips both native runtimes. If it already happened, run `npm rebuild foundry-local-sdk`, then
+`npm run build`.
 
 Repository `.gitattributes` enforces LF for text and marks image/audio/native artifacts binary, so
 a fresh Windows checkout remains lint-clean even when global `core.autocrlf=true`.
@@ -151,6 +153,7 @@ npm run smoke:electron
 npm run probe:microphone-permission
 npm run probe:stream-owner
 npm run probe:assistant-ui
+npm run probe:prepare-ui
 npm run capture:ui
 npm run test:whisper-integration
 npm run test:nemotron-integration
@@ -168,8 +171,14 @@ reproducible artifact to `artifacts\smart-ai-recorder-populated-summary.png`.
 
 `npm run probe:assistant-ui` runs a hidden sandboxed Electron renderer and inspects the resulting
 DOM for rendered inline/display math, inert markup, ordinary dollar text, request-bound chat/image
-progress, context labels, and accessible busy/status attributes. It writes the ignored screenshot
-`artifacts\assistant-ui-rendering.png`.
+progress, recorder operation labels, context labels, and accessible busy/status attributes. It
+writes the ignored screenshot `artifacts\assistant-ui-rendering.png`.
+
+`npm run probe:prepare-ui` launches the real built app with isolated Electron/app-data profiles,
+clicks **Prepare local models**, waits for Whisper, Qwen, and Nemotron to all reach **READY**, and
+asserts visible runtime/catalog/provider/load subphases before clean model/manager shutdown. It
+writes `artifacts\prepare-models-ui.png` plus a secret-safe correlated JSONL operation journal under
+the ignored probe app-data directory.
 
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
 Synthesis from original ODE teaching text, and `fixtures/ode-slide.png`, generated from original
@@ -180,8 +189,14 @@ included. The separate Clinic playtest fixture is the CC0, metadata-free
 ## Product behavior
 
 - Recording requires an explicit consent checkbox and transient user-gesture microphone grant.
+- **Prepare local models** changes immediately to a truthful runtime/model phase. The three cards
+  expose initialization, endpoint validation, catalog/cache lookup, model download, execution
+  provider registration, model load, READY, or a safe role/phase error. No percentage is invented.
 - Live captions are optional. A failed Nemotron preparation leaves loaded Whisper and Qwen models
   intact and reports the Whisper-only fallback.
+- Recording shows **Requesting microphone…**, then **Starting local models…**. The Nemotron panel is
+  explicitly busy while waiting for the first replaceable caption; Stop changes to
+  **Finalizing capture…** and then **Transcribing…** while Whisper owns finalization.
 - Stop disables microphone input and releases tracks first, snapshots the exact bounded PCM
   independently, then finalizes or initiates cancellation of optional Nemotron best-effort. A
   timed-out or still-pending cancel is observed separately and quarantines only the live-caption
@@ -191,21 +206,25 @@ included. The separate Clinic playtest fixture is the CC0, metadata-free
 - The final transcript is editable. A correction increments its version and invalidates a prior
   summary.
 - **Generate summary** submits only the current final transcript version. Recorded audio and
-  imported WAV files converge on this same summary path.
+  imported WAV files converge on this same summary path. A dirty correction visibly shows
+  **Saving correction…** before **Generating summary…**.
 - **Ask AI** remains available during recording. It snapshots the current live draft for that
   request only, stores only the label `live draft snapshot (may change)` in chat history, and never
   writes the draft into final transcript or summary state. The matching Local AI row visibly shows
   **Waiting locally…** while queued and **Thinking locally…** while active.
 - Assistant inference is enabled after **Prepare local models**. Text-only and image requests use
   the same lazy optional CPU VLM slot and validated manager generation; the summary slot remains
-  exclusive to transcript summary.
+  exclusive to transcript summary. The request row distinguishes queued work, runtime/catalog
+  checks, model download/provider/load, and active inference instead of labeling model load as
+  thinking.
 - Chat is memory-only, bounded, serialized, cancellable, and independent from summary generation.
   Suggested prompts include a one-sentence ODE definition, a practical example, and one-sentence
   explanation of the selected image. Supported inline/display LaTeX is rendered safely; ordinary
   currency, unmatched delimiters, and non-math prose remain unchanged.
 - **Image** accepts a bounded lecture/blackboard/diagram/slide screenshot or the pinned Clinic
   X-ray fixture at `fixtures/clinic-xray.png`. While analysis is pending, the button and metadata
-  visibly show the queued/active **Analyzing** state with accessible progress. Analysis returns
+  distinguish queued, assistant model/provider loading, and active **Analyzing** with accessible
+  progress. Analysis returns
   three concise fields: visible text/objects, relation to lesson context, and uncertainty. A saved
   transcript correction immediately marks prior analysis unavailable and queues re-analysis;
   stale image/context results are rejected.
@@ -222,7 +241,9 @@ included. The separate Clinic playtest fixture is the CC0, metadata-free
   formatted value.
 - **Delete / reset** cancels and discards an active recording without calling Nemotron finish,
   Whisper, or Qwen; it then removes owned temporary audio and clears transcript, summary, timing,
-  assistant chat/image bytes/thumbnail/analysis, timing, and trace state.
+  assistant chat/image bytes/thumbnail/analysis, timing, and trace state. It remains available
+  during model waits, visibly shows **Cancelling and unloading**, invalidates stale renderer
+  completions, and clears every progress surface on success or error.
 - Transcript and summary state are memory-only. There is intentionally no automatic retention,
   export, account sync, or background upload in this prototype.
 - A local PCM16LE/16 kHz/mono WAV can be opened as a stage fallback and follows the same temporary

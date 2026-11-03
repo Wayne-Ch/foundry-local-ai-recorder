@@ -6,6 +6,7 @@ import type {
   AssistantLaneSnapshot,
   AssistantMode,
   AssistantOperationKind,
+  AssistantOperationPhase,
   AssistantOperationToken,
   AssistantRequestContext,
   AssistantTraceEntry,
@@ -40,6 +41,7 @@ export class AssistantMemoryState {
   #imageAnalysis: ImageAnalysisSnapshot | null = null;
   readonly #chatMessages: StoredAssistantChatMessage[] = [];
   readonly #trace: AssistantTraceEntry[] = [];
+  readonly #operationPhases = new Map<string, AssistantOperationPhase>();
 
   snapshot(
     queue?: Pick<
@@ -47,6 +49,16 @@ export class AssistantMemoryState {
       "activeRequestId" | "activeOperation" | "pendingOperations" | "queuedRequests" | "maxQueuedRequests"
     >,
   ): AssistantLaneSnapshot {
+    const pendingOperations = (queue?.pendingOperations ?? []).map((operation) => ({
+      ...operation,
+      phase: this.#operationPhases.get(operation.requestId) ?? operation.phase,
+    }));
+    const pendingRequestIds = new Set(pendingOperations.map(({ requestId }) => requestId));
+    for (const requestId of this.#operationPhases.keys()) {
+      if (!pendingRequestIds.has(requestId)) {
+        this.#operationPhases.delete(requestId);
+      }
+    }
     return {
       generation: this.#generation,
       mode: this.#mode,
@@ -55,7 +67,7 @@ export class AssistantMemoryState {
       chatMessages: this.#chatMessages.map((message) => message.visible),
       activeRequestId: queue?.activeRequestId ?? null,
       activeOperation: queue?.activeOperation ?? null,
-      pendingOperations: queue?.pendingOperations ?? [],
+      pendingOperations,
       queuedRequests: queue?.queuedRequests ?? 0,
       maxQueuedRequests: queue?.maxQueuedRequests ?? DEFAULT_MAX_ASSISTANT_QUEUE,
       cleanupPending: false,
@@ -75,6 +87,7 @@ export class AssistantMemoryState {
     this.#imageAnalysis = null;
     this.#markImageUnanalyzed();
     this.#chatMessages.length = 0;
+    this.#operationPhases.clear();
     this.#trace.length = 0;
     this.trace(
       "mode-isolation",
@@ -131,6 +144,18 @@ export class AssistantMemoryState {
       contextFingerprint: capturedContext.fingerprint,
       context: capturedContext,
     };
+  }
+
+  setOperationPhase(token: AssistantOperationToken, phase: AssistantOperationPhase): boolean {
+    if (!this.isGenerationCurrent(token)) {
+      return false;
+    }
+    this.#operationPhases.set(token.requestId, phase);
+    return true;
+  }
+
+  clearOperationPhase(requestId: string): void {
+    this.#operationPhases.delete(requestId);
   }
 
   applyImageAnalysis(
@@ -216,6 +241,7 @@ export class AssistantMemoryState {
   clearChat(): void {
     this.#chatGeneration += 1;
     this.#chatMessages.length = 0;
+    this.#operationPhases.clear();
   }
 
   trace(
@@ -244,6 +270,7 @@ export class AssistantMemoryState {
     this.#image = null;
     this.#imageAnalysis = null;
     this.#chatMessages.length = 0;
+    this.#operationPhases.clear();
     this.#trace.length = 0;
   }
 

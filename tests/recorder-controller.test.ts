@@ -19,6 +19,7 @@ import {
   SUMMARY_EXECUTION_PROVIDER,
   SUMMARY_MODEL_ID,
 } from "../src/foundry/runtime-config";
+import type { RecorderOperationJournal, RecorderOperationJournalEvent } from "../src/main/operation-journal";
 import { RecorderController, type RecorderRuntime } from "../src/main/recorder-controller";
 import {
   createPopulatedSummaryCaptureSnapshot,
@@ -144,6 +145,39 @@ class FakeRuntime implements RecorderRuntime {
 }
 
 describe("RecorderController", () => {
+  it("writes secret-safe correlated Prepare lifecycle events", async () => {
+    const events: RecorderOperationJournalEvent[] = [];
+    const journal: RecorderOperationJournal = {
+      record: (event) => events.push(event),
+      flush: async () => {},
+    };
+    const controller = new RecorderController(new FakeRuntime(), journal);
+
+    await controller.prepare({ enableLiveCaptions: true });
+
+    const start = events.find((event) => event.operation === "prepare" && event.status === "start");
+    const complete = events.find((event) => event.operation === "prepare" && event.status === "complete");
+    expect(start).toMatchObject({
+      generation: 0,
+      enableLiveCaptions: true,
+    });
+    expect(complete).toMatchObject({
+      correlationId: start?.correlationId,
+      generation: 0,
+    });
+    expect(JSON.stringify(events)).not.toContain("C:\\models");
+  });
+
+  it("rejects an imported WAV selected before Reset", async () => {
+    const controller = new RecorderController(new FakeRuntime());
+    const token = controller.captureOperationToken();
+    await controller.reset();
+
+    await expect(
+      controller.transcribeImportedWav("fixture.wav", encodePcm16Wav(new Uint8Array(3_200)), token),
+    ).rejects.toThrow("cancelled");
+  });
+
   it("summarizes the exact Whisper final and excludes all Nemotron text", async () => {
     const runtime = new FakeRuntime();
     const controller = new RecorderController(runtime);
@@ -230,10 +264,14 @@ describe("RecorderController", () => {
     const runtime = new FakeRuntime("Imported Whisper final.", null, raw);
     const controller = new RecorderController(runtime);
     const wav = encodePcm16Wav(new Uint8Array(32_000));
+    const stages: string[] = [];
 
-    await controller.transcribeImportedWav("fixture.wav", wav);
+    await controller.transcribeImportedWav("fixture.wav", wav, controller.captureOperationToken(), (stage) =>
+      stages.push(stage),
+    );
     const summary = await controller.generateSummary();
 
+    expect(stages).toEqual(["decoding_audio", "transcribing"]);
     expect(runtime.summaryInput).toBe("Imported Whisper final.");
     expect(summary.snapshot.transcript.summary?.text).toBe("It describes y′ = −2y and y(t) = c · e^(−2t).");
   });

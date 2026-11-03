@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import {
   audioDurationMsFromPcmBytes,
@@ -28,9 +29,11 @@ import {
   type SummaryGenerationResult,
 } from "../foundry/foundry-runtime";
 import type {
+  ImportProgressStage,
   ImportWavResponse,
   LiveStreamResult,
   PipelineTiming,
+  PrepareProgressEvent,
   PrepareRecorderRequest,
   PrepareRecorderResponse,
   ProgressEvent,
@@ -43,6 +46,7 @@ import type {
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { formatSummaryForDisplay } from "../summary/summary-format";
 import { TranscriptStore } from "../transcript/transcript-store";
+import { noopRecorderOperationJournal, type RecorderOperationJournal } from "./operation-journal";
 
 const TRACE_LIMIT = 250;
 
@@ -51,7 +55,7 @@ export interface RecorderRuntime {
   readonly cleanupCompletion: Promise<void> | null;
   prepare(
     enableLiveCaptions: boolean,
-    onProgress?: (event: ProgressEvent) => void,
+    onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<PrepareRuntimeResult>;
   startLiveStream(onPartial: (event: AudioPartialTranscriptEvent) => void): Promise<AudioStreamStartResponse>;
   appendLiveChunk(
@@ -65,6 +69,10 @@ export interface RecorderRuntime {
   summarize(transcript: string): Promise<SummaryGenerationResult>;
   reset(): Promise<void>;
   shutdown(): Promise<void>;
+}
+
+export interface RecorderOperationToken {
+  readonly generation: number;
 }
 
 export class RecorderController {
@@ -84,8 +92,14 @@ export class RecorderController {
   #resetPromise: Promise<RecorderSnapshot> | null = null;
   #shutdownPromise: Promise<void> | null = null;
 
-  constructor(runtime: RecorderRuntime = new FoundryRecorderRuntime()) {
+  readonly #operationJournal: RecorderOperationJournal;
+
+  constructor(
+    runtime: RecorderRuntime = new FoundryRecorderRuntime(),
+    operationJournal: RecorderOperationJournal = noopRecorderOperationJournal,
+  ) {
     this.#runtime = runtime;
+    this.#operationJournal = operationJournal;
     this.#traceEvent(
       "Application",
       "startup",
@@ -97,15 +111,29 @@ export class RecorderController {
     return this.#snapshot();
   }
 
+  captureOperationToken(): RecorderOperationToken {
+    return { generation: this.#operationGeneration };
+  }
+
   async prepare(
     request: PrepareRecorderRequest,
     onProgress?: (event: ProgressEvent) => void,
   ): Promise<PrepareRecorderResponse> {
     const generation = this.#operationGeneration;
+    const correlationId = randomUUID();
+    const startedAt = performance.now();
+    this.#operationJournal.record({
+      at: new Date().toISOString(),
+      correlationId,
+      generation,
+      operation: "prepare",
+      status: "start",
+      enableLiveCaptions: request.enableLiveCaptions,
+    });
     this.#traceEvent(
       "Application",
       "prepare",
-      `Preparing Whisper core, Qwen summary, and ${
+      `Prepare ${correlationId}: Whisper core, Qwen summary, and ${
         request.enableLiveCaptions ? "optional Nemotron live captions" : "no live-caption model"
       }.`,
     );
@@ -115,6 +143,19 @@ export class RecorderController {
           return;
         }
         this.#traceEvent("Foundry Local", event.phase, event.detail);
+        const readiness = event.readiness;
+        const model = event.role === undefined ? undefined : readiness[event.role];
+        this.#operationJournal.record({
+          at: new Date().toISOString(),
+          correlationId,
+          generation,
+          operation: "prepare",
+          status: "progress",
+          phase: event.phase,
+          ...(event.role === undefined ? {} : { modelRole: event.role }),
+          ...(model === undefined ? {} : { modelId: model.target.modelId }),
+          ...(model === undefined ? {} : { cached: model.cached, loaded: model.loaded }),
+        });
         onProgress?.(event);
       });
       this.#assertCurrent(generation);
@@ -130,6 +171,15 @@ export class RecorderController {
           "warning",
         );
       }
+      this.#operationJournal.record({
+        at: new Date().toISOString(),
+        correlationId,
+        generation,
+        operation: "prepare",
+        status: "complete",
+        elapsedMs: Math.round(performance.now() - startedAt),
+      });
+      await this.#operationJournal.flush();
       return {
         snapshot: this.#snapshot(),
         liveCaptionsAvailable: result.liveCaptionsAvailable,
@@ -138,6 +188,21 @@ export class RecorderController {
     } catch (error) {
       this.#traceRecoveryWarning();
       this.#traceErrorIfCurrent(generation, "prepare", error);
+      const diagnostic = toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED");
+      this.#operationJournal.record({
+        at: new Date().toISOString(),
+        correlationId,
+        generation,
+        operation: "prepare",
+        status: diagnostic.code === "OPERATION_ABORTED" ? "cancel" : "fail",
+        elapsedMs: Math.round(performance.now() - startedAt),
+        diagnostic: {
+          code: diagnostic.code,
+          name: diagnostic.name,
+          ...(diagnostic.context === undefined ? {} : { context: diagnostic.context }),
+        },
+      });
+      await this.#operationJournal.flush();
       throw error;
     }
   }
@@ -271,7 +336,14 @@ export class RecorderController {
     }
   }
 
-  async transcribeImportedWav(fileName: string, wavBytes: Uint8Array): Promise<ImportWavResponse> {
+  async transcribeImportedWav(
+    fileName: string,
+    wavBytes: Uint8Array,
+    token: RecorderOperationToken = this.captureOperationToken(),
+    onProgress?: (stage: ImportProgressStage, detail: string) => void,
+  ): Promise<ImportWavResponse> {
+    this.#assertCurrent(token.generation);
+    onProgress?.("decoding_audio", "Validating and decoding the bounded local WAV.");
     const pcmBytes = extractPcm16FromWav(wavBytes);
     const durationMs = audioDurationMsFromPcmBytes(pcmBytes.byteLength);
     const payload: AudioCapturePayload = {
@@ -284,7 +356,10 @@ export class RecorderController {
         pcmBytes.byteOffset + pcmBytes.byteLength,
       ) as ArrayBuffer,
     };
+    this.#assertCurrent(token.generation);
+    onProgress?.("transcribing", "Running the decoded WAV through the local Whisper model.");
     const response = await this.transcribeCapture(payload);
+    this.#assertCurrent(token.generation);
     this.#traceEvent(
       "Application",
       "wav-import",
@@ -363,11 +438,51 @@ export class RecorderController {
     if (this.#resetPromise !== null) {
       return this.#resetPromise;
     }
+    const correlationId = randomUUID();
+    const generation = this.#operationGeneration;
+    const startedAt = performance.now();
+    this.#operationJournal.record({
+      at: new Date().toISOString(),
+      correlationId,
+      generation,
+      operation: "reset",
+      status: "start",
+    });
     const runtimeResult = this.#runtime.reset();
     const cleanupCompletion = this.#runtime.cleanupCompletion ?? runtimeResult;
     this.#trackCleanupGeneration(cleanupCompletion);
     const durableReset = cleanupCompletion.then(() => this.#applyReset());
     const result = runtimeResult.then(async () => durableReset);
+    void result.then(
+      async () => {
+        this.#operationJournal.record({
+          at: new Date().toISOString(),
+          correlationId,
+          generation,
+          operation: "reset",
+          status: "complete",
+          elapsedMs: Math.round(performance.now() - startedAt),
+        });
+        await this.#operationJournal.flush();
+      },
+      async (error: unknown) => {
+        const diagnostic = toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED");
+        this.#operationJournal.record({
+          at: new Date().toISOString(),
+          correlationId,
+          generation,
+          operation: "reset",
+          status: "fail",
+          elapsedMs: Math.round(performance.now() - startedAt),
+          diagnostic: {
+            code: diagnostic.code,
+            name: diagnostic.name,
+            ...(diagnostic.context === undefined ? {} : { context: diagnostic.context }),
+          },
+        });
+        await this.#operationJournal.flush();
+      },
+    );
     this.#resetPromise = result;
     void result.catch(() => undefined);
     void durableReset.then(
@@ -389,24 +504,65 @@ export class RecorderController {
     if (this.#shutdownPromise !== null) {
       return this.#shutdownPromise;
     }
+    const correlationId = randomUUID();
+    const generation = this.#operationGeneration;
+    const startedAt = performance.now();
+    this.#operationJournal.record({
+      at: new Date().toISOString(),
+      correlationId,
+      generation,
+      operation: "shutdown",
+      status: "start",
+    });
     const result = this.#runtime.shutdown();
     const cleanupCompletion = this.#runtime.cleanupCompletion ?? result;
     this.#trackCleanupGeneration(cleanupCompletion);
-    this.#shutdownPromise = result;
-    void result.catch(() => undefined);
-    void cleanupCompletion.then(
+    const journalResult = result.then(
+      async () => {
+        this.#operationJournal.record({
+          at: new Date().toISOString(),
+          correlationId,
+          generation,
+          operation: "shutdown",
+          status: "complete",
+          elapsedMs: Math.round(performance.now() - startedAt),
+        });
+        await this.#operationJournal.flush();
+      },
+      async (error: unknown) => {
+        const diagnostic = toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED");
+        this.#operationJournal.record({
+          at: new Date().toISOString(),
+          correlationId,
+          generation,
+          operation: "shutdown",
+          status: "fail",
+          elapsedMs: Math.round(performance.now() - startedAt),
+          diagnostic: {
+            code: diagnostic.code,
+            name: diagnostic.name,
+            ...(diagnostic.context === undefined ? {} : { context: diagnostic.context }),
+          },
+        });
+        await this.#operationJournal.flush();
+        throw error;
+      },
+    );
+    this.#shutdownPromise = journalResult;
+    void journalResult.catch(() => undefined);
+    void journalResult.then(
       () => {
-        if (this.#shutdownPromise === result) {
+        if (this.#shutdownPromise === journalResult) {
           this.#shutdownPromise = null;
         }
       },
       () => {
-        if (this.#shutdownPromise === result) {
+        if (this.#shutdownPromise === journalResult) {
           this.#shutdownPromise = null;
         }
       },
     );
-    return result;
+    return journalResult;
   }
 
   #applyReset(): RecorderSnapshot {
