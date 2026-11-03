@@ -821,6 +821,16 @@ describe("AssistantController", () => {
     });
   });
 
+  it("parses the captured Windows VLM response with all exact headings on one physical line", () => {
+    expect(parseImageAnalysisNote(CAPTURED_WINDOWS_SINGLE_LINE_VLM_RESULT)).toEqual({
+      visibleTextAndObjects:
+        "The equation y' = -2y is presented as a first order decay model. 2. The graph shows exponential decay over time T. 3. The solution is y(T) = Yo * e^(-2T).",
+      relationToLesson:
+        "The equation relates a function to its derivative. 2. The graph illustrates the solution curve for the equation.",
+      uncertainty: "None visible.",
+    });
+  });
+
   it("handles case-insensitive headings, numbering, wrapped lines, and extra whitespace", () => {
     expect(
       parseImageAnalysisNote(`
@@ -874,6 +884,22 @@ describe("AssistantController", () => {
       "sections must appear",
     ],
     ["missing", "Visible text/objects: ODE\nRelation to lesson: Lesson", "sections must appear"],
+    [
+      "single-line reordered",
+      "Uncertainty: None Relation to lesson: Lesson Visible text/objects: ODE",
+      "sections must appear",
+    ],
+    ["single-line missing", "Visible text/objects: ODE Relation to lesson: Lesson", "sections must appear"],
+    [
+      "single-line conflicting duplicate",
+      "Visible text/objects: ODE Visible text/objects: Different Relation to lesson: Lesson Uncertainty: None",
+      "duplicated with conflicting content",
+    ],
+    [
+      "non-heading inline phrase",
+      "Visible text/objects: ODE Relationship to lesson: Lesson Uncertainty: None",
+      "sections must appear",
+    ],
     ["empty", "Visible text/objects:\nRelation to lesson: Lesson\nUncertainty: None", "is empty"],
     ["unstructured", "This is an ODE slide with a graph.", "unexpected text"],
   ])("rejects %s image notes", (_label, raw, expected) => {
@@ -893,6 +919,11 @@ describe("AssistantController", () => {
         )}\nUncertainty: ${"u".repeat(1_100)}`,
       ),
     ).toThrow("total bound");
+    expect(() =>
+      parseImageAnalysisNote(
+        `Visible text/objects: ${"x".repeat(1_501)} Relation to lesson: Lesson Uncertainty: None`,
+      ),
+    ).toThrow("field bound");
   });
 });
 
@@ -904,6 +935,9 @@ Relation to lesson:
 - Demonstrates the solution to the first order decay model
 Uncertainty:
 - No uncertainty`;
+
+const CAPTURED_WINDOWS_SINGLE_LINE_VLM_RESULT =
+  "Visible text/objects: 1. The equation y' = -2y is presented as a first order decay model. 2. The graph shows exponential decay over time T. 3. The solution is y(T) = Yo * e^(-2T). Relation to lesson: 1. The equation relates a function to its derivative. 2. The graph illustrates the solution curve for the equation. Uncertainty: None visible.";
 
 class FakeRuntime implements AssistantRuntime {
   assistantStatus: AssistantRuntimeStatus = {

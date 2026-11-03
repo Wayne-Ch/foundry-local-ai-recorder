@@ -470,7 +470,7 @@ export class AssistantController {
 }
 
 export function parseImageAnalysisNote(raw: string): ImageAnalysisNote {
-  const text = formatAssistantPlainText(raw);
+  const text = normalizeImageAnalysisHeadings(formatAssistantPlainText(raw));
   const occurrences = new Map<ImageAnalysisSection, string[]>();
   const firstSeenOrder: ImageAnalysisSection[] = [];
   let current: { readonly section: ImageAnalysisSection; readonly entries: string[] } | null = null;
@@ -559,6 +559,13 @@ const IMAGE_ANALYSIS_SECTION_ORDER = [
 ] as const satisfies readonly ImageAnalysisSection[];
 const MAX_IMAGE_ANALYSIS_FIELD_CHARS = 1_500;
 const MAX_IMAGE_ANALYSIS_TOTAL_CHARS = 3_000;
+
+function normalizeImageAnalysisHeadings(text: string): string {
+  return text.replace(
+    /\s+(?=(?:visible\s+text\s*\/\s*objects|relation\s+to\s+lesson|uncertainty)\s*:)/giu,
+    "\n",
+  );
+}
 
 function parseSectionHeading(
   line: string,
