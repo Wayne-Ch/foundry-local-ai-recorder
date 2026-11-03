@@ -1,5 +1,9 @@
 # Foundry Local Smart AI Recorder
 
+> **Colleague playtest:** follow the
+> [Windows 11 setup and hands-on guide](PLAYTEST.md) on
+> `feature/multimodal-classroom-chat`.
+
 Windows-first Electron prototype for a complete local recording workflow:
 
 1. **Nemotron live draft** while the microphone is active.
@@ -81,13 +85,12 @@ transcoding. Bounded inference resizing for genuinely large photos is separate f
 
 ## Windows setup
 
-Validated on Wayne Chuang's Windows 11 x64 machine with Node.js `26.13.0`.
+Validated on Windows 11 x64 with Node.js `26.13.0`.
 
 ```powershell
-npm install
-npm run fixture:generate
-npm run fixture:image
-npm run start
+npm ci
+npm run build
+npm run start:built
 ```
 
 The project pins patched Electron `42.11.18`. The root `postinstall` runs
@@ -97,6 +100,11 @@ with Windows `Expand-Archive` when necessary.
 
 Repository `.gitattributes` enforces LF for text and marks image/audio/native artifacts binary, so
 a fresh Windows checkout remains lint-clean even when global `core.autocrlf=true`.
+
+The tracked fixtures are ready to use. `fixtures/ode-slide.png` is deterministically generated from
+original repository bitmap code by `scripts/generate-ode-image-fixture.mjs`;
+`fixtures/ode-lesson.wav` is generated from original teaching text by
+`scripts/generate-ode-fixture.ps1`. Normal setup does not regenerate either file.
 
 For local Windows validation, use a genuinely fresh checkout created after `.gitattributes` was
 added. Do not mass-rewrite an existing working tree. Only for a clean, disposable validation
@@ -297,5 +305,5 @@ build, simply avoid the optional right-side panel: the CPU assistant slot is not
 chat or image request is made. If optional native cleanup fails, close the app and restart; the core
 recorder remains the authoritative recovery path.
 
-See [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md), [CODE-WALKTHROUGH.md](CODE-WALKTHROUGH.md), and
-[VALIDATION.md](VALIDATION.md).
+See [PLAYTEST.md](PLAYTEST.md), [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md),
+[CODE-WALKTHROUGH.md](CODE-WALKTHROUGH.md), and [VALIDATION.md](VALIDATION.md).

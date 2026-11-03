@@ -2,9 +2,9 @@
 
 ## Before the room
 
-1. Use Wayne's Windows 11 x64 demo PC.
-2. Run `npm install`, `npm run fixture:generate`, `npm run fixture:image`, and the validation
-   commands in `VALIDATION.md`.
+1. Use the validated Windows 11 x64 demo PC.
+2. Run `npm ci`, confirm the tracked fixtures are present, and run the validation commands in
+   `VALIDATION.md`.
 3. Start with `npm run start:built`.
 4. Select **Prepare local models** while network access is still available.
 5. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary

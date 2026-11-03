@@ -20,7 +20,7 @@ Runtime log evidence:
 - ONNX Runtime `1.31.0`
 - ONNX Runtime GenAI `0.18.0`
 - WebGPU bundle `webgpu-ep-0.2.1-win-x64`
-- model cache `C:\Users\waynechuang\.foundry\cache\models`
+- default per-user Foundry model cache
 - nonessential telemetry disabled by configuration
 
 ## Static validation
