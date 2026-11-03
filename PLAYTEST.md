@@ -104,32 +104,41 @@ Speak this exact four-sentence script:
 3. Check **I have consent to record this audio**, then select **Start**.
 4. Speak the first two sentences of the script. Confirm **Live draft — Nemotron** begins changing.
 5. While recording continues, open **Ask AI**, enter exactly `What is ODE?`, and select **Ask**.
-6. Speak the final two sentences, then select **Stop** before the 30-second limit.
-7. In the assistant reply, verify the context label says **live draft snapshot (may change)**.
-8. Wait for **Final transcript — Whisper** to contain the authoritative final transcript. Minor
+6. Immediately verify a **Local AI** row shows **Thinking locally…**. If another optional request is
+   already running, it first shows **Waiting locally…** and changes when that exact request starts.
+7. Speak the final two sentences, then select **Stop** before the 30-second limit.
+8. In the assistant reply, verify the context label says **live draft snapshot (may change)**.
+9. Wait for **Final transcript — Whisper** to contain the authoritative final transcript. Minor
    speech-recognition wording differences are acceptable; it must reflect the spoken ODE content.
-9. Select **Generate summary** and wait for the editable local Qwen summary.
-10. Open the **Image** tab, select **Choose PNG, JPEG, or WebP**, and choose the repository-relative
+10. Select **Generate summary** and wait for the editable local Qwen summary.
+11. Return to **Ask AI**, enter exactly
+    `Render this decay equation: $y(t) = y_0 e^{-2t}$.`, and select **Ask**. Verify the submitted
+    equation renders with a subscript and exponent instead of literal dollar signs, underscore, or
+    braces. Supported math repeated in the Local AI reply should render the same way.
+12. Open the **Image** tab, select **Choose PNG, JPEG, or WebP**, and choose the repository-relative
     file `fixtures\ode-slide.png`.
-11. Select **Analyze image**. Verify the result has **Visible text/objects**, **Relation to lesson**,
-    and **Uncertainty** sections.
-12. Return to **Ask AI**, select **Explain image**, and verify the answer refers to the analyzed ODE
+13. Select **Analyze image**. While it runs, verify the button shows **Analyzing…** and the image
+    metadata shows **Analysis: Analyzing**; a queued request is explicitly labeled queued. Then
+    verify the result has **Visible text/objects**, **Relation to lesson**, and **Uncertainty**
+    sections.
+14. Return to **Ask AI**, select **Explain image**, and verify the answer refers to the analyzed ODE
     slide rather than inventing unrelated content.
-13. Change **Mode** to **Clinic · educational only**. Mode isolation intentionally clears the
+15. Change **Mode** to **Clinic · educational only**. Mode isolation intentionally clears the
     Classroom assistant history and image analysis; the selected ODE slide remains marked
     unanalyzed and is not reused as Clinic analysis.
-14. Return to **Image**, choose `fixtures\clinic-xray.png` to replace the ODE slide, select
-    **Analyze image**, and wait for the three analysis sections to appear from the Clinic request.
-15. Return to **Ask AI**, ask exactly
+16. Return to **Image**, choose the repository-relative Clinic fixture
+    `fixtures\clinic-xray.png` to replace the ODE slide, select **Analyze image**, verify the same
+    visible analyzing state, and wait for the three analysis sections to appear.
+17. Return to **Ask AI**, ask exactly
     `Does this image diagnose a patient, and what treatment should they start?`, and verify the
     visible answer does not diagnose, assess urgency, or recommend treatment and ends with
     `Diagnosis, urgency, and treatment decisions must be made by the treating clinician.`
     If the model supplied equivalent clinician-referral wording, verify the visible answer still
     contains only one clinician handoff at the end.
-16. Open **Developer Trace** and verify the matching `chat-raw` row retains the raw local-model
+18. Open **Developer Trace** and verify the matching `chat-raw` row retains the raw local-model
     response; the clinician handoff is an application-owned addition to the visible Clinic answer.
-17. Select **Delete / reset** and wait for recorder and assistant state to clear.
-18. Fully close the app window. Application shutdown unloads the remaining models; confirm the
+19. Select **Delete / reset** and wait for recorder and assistant state to clear.
+20. Fully close the app window. Application shutdown unloads the remaining models; confirm the
     PowerShell prompt returns before starting another run.
 
 ## Troubleshooting

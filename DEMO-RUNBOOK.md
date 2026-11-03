@@ -58,8 +58,11 @@ Open **Ask AI** without stopping and select the chip:
 > What is ODE? Answer in one sentence.
 
 Point out that recording and live captions continue while the separate local chat request runs. The
-chat context label must say **live draft snapshot (may change)**; the actual snapshot is not stored
-in chat history.
+request-bound Local AI row shows **Thinking locally…** (or **Waiting locally…** while queued), and
+the chat context label must say **live draft snapshot (may change)**; the actual snapshot is not
+stored in chat history. If time permits, submit
+`Render this decay equation: $y(t) = y_0 e^{-2t}$.` and show that the chat renders the subscript and
+exponent without literal delimiters or braces.
 
 ### 6:00-8:00 — Image understanding while recording continues
 
@@ -67,7 +70,8 @@ in chat history.
 2. Choose `fixtures/ode-slide.png`.
 3. Show basename, PNG type, byte size, dimensions, and thumbnail—never a filesystem path.
 4. Select **Analyze image**.
-5. Show the three fields: visible text/objects, relation to lesson, and uncertainty.
+5. Point out **Analyzing…** on the button and **Analysis: Analyzing** in metadata.
+6. Show the three fields: visible text/objects, relation to lesson, and uncertainty.
 
 State that PNG/JPEG/WebP only are accepted, signature must match the extension-derived MIME, input
 is bounded, and SVG/HTML/PDF/Office files are rejected.

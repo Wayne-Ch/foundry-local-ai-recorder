@@ -1,3 +1,4 @@
+import "katex/dist/katex.min.css";
 import "../renderer/styles.css";
 import type { AssistantLaneSnapshot, AssistantTraceEntry } from "../assistant/assistant-types";
 import {
@@ -9,6 +10,13 @@ import {
 } from "../audio/audio-types";
 import type { ModelReadiness, RecorderSnapshot, TraceEntry } from "../shared/contracts";
 import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
+import {
+  imageAnalysisMetadataValue,
+  imageAnalysisProgress,
+  imageAnalysisProgressMessage,
+  renderAssistantChatRows,
+  renderImageAnalyzeButton,
+} from "./assistant-progress";
 import {
   BoundedAudioChunkPump,
   BoundedPcmCapture,
@@ -1130,10 +1138,15 @@ function render(next: RecorderSnapshot): void {
 
 function renderAssistant(): void {
   const state = assistantSnapshot;
+  const imageProgress = imageAnalysisProgress(state);
+  renderImageAnalyzeButton(elements.imageAnalyze, imageProgress);
   elements.assistantPanel.setAttribute(
     "aria-busy",
-    String(assistantUiPending || state?.activeRequestId != null || state?.cleanupPending === true),
+    String(
+      assistantUiPending || (state?.pendingOperations.length ?? 0) > 0 || state?.cleanupPending === true,
+    ),
   );
+  elements.imageAnalysis.setAttribute("aria-busy", String(imageProgress !== null));
   if (state === null) {
     elements.assistantHistory.replaceChildren(
       textElement(
@@ -1159,6 +1172,10 @@ function renderAssistant(): void {
     state.mode === "clinic"
       ? "Educational and clinician-led only: no diagnosis, urgency, treatment, or interpreter replacement."
       : "Classroom explanations use local context and state uncertainty.";
+  elements.assistantHistory.setAttribute(
+    "aria-busy",
+    String(state.pendingOperations.some(({ kind }) => kind === "chat")),
+  );
   if (state.chatMessages.length === 0) {
     elements.assistantHistory.replaceChildren(
       textElement(
@@ -1168,25 +1185,7 @@ function renderAssistant(): void {
       ),
     );
   } else {
-    elements.assistantHistory.replaceChildren(
-      ...state.chatMessages.map((message) => {
-        const row = document.createElement("article");
-        row.className = `assistant-message assistant-message-${message.role}`;
-        const role = textElement(
-          "strong",
-          "assistant-message-role",
-          message.role === "user" ? "You" : "Local AI",
-        );
-        const text = textElement("p", "assistant-message-text", message.text);
-        const labels = textElement(
-          "small",
-          "assistant-context-labels",
-          `Context: ${message.contextLabels.map((label) => label.label).join(" · ")}`,
-        );
-        row.append(role, text, labels);
-        return row;
-      }),
-    );
+    elements.assistantHistory.replaceChildren(...renderAssistantChatRows(state));
     elements.assistantHistory.scrollTop = elements.assistantHistory.scrollHeight;
   }
 
@@ -1211,12 +1210,14 @@ function renderAssistant(): void {
       metadataTerm("Dimensions"),
       metadataValue(`${image.width} × ${image.height}`),
       metadataTerm("Analysis"),
-      metadataValue(image.analysisStatus === "ready" ? "Ready" : "Unanalyzed"),
+      imageAnalysisMetadataValue(imageProgress, image.analysisStatus === "ready" ? "Ready" : "Unanalyzed"),
     );
   }
 
   const analysis = state.imageAnalysis;
-  if (analysis === null) {
+  if (analysis === null && imageProgress !== null) {
+    elements.imageAnalysis.replaceChildren(imageAnalysisProgressMessage(imageProgress));
+  } else if (analysis === null) {
     elements.imageAnalysis.replaceChildren(
       textElement(
         "p",
@@ -1387,6 +1388,7 @@ function updateControls(): void {
   const assistantCleanupPending = assistantSnapshot?.cleanupPending === true;
   const assistantQueueFull =
     assistantSnapshot !== null && assistantSnapshot.queuedRequests >= assistantSnapshot.maxQueuedRequests;
+  const imageProgress = imageAnalysisProgress(assistantSnapshot);
   elements.assistantMode.disabled = !assistantReady || assistantCleanupPending || assistantUiPending;
   elements.assistantAsk.disabled =
     !assistantReady ||
@@ -1412,6 +1414,7 @@ function updateControls(): void {
     assistantCleanupPending ||
     assistantUiPending ||
     assistantQueueFull ||
+    imageProgress !== null ||
     assistantSnapshot?.image === null;
   elements.imageRemove.disabled =
     !assistantReady || assistantCleanupPending || assistantUiPending || assistantSnapshot?.image === null;

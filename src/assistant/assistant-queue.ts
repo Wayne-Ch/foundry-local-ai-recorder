@@ -1,4 +1,8 @@
-import type { AssistantOperationKind, AssistantOperationToken } from "./assistant-types";
+import type {
+  AssistantOperationKind,
+  AssistantOperationToken,
+  AssistantPendingOperation,
+} from "./assistant-types";
 
 export const DEFAULT_MAX_ASSISTANT_QUEUE = 3;
 
@@ -41,6 +45,29 @@ export class AssistantOperationQueue {
   get activeOperation(): AssistantOperationKind | null {
     const active = this.#active;
     return active !== null && !active.abortController.signal.aborted ? active.token.kind : null;
+  }
+
+  get pendingOperations(): readonly AssistantPendingOperation[] {
+    const active =
+      this.#active !== null && !this.#active.abortController.signal.aborted
+        ? [
+            {
+              requestId: this.#active.id,
+              kind: this.#active.token.kind,
+              status: "active" as const,
+            },
+          ]
+        : [];
+    return [
+      ...active,
+      ...this.#pending
+        .filter((task) => !task.abortController.signal.aborted)
+        .map((task) => ({
+          requestId: task.id,
+          kind: task.token.kind,
+          status: "queued" as const,
+        })),
+    ];
   }
 
   get draining(): boolean {

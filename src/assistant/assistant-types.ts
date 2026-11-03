@@ -2,6 +2,12 @@ export type AssistantMode = "classroom" | "clinic";
 
 export type AssistantOperationKind = "image_analysis" | "chat";
 
+export interface AssistantPendingOperation {
+  readonly requestId: string;
+  readonly kind: AssistantOperationKind;
+  readonly status: "active" | "queued";
+}
+
 export type AssistantContextKind = "live_draft" | "final_transcript" | "summary" | "image_analysis" | "none";
 
 export interface AssistantContextLabel {
@@ -90,6 +96,7 @@ export interface AssistantLaneSnapshot {
   readonly chatMessages: readonly AssistantChatMessage[];
   readonly activeRequestId: string | null;
   readonly activeOperation: AssistantOperationKind | null;
+  readonly pendingOperations: readonly AssistantPendingOperation[];
   readonly queuedRequests: number;
   readonly maxQueuedRequests: number;
   readonly cleanupPending: boolean;

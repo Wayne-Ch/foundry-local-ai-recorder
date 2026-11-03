@@ -44,7 +44,7 @@ export class AssistantMemoryState {
   snapshot(
     queue?: Pick<
       AssistantOperationQueue,
-      "activeRequestId" | "activeOperation" | "queuedRequests" | "maxQueuedRequests"
+      "activeRequestId" | "activeOperation" | "pendingOperations" | "queuedRequests" | "maxQueuedRequests"
     >,
   ): AssistantLaneSnapshot {
     return {
@@ -55,6 +55,7 @@ export class AssistantMemoryState {
       chatMessages: this.#chatMessages.map((message) => message.visible),
       activeRequestId: queue?.activeRequestId ?? null,
       activeOperation: queue?.activeOperation ?? null,
+      pendingOperations: queue?.pendingOperations ?? [],
       queuedRequests: queue?.queuedRequests ?? 0,
       maxQueuedRequests: queue?.maxQueuedRequests ?? DEFAULT_MAX_ASSISTANT_QUEUE,
       cleanupPending: false,

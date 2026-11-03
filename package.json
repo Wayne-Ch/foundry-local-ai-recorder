@@ -28,6 +28,7 @@
     "test:concurrent-assistant-chain-integration": "tsx scripts/run-concurrent-assistant-chain-integration.ts",
     "probe:microphone-permission": "npm run build && node scripts/probe-electron-microphone.mjs",
     "probe:stream-owner": "npm run build && node scripts/probe-electron-stream-owner.mjs",
+    "probe:assistant-ui": "electron scripts/assistant-ui-probe",
     "smoke:electron": "npm run build && node scripts/smoke-electron.mjs",
     "capture:ui": "npm run build && node scripts/capture-ui.mjs",
     "start": "npm run build && electron .",
@@ -35,6 +36,7 @@
   },
   "dependencies": {
     "foundry-local-sdk": "2.2.1",
+    "katex": "0.19.1",
     "zod": "4.6.7"
   },
   "devDependencies": {

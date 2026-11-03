@@ -424,6 +424,14 @@ h2 span {
   border-color: rgba(103, 232, 213, 0.25);
 }
 
+.assistant-message-pending {
+  border-style: dashed;
+}
+
+.assistant-message-queued {
+  opacity: 0.82;
+}
+
 .assistant-message-role {
   display: block;
   margin-bottom: 4px;
@@ -435,6 +443,56 @@ h2 span {
 .image-analysis-line {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.assistant-math-inline {
+  white-space: normal;
+}
+
+.assistant-math-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: normal;
+}
+
+.assistant-math-display .katex-display {
+  margin: 0.6em 0;
+}
+
+.assistant-progress-text,
+.assistant-progress-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.assistant-progress-indicator {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 0.72em;
+  height: 0.72em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: assistant-progress-spin 800ms linear infinite;
+}
+
+.button .assistant-progress-indicator {
+  margin-right: 6px;
+  vertical-align: -0.08em;
+}
+
+@keyframes assistant-progress-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .assistant-progress-indicator {
+    animation: none;
+  }
 }
 
 .assistant-context-labels {

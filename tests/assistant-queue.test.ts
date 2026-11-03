@@ -3,6 +3,55 @@ import { AssistantCancelledError, AssistantOperationQueue } from "../src/assista
 import type { AssistantOperationKind, AssistantOperationToken } from "../src/assistant/assistant-types";
 
 describe("assistant operation queue", () => {
+  it("reports exact queued and active request identities", async () => {
+    const queue = new AssistantOperationQueue(2);
+    let release = () => {};
+    const firstToken = token("chat");
+    const first = queue.enqueue("session-1", firstToken, async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return "first";
+    });
+
+    expect(queue.pendingOperations).toEqual([
+      { requestId: firstToken.requestId, kind: "chat", status: "queued" },
+    ]);
+    await Promise.resolve();
+    const secondToken = token("image_analysis", {
+      dependsOnImage: true,
+      requiresImageBytes: true,
+    });
+    const second = queue.enqueue("session-1", secondToken, async () => "second");
+
+    expect(queue.pendingOperations).toEqual([
+      { requestId: firstToken.requestId, kind: "chat", status: "active" },
+      { requestId: secondToken.requestId, kind: "image_analysis", status: "queued" },
+    ]);
+    release();
+    await expect(first.result).resolves.toBe("first");
+    await expect(second.result).resolves.toBe("second");
+    expect(queue.pendingOperations).toEqual([]);
+  });
+
+  it("removes cancelled request identities immediately", async () => {
+    const queue = new AssistantOperationQueue();
+    let release = () => {};
+    const operationToken = token("chat");
+    const request = queue.enqueue("session-1", operationToken, async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return "unreachable";
+    });
+    await Promise.resolve();
+
+    expect(queue.cancel(operationToken.requestId)).toBe(true);
+    expect(queue.pendingOperations).toEqual([]);
+    release();
+    await expect(request.result).rejects.toBeInstanceOf(AssistantCancelledError);
+  });
+
   it("serializes requests and enforces a bounded waiting queue", async () => {
     const queue = new AssistantOperationQueue(1);
     let release = () => {};

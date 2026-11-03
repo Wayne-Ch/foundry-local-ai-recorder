@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 
 describe("assistant UI and Electron isolation", () => {
   it("keeps the side panel keyboard-readable and exposes non-color status text", async () => {
-    const source = await read("src/renderer/app.ts");
+    const [source, progress, styles] = await Promise.all([
+      read("src/renderer/app.ts"),
+      read("src/renderer/assistant-progress.ts"),
+      read("src/renderer/styles.css"),
+    ]);
 
     expect(source).toContain('role="tablist"');
     expect(source).toContain('role="tab"');
@@ -14,8 +18,18 @@ describe("assistant UI and Electron isolation", () => {
     expect(source).toContain("event.ctrlKey || event.metaKey");
     expect(source).toContain("assistantStatus.textContent");
     expect(source).toContain("document.createTextNode(value)");
+    expect(source).toContain("renderAssistantChatRows(state)");
+    expect(source).toContain("renderImageAnalyzeButton(elements.imageAnalyze, imageProgress)");
+    expect(progress).toContain('"Thinking locally…"');
+    expect(progress).toContain('"Waiting locally…"');
+    expect(progress).toContain('"Analyzing…"');
+    expect(progress).toContain('row.setAttribute("aria-busy", "true")');
+    expect(progress).toContain('value.setAttribute("role", "status")');
+    expect(progress).toContain("row.append(role, text, contextLabels(message))");
+    expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
     expect(source).not.toContain("assistantHistory.innerHTML");
     expect(source).not.toContain("imageAnalysis.innerHTML");
+    expect(progress).not.toContain(".innerHTML");
   });
 
   it("preserves sandboxed preload isolation and main-frame ownership checks", async () => {

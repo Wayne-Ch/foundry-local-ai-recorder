@@ -19,6 +19,77 @@ import { pickAssistantImage } from "../src/main/assistant-image-picker";
 import type { TranscriptSnapshot } from "../src/transcript/transcript-store";
 
 describe("AssistantController", () => {
+  it("tracks chat progress by request identity from queue through completion", async () => {
+    let release = () => {};
+    const runtime = new FakeRuntime(
+      "The answer is ready.",
+      async () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime,
+    });
+
+    const started = controller.startChat("session-1", "Explain the lesson.", () => {});
+
+    expect(started.snapshot.pendingOperations).toEqual([
+      { requestId: started.requestId, kind: "chat", status: "queued" },
+    ]);
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+    expect(controller.snapshot().pendingOperations).toEqual([
+      { requestId: started.requestId, kind: "chat", status: "active" },
+    ]);
+
+    release();
+    await vi.waitFor(() =>
+      expect(
+        controller
+          .snapshot()
+          .chatMessages.some(
+            (message) => message.requestId === started.requestId && message.role === "assistant",
+          ),
+      ).toBe(true),
+    );
+    expect(controller.snapshot().pendingOperations).toEqual([]);
+  });
+
+  it("removes chat progress on cancellation and failure", async () => {
+    let release = () => {};
+    const runtime = new FakeRuntime(
+      "cancelled answer",
+      async () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const controller = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime,
+    });
+    const cancelled = controller.startChat("session-1", "Cancel this.", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+    controller.cancel(cancelled.requestId);
+    expect(controller.snapshot().pendingOperations).toEqual([]);
+    release();
+    await vi.waitFor(() => expect(controller.snapshot().cleanupPending).toBe(false));
+
+    const failing = new AssistantController({
+      getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+      runtime: new FakeRuntime("unreachable", async () => {
+        throw new Error("local inference failed");
+      }),
+    });
+    failing.startChat("session-1", "Fail this.", () => {});
+    await vi.waitFor(() =>
+      expect(failing.snapshot().trace.some((entry) => entry.phase === "assistant-failure")).toBe(true),
+    );
+    expect(failing.snapshot().pendingOperations).toEqual([]);
+  });
+
   it("answers from an ephemeral live snapshot without persisting the live text", async () => {
     let transcript = snapshot({ liveDraft: "private live ODE words", liveSequence: 4 });
     const runtime = new FakeRuntime("An ODE relates a function to its ordinary derivatives.");
@@ -298,6 +369,7 @@ describe("AssistantController", () => {
           break;
       }
 
+      expect(controller.snapshot().pendingOperations).toEqual([]);
       release();
       await vi.waitFor(() => expect(controller.snapshot().cleanupPending).toBe(false));
       expect(
@@ -564,6 +636,7 @@ describe("AssistantController", () => {
       mode: "classroom",
       activeRequestId: null,
       activeOperation: null,
+      pendingOperations: [],
       cleanupPending: true,
     });
     expect(runtime.resetAssistant).toHaveBeenCalledOnce();
@@ -643,6 +716,7 @@ describe("AssistantController", () => {
             release = resolve;
           }),
       );
+
       const controller = new AssistantController({
         getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
         runtime,
@@ -665,6 +739,53 @@ describe("AssistantController", () => {
       await vi.waitFor(() => expect(controller.snapshot().cleanupPending).toBe(false));
       expect(operationBytes).toEqual(new Uint8Array([0, 0, 0]));
       expect(controller.snapshot().chatMessages.some((message) => message.role === "assistant")).toBe(false);
+    },
+  );
+
+  it.each(["cancel", "replace", "remove", "mode", "reset"] as const)(
+    "%s clears image-analysis progress immediately",
+    async (action) => {
+      let release = () => {};
+      const runtime = new FakeRuntime(
+        "Visible text/objects: ODE\nRelation to lesson: Equation\nUncertainty: None",
+        async () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const controller = new AssistantController({
+        getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
+        runtime,
+      });
+      controller.selectImage(image(), "data:image/png;base64,abc");
+      const started = controller.startImageAnalysis("session-1", () => {});
+      await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+      expect(controller.snapshot().pendingOperations).toEqual([
+        { requestId: started.requestId, kind: "image_analysis", status: "active" },
+      ]);
+
+      switch (action) {
+        case "cancel":
+          controller.cancel(started.requestId);
+          break;
+        case "replace":
+          controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+          break;
+        case "remove":
+          controller.removeImage();
+          break;
+        case "mode":
+          controller.setMode("clinic");
+          break;
+        case "reset":
+          controller.reset();
+          break;
+      }
+
+      expect(controller.snapshot().pendingOperations).toEqual([]);
+      expect(controller.snapshot().imageAnalysis).toBeNull();
+      release();
+      await vi.waitFor(() => expect(controller.snapshot().cleanupPending).toBe(false));
     },
   );
 

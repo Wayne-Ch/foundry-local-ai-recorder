@@ -29,6 +29,7 @@ fallbacks.
 | Final ASR | `openai-whisper-tiny-generic-cpu:4` / `CPUExecutionProvider` |
 | Summary | `qwen3-0.6b-generic-gpu:2` / `WebGPUExecutionProvider` |
 | Optional text + image chat | exact `qwen3.5-0.8b-generic-cpu:3` / CPU / `CPUExecutionProvider`, accepted only after runtime task/modality/EP validation; fresh per-turn `ChatSession` |
+| Assistant math display | `katex@0.19.1`; supported inline/display delimiters only, trust disabled, prose and markup kept as text nodes |
 | Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded eight-chunk renderer/native queues |
 | Whisper input | Application-owned validated temporary WAV passed through `Item.audioFromUri(...)` |
 | Summary input | Exact, untrimmed Whisper string/version captured by `TranscriptStore.submitForSummary()` |
@@ -83,6 +84,14 @@ use bounded diagnosis, urgency/emergency, treatment, medication/prescription, or
 clinician referral and appends one fixed clinician handoff to the visible answer. The addition is
 not written into later model chat history, and the exact local-model output remains unchanged in
 the `chat-raw` Developer Trace entry.
+
+Assistant chat renders supported `$...$`, `$$...$$`, `\(...\)`, and `\[...\]` math with KaTeX.
+Delimiter parsing is bounded, ordinary currency and unmatched delimiters remain text, invalid math
+falls back to its literal source, and KaTeX trust is disabled. Model/user HTML remains inert text;
+the renderer never inserts arbitrary model markup. Each chat request also has an identity-bound
+**Waiting locally…** or **Thinking locally…** row until completion, cancellation, reset, mode
+change, or failure. Image analysis similarly shows **Analyzing…** on the button and **Analyzing**
+in image metadata while that exact request is pending.
 
 The renderer's existing PNG thumbnail is a UI-only safety boundary. The reproduced repetition used
 the 13.6 KiB, 1280×720 `ode-slide.png`, so this mitigation intentionally does not add image
@@ -141,6 +150,7 @@ npm run build
 npm run smoke:electron
 npm run probe:microphone-permission
 npm run probe:stream-owner
+npm run probe:assistant-ui
 npm run capture:ui
 npm run test:whisper-integration
 npm run test:nemotron-integration
@@ -155,6 +165,11 @@ npm audit --audit-level=low
 `npm run capture:ui` uses a capture-only populated snapshot so the 1600×900 screenshot includes a
 final transcript, formatted summary, and exact raw-summary trace evidence. It writes the ignored,
 reproducible artifact to `artifacts\smart-ai-recorder-populated-summary.png`.
+
+`npm run probe:assistant-ui` runs a hidden sandboxed Electron renderer and inspects the resulting
+DOM for rendered inline/display math, inert markup, ordinary dollar text, request-bound chat/image
+progress, context labels, and accessible busy/status attributes. It writes the ignored screenshot
+`artifacts\assistant-ui-rendering.png`.
 
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
 Synthesis from original ODE teaching text, and `fixtures/ode-slide.png`, generated from original
@@ -179,17 +194,21 @@ included. The separate Clinic playtest fixture is the CC0, metadata-free
   imported WAV files converge on this same summary path.
 - **Ask AI** remains available during recording. It snapshots the current live draft for that
   request only, stores only the label `live draft snapshot (may change)` in chat history, and never
-  writes the draft into final transcript or summary state.
+  writes the draft into final transcript or summary state. The matching Local AI row visibly shows
+  **Waiting locally…** while queued and **Thinking locally…** while active.
 - Assistant inference is enabled after **Prepare local models**. Text-only and image requests use
   the same lazy optional CPU VLM slot and validated manager generation; the summary slot remains
   exclusive to transcript summary.
 - Chat is memory-only, bounded, serialized, cancellable, and independent from summary generation.
   Suggested prompts include a one-sentence ODE definition, a practical example, and one-sentence
-  explanation of the selected image.
+  explanation of the selected image. Supported inline/display LaTeX is rendered safely; ordinary
+  currency, unmatched delimiters, and non-math prose remain unchanged.
 - **Image** accepts a bounded lecture/blackboard/diagram/slide screenshot or the pinned Clinic
-  X-ray fixture. Analysis returns three concise fields: visible text/objects, relation to lesson
-  context, and uncertainty. A saved transcript correction immediately marks prior analysis
-  unavailable and queues re-analysis; stale image/context results are rejected.
+  X-ray fixture at `fixtures/clinic-xray.png`. While analysis is pending, the button and metadata
+  visibly show the queued/active **Analyzing** state with accessible progress. Analysis returns
+  three concise fields: visible text/objects, relation to lesson context, and uncertainty. A saved
+  transcript correction immediately marks prior analysis unavailable and queues re-analysis;
+  stale image/context results are rejected.
 - Classroom mode explains lesson material. Clinic mode is educational and clinician-led only: no
   diagnosis, urgency assessment, treatment recommendation, or interpreter replacement.
   Switching modes cancels every assistant request, clears chat/analysis, and leaves any selected
@@ -233,8 +252,9 @@ included. The separate Clinic playtest fixture is the CC0, metadata-free
 - Reset immediately clears visible assistant active/image/chat state. Native cancellation and
   vision-slot unload may continue under an explicit optional-draining status, which rejects new
   assistant work without blocking recording, Whisper, or core cleanup
-- assistant responses are rendered only with `textContent`/text nodes; exact raw local model output
-  remains Developer Trace evidence
+- assistant prose and markup are rendered only with text nodes; recognized math delimiters alone
+  are passed to KaTeX with trust disabled, and exact raw local model output remains Developer Trace
+  evidence
 - deterministic queue, session, model, manager, and temporary-file cleanup
 - request cancellation, session disposal, operation settlement, and temporary-file deletion are
   attempted independently so one cleanup failure cannot skip the rest
