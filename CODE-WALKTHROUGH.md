@@ -141,14 +141,20 @@ Show:
 - state revalidation after dialog/stat/read/decode boundaries, original-byte zero-fill, and the PNG
   thumbnail-only renderer contract;
 - final-transcript → ephemeral-live-draft → none context priority;
-- image/context token comparison in `applyImageAnalysis`;
+- full transcript/version fingerprinting for image/context token comparison in `applyImageAnalysis`;
+- the separate 160-character sentence-bounded lesson-topic excerpt used only by the multimodal
+  prompt, so a tail-only correction still invalidates stored or in-flight analysis;
+- system-only safety plus deterministic early stopping and a 180-token image output reserve to
+  contain the known small-Qwen VLM repetition failure;
 - automatic re-analysis after Whisper final/import/correction.
 
 Message:
 
 > The renderer never receives a path or original bytes. Image analysis is an optional,
 > version-attached note. If the image or lesson context changes while inference runs, the result is
-> trace evidence only and cannot attach to current state.
+> trace evidence only and cannot attach to current state. The safe UI thumbnail is unchanged; the
+> reproduced 13.6 KiB fixture is not an image-size failure, so large-photo inference resizing is a
+> separate future hardening item.
 
 ## 10:45-12:15 — Side chat is separate from capture and summary
 

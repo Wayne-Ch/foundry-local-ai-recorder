@@ -4,6 +4,7 @@ import path from "node:path";
 import type { RequestOptions } from "foundry-local-sdk";
 import { DeviceType } from "foundry-local-sdk";
 import { describe, expect, it, vi } from "vitest";
+import { assistantSystemPrompt } from "../src/assistant/assistant-prompts";
 import type {
   AssistantImageByteLifecycle,
   AssistantImageBytePurpose,
@@ -323,8 +324,10 @@ describe("AssistantController", () => {
     expect(runtime.inputs[0]?.systemPrompt).toContain("qualified interpreter");
   });
 
-  it("rejects stale image analysis when the transcript version changes", async () => {
-    let transcript = snapshot({ finalText: "version one", version: 1 });
+  it("rejects in-flight image analysis after a tail-only transcript correction", async () => {
+    const initialTranscript =
+      "An ordinary differential equation relates a function to its derivatives. For the first order equation y prime equals negative two y, separate the variables. The solution is y of t equals c times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.";
+    let transcript = snapshot({ finalText: initialTranscript, version: 1 });
     let release = () => {};
     const runtime = new FakeRuntime(
       "Visible text/objects: y' = -2y\nRelation to lesson: It is an ODE.\nUncertainty: None visible.",
@@ -341,7 +344,13 @@ describe("AssistantController", () => {
 
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
-    transcript = snapshot({ finalText: "corrected", version: 2 });
+    transcript = snapshot({
+      finalText: initialTranscript.replace(
+        "If y of 0 equals 3, then c equals 3.",
+        "If y of 0 equals 4, then c equals 4.",
+      ),
+      version: 1,
+    });
     release();
     await vi.waitFor(() =>
       expect(
@@ -354,6 +363,77 @@ describe("AssistantController", () => {
     );
 
     expect(controller.snapshot().imageAnalysis).toBeNull();
+  });
+
+  it("invalidates a tail-only transcript correction even when the bounded image topic is unchanged", async () => {
+    const initialTranscript =
+      "An ordinary differential equation relates a function to its derivatives. For the first order equation y prime equals negative two y, separate the variables. The solution is y of t equals c times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.";
+    const correctedTranscript = initialTranscript.replace(
+      "If y of 0 equals 3, then c equals 3.",
+      "If y of 0 equals 4, then c equals 4.",
+    );
+    let transcript = snapshot({ finalText: initialTranscript, version: 7 });
+    const runtime = new FakeRuntime([
+      "Visible text/objects: ODE graph\nRelation to lesson: Exponential decay\nUncertainty: None",
+      "Visible text/objects: ODE graph\nRelation to lesson: Exponential decay\nUncertainty: None",
+    ]);
+    const controller = new AssistantController({
+      getTranscript: () => transcript,
+      runtime,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
+    const originalFingerprint = controller.snapshot().imageAnalysis?.contextFingerprint;
+    const originalPrompt = runtime.inputs[0]?.prompt;
+
+    transcript = snapshot({ finalText: correctedTranscript, version: 7 });
+    expect(controller.synchronizeTranscriptContext().changed).toBe(true);
+    expect(controller.snapshot().imageAnalysis).toBeNull();
+
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(2));
+    await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
+
+    expect(runtime.inputs[1]?.prompt).toBe(originalPrompt);
+    expect(controller.snapshot().imageAnalysis?.contextFingerprint).not.toBe(originalFingerprint);
+  });
+
+  it("uses system-only safety and supported bounded image request options", async () => {
+    const runtime = new FakeRuntime(
+      "Visible text/objects: ODE graph\nRelation to lesson: Exponential decay\nUncertainty: None",
+    );
+    const controller = new AssistantController({
+      getTranscript: () =>
+        snapshot({
+          finalText:
+            "An ordinary differential equation relates a function to its derivatives. For the first order equation y prime equals negative two y, separate the variables. The solution is y of t equals c times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.",
+          version: 1,
+        }),
+      runtime,
+    });
+    controller.selectImage(image(), "data:image/png;base64,abc");
+
+    controller.startImageAnalysis("session-1", () => {});
+    await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
+
+    expect(runtime.inputs[0]?.systemPrompt).toBe(assistantSystemPrompt("classroom"));
+    expect(runtime.inputs[0]?.prompt).not.toContain("concise local classroom assistant");
+    expect(runtime.inputs[0]?.prompt).not.toContain("No summary context.");
+    expect(runtime.inputs[0]?.prompt).not.toContain("No image analysis context.");
+    expect(runtime.requestOptions[0]).toMatchObject({
+      search: {
+        doSample: false,
+        temperature: 0,
+        seed: 42,
+        earlyStopping: true,
+        maxOutputTokens: 180,
+      },
+      toolChoice: "none",
+    });
+    expect(runtime.requestOptions[0]?.search).not.toHaveProperty("frequencyPenalty");
+    expect(runtime.requestOptions[0]?.search).not.toHaveProperty("presencePenalty");
   });
 
   it("uses direct VLM image data for image-specific chat and works without images otherwise", async () => {
@@ -833,6 +913,7 @@ class FakeRuntime implements AssistantRuntime {
     cleanupDiagnostic: null,
   };
   readonly inputs: VisionChatTurnInput[] = [];
+  readonly requestOptions: Array<RequestOptions | undefined> = [];
   readonly imagePayloads: Uint8Array[] = [];
   readonly cancelAssistantOperations = vi.fn((_reason?: unknown): Promise<void> | null => {
     if (!this.assistantStatus.active) {
@@ -856,7 +937,7 @@ class FakeRuntime implements AssistantRuntime {
 
   async runAssistantTurn(
     input: VisionChatTurnInput,
-    _options?: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions },
+    options?: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions },
   ): Promise<VisionChatTurnResult> {
     this.assistantStatus = {
       ...this.assistantStatus,
@@ -865,6 +946,7 @@ class FakeRuntime implements AssistantRuntime {
     };
     const index = this.inputs.length;
     this.inputs.push(input);
+    this.requestOptions.push(options?.requestOptions);
     for (const image of input.images ?? []) {
       if (image.kind === "data") {
         this.imagePayloads.push(Uint8Array.from(image.data));

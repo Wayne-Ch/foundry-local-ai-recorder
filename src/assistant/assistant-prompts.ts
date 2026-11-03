@@ -1,5 +1,7 @@
 import type { AssistantChatMessage, AssistantMode, AssistantRequestContext } from "./assistant-types";
 
+export const IMAGE_LESSON_TOPIC_MAX_CHARS = 160;
+
 const CLASSROOM_SAFETY =
   "You are a concise local classroom assistant. Explain only from the supplied local context, say when uncertain, and never claim citations or grounding that were not supplied.";
 
@@ -10,16 +12,46 @@ export function assistantSystemPrompt(mode: AssistantMode): string {
   return mode === "clinic" ? `${CLASSROOM_SAFETY}\n${CLINIC_SAFETY}` : CLASSROOM_SAFETY;
 }
 
-export function imageAnalysisPrompt(mode: AssistantMode, context: AssistantRequestContext): string {
+export function imageAnalysisPrompt(context: AssistantRequestContext): string {
+  const lessonTopic = imageLessonTopicExcerpt(context.transcript.text);
   return [
-    assistantSystemPrompt(mode),
     "Analyze the attached image as a lesson aid.",
-    "Return exactly three short plain-text lines beginning with:",
-    "Visible text/objects:",
-    "Relation to lesson:",
-    "Uncertainty:",
-    contextBlock(context),
-  ].join("\n");
+    "Use only visible image evidence and the bounded lesson topic below.",
+    lessonTopic
+      ? `LESSON TOPIC (first complete sentences, maximum ${IMAGE_LESSON_TOPIC_MAX_CHARS} characters)\n${lessonTopic}`
+      : "",
+    "Return exactly these three ordered plain-text sections and no other text:",
+    "Visible text/objects: 1 to 3 concise image-grounded observations.",
+    "Relation to lesson: 1 to 2 concise connections to the lesson topic.",
+    "Uncertainty: 1 concise uncertainty statement, or the words None visible.",
+    "Do not repeat any phrase, sentence, or section.",
+    "Stop immediately after the Uncertainty section.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function imageLessonTopicExcerpt(transcript: string): string {
+  const normalized = transcript.trim().replaceAll(/\s+/gu, " ");
+  if (normalized.length <= IMAGE_LESSON_TOPIC_MAX_CHARS) {
+    return normalized;
+  }
+
+  let sentenceBoundary = 0;
+  for (const match of normalized.matchAll(/[.!?](?=\s|$)/gu)) {
+    const end = (match.index ?? 0) + match[0].length;
+    if (end > IMAGE_LESSON_TOPIC_MAX_CHARS) {
+      break;
+    }
+    sentenceBoundary = end;
+  }
+  if (sentenceBoundary > 0) {
+    return normalized.slice(0, sentenceBoundary);
+  }
+
+  const bounded = normalized.slice(0, IMAGE_LESSON_TOPIC_MAX_CHARS);
+  const finalWhitespace = bounded.lastIndexOf(" ");
+  return finalWhitespace > 0 ? bounded.slice(0, finalWhitespace) : bounded;
 }
 
 export function chatUserPrompt(

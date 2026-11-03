@@ -39,7 +39,8 @@ const IMAGE_REQUEST_OPTIONS: RequestOptions = {
   ...CHAT_REQUEST_OPTIONS,
   search: {
     ...CHAT_REQUEST_OPTIONS.search,
-    maxOutputTokens: 280,
+    earlyStopping: true,
+    maxOutputTokens: 180,
   },
 };
 
@@ -215,7 +216,7 @@ export class AssistantController {
       try {
         const result = await this.#runTurn(
           {
-            prompt: imageAnalysisPrompt(operationToken.mode, operationToken.context),
+            prompt: imageAnalysisPrompt(operationToken.context),
             systemPrompt: assistantSystemPrompt(operationToken.mode),
             images: [
               {

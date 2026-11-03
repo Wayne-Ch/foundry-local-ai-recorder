@@ -66,7 +66,18 @@ magic signatures must agree; input is capped at 10 MiB, 8,192 px per side, and 2
 SVG, HTML, PDF, and Office files are rejected. The renderer receives only a PNG thumbnail plus
 sanitized basename, original MIME, byte size, and dimensions—never a filesystem path or original
 bytes. Analysis attaches to an exact image/context version and is discarded when stale. A final
-transcript is preferred; otherwise a labeled ephemeral live-draft snapshot is used.
+transcript is preferred; otherwise a labeled ephemeral live-draft snapshot is used. Image analysis
+keeps the complete transcript/version in its SHA-256 context fingerprint for stale-state checks,
+but sends only a deterministic, whitespace-normalized lesson-topic excerpt to the VLM: the first
+complete sentence(s) that fit within 160 characters, with a word-safe cap when no sentence fits.
+Classroom/Clinic safety is supplied once as the system message. The image turn uses deterministic
+sampling, `earlyStopping: true`, and a 180-token output reserve; its user prompt requires exactly
+three ordered, bounded sections, rejects repetition, and stops immediately after Uncertainty.
+Parsing remains fail-closed with the existing section and size bounds.
+
+The renderer's existing PNG thumbnail is a UI-only safety boundary. The reproduced repetition used
+the 13.6 KiB, 1280×720 `ode-slide.png`, so this mitigation intentionally does not add image
+transcoding. Bounded inference resizing for genuinely large photos is separate future hardening.
 
 ## Windows setup
 

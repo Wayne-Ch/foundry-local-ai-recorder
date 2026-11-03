@@ -95,7 +95,9 @@ Unit coverage includes:
   bounds, active/document format rejection, generated ODE fixture validation, sanitized basename,
   and renderer contracts with no path/original bytes;
 - final transcript versus ephemeral live-draft image/chat context priority, context labels, image
-  and transcript version tokens, stale analysis rejection, and no durable live snapshot text;
+  and transcript version tokens, full-transcript fingerprints with 160-character sentence-bounded
+  image-topic excerpts, tail-only correction invalidation, stale analysis rejection, and no durable
+  live snapshot text;
 - classroom and clinic prompts, including explicit no diagnosis, urgency assessment, treatment
   recommendation, or interpreter replacement;
 - bounded serialized assistant queue, active/queued cancellation, owner revocation, Reset, mode
@@ -284,6 +286,9 @@ npm run test:concurrent-assistant-chain-integration
 
 Required success markers:
 
+- `VISION_REPETITION_REGRESSION_OK`: ordered text chat → native Whisper final → reviewed exact
+  problematic transcript → Qwen summary → `ode-slide.png` image analysis, ending in
+  `finishReason: stop` with all three parsed sections.
 - `VISION_INTEGRATION_OK`: exact
   `qwen3.5-0.8b-generic-cpu:3` / `CPUExecutionProvider`, real `ode-slide.png` bytes, structured
   visible text/relation/uncertainty note, and ODE/equation recognition.
@@ -346,6 +351,11 @@ cloud endpoint**, not as a completed physically offline rehearsal.
   in explicit or strongly signaled math spans for display; ambiguous notation and literal commands
   remain unchanged, raw text remains trace evidence, and the editable summary is not a citation
   source.
+- The Qwen 0.8B CPU VLM has a known long-context repetition failure class. Image analysis mitigates
+  it by retaining the complete transcript/version only in the stale-state fingerprint while sending
+  a deterministic 160-character sentence-bounded topic excerpt, system safety once, early stopping,
+  and a 180-token output reserve. The reproduced 13.6 KiB, 1280×720 fixture was not size-bound;
+  inference resizing for genuinely large photos remains separate future hardening.
 - No transcript/summary export or persistence.
 - Multimodal Windows runtime evidence remains unresolved until all three mandatory commands above
   pass on the target PC with the exact cached CPU vision model/provider.
