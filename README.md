@@ -95,7 +95,7 @@ Close the **AI Recorder** window normally when the playtest is complete and wait
 
 ## Product and storage isolation
 
-The repository name remains unchanged, but release metadata identifies this app as **AI Recorder**:
+The canonical repository and release metadata identify this app as **AI Recorder**:
 
 | Surface | Standard namespace |
 |---|---|
