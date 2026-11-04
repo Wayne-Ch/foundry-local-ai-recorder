@@ -9,10 +9,9 @@ summary flow with:
 - **Clinic · educational only** mode with a required clinician handoff and no diagnosis, urgency,
   or treatment decisions.
 
-Follow the [Enhanced AI Recorder Test Guide](PLAYTEST.md) on the
-`enhanced-ai-recorder` branch.
+Use the [Enhanced AI Recorder Test Guide](PLAYTEST.md) for the complete colleague test flow.
 
-## Exact local stack
+## Local models
 
 | Responsibility | Model | Execution provider |
 |---|---|---|
@@ -30,16 +29,12 @@ summary, text assistance, and image assistance run locally without a cloud infer
 - Node.js and npm.
 - Internet access for the clone, `npm ci`, and first model preparation.
 - Several GB of free disk space for Electron, dependencies, and model assets.
-- A microphone only for live voice-path testing; the committed WAV, typed assistant, and image
+- A microphone only for live voice-path testing; the included WAV, typed assistant, and image
   flows work without one.
-
-## Tested configuration
-
-This guide was tested on Windows 11 x64 with Node.js 26.13.0 and npm 11.20.0.
 
 ## Clone, install, build, and launch
 
-From the parent folder where you want the canonical `enhanced-ai-recorder` clone:
+From the parent folder where you want to keep the `enhanced-ai-recorder` clone:
 
 ```powershell
 git clone --branch enhanced-ai-recorder --single-branch https://github.com/Wayne-Ch/foundry-local-ai-recorder.git enhanced-ai-recorder
@@ -49,10 +44,10 @@ npm run build
 npm run start:built
 ```
 
-Use `npm ci` as shown and do not skip install scripts, because setup installs the required native
+Use `npm ci` as shown and do not skip install scripts. The install step adds the required native
 dependencies.
 
-The committed fixtures are ready to use:
+The included fixtures are ready to use:
 
 - `fixtures\ode-lesson.wav` for the Whisper fallback.
 - `fixtures\ode-slide.png` for Classroom image analysis.
@@ -60,7 +55,7 @@ The committed fixtures are ready to use:
   [fixture provenance record](fixtures/clinic-xray.provenance.md) for its source, license,
   transformation, checksum, and de-identification review.
 
-First preparation may download uncached model and execution-provider assets. Stay online and keep
+First preparation may download uncached model and runtime assets. Stay online and keep
 Enhanced AI Recorder open until all three model cards report **READY** and the status says
 **Enhanced AI Recorder offline ready · 3/3 models**. Later test actions can run offline.
 
@@ -78,5 +73,5 @@ Enhanced AI Recorder open until all three model cards report **READY** and the s
 
 ## Standard app
 
-The standard **AI Recorder** is the repository's `main` branch. Keep it in a separate canonical
-`ai-recorder` clone rather than switching this single-branch Enhanced clone.
+The standard **AI Recorder** is on the `main` branch. Keep it in a separate `ai-recorder` clone
+rather than switching branches in this Enhanced checkout.
