@@ -9,11 +9,12 @@ Currently validated Windows configuration Prepare/progress/native recovery evide
 Shared three-model offline-readiness evidence: 2026-11-03
 
 Formal app validation and current E2E evidence were executed on a Windows 11 x64 machine with AMD
-Radeon graphics and working WebGPU. This is the currently validated configuration, not a statement
-that Enhanced AI Recorder is intended only for that hardware. The three models themselves use the
-exact CPU execution providers listed below. Foundry Local's broader public platform and hardware
-support is separate from this app-specific evidence. Other app environments have not yet been
-validated to the same depth and must not be presented as having equivalent evidence until tested.
+Radeon graphics and working WebGPU. Those details identify the evidence machine, not product
+requirements: the three models use the exact CPU execution providers listed below, and Enhanced AI
+Recorder is not intended only for the validated hardware. Foundry Local's broader public platform
+and hardware support is separate from this app-specific evidence. Other app environments have not
+yet been validated to the same depth and must not be presented as having equivalent evidence until
+tested.
 
 ## Validated identities
 
@@ -24,6 +25,10 @@ validated to the same depth and must not be presented as having equivalent evide
 | Shared summary + text/image assistant | `qwen3.5-0.8b-generic-cpu:3` | CPU / `CPUExecutionProvider` | 1,037 MB; one prepared shared slot, fresh `ChatSession` per request |
 
 SDK: `foundry-local-sdk@2.2.1`
+
+Toolchain evidence: Node.js `26.13.0` with npm `11.20.0`. The root `package.json` declares neither
+an `engines` range nor a pinned `packageManager`, so these versions are validated evidence rather
+than a declared support range.
 
 Runtime log evidence:
 

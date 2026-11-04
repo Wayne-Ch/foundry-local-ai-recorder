@@ -111,9 +111,11 @@ transcoding. Bounded inference resizing for genuinely large photos is separate f
 
 ### Requirements
 
-- Windows 11 x64.
-- Git for Windows.
-- Node.js 26.x with npm.
+- The committed setup and playtest path is Windows 11 x64; current formal validation uses the same
+  platform.
+- Git.
+- Node.js and npm; the root `package.json` currently declares neither an `engines` range nor a
+  pinned `packageManager`.
 - Internet access for the clone, `npm ci`, and first model preparation.
 - Several GB of free disk space for Electron, dependencies, and model/execution-provider assets.
 - No minimum RAM value has been established by testing.
@@ -123,7 +125,8 @@ transcoding. Bounded inference resizing for genuinely large photos is separate f
 ### Validated configuration
 
 Formal app validation and current E2E evidence for this release were executed with Node.js
-`26.13.0` on a Windows 11 x64 machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM. All
+`26.13.0` and npm `11.20.0` on a Windows 11 x64 machine with AMD Radeon graphics, working WebGPU,
+and 64 GB RAM. Those Node/npm versions are validation evidence, not a declared support range. All
 three Foundry Local models use the documented `CPUExecutionProvider` path; AMD Radeon/WebGPU
 identifies the evidence environment and is not a model requirement. This configuration is not the
 product's only intended target. Foundry Local's broader public platform and hardware support is
@@ -170,9 +173,9 @@ git reset --hard HEAD
 
 Then run lint and the model gates. Never use that reset recipe in a worktree containing changes.
 
-First preparation can take several minutes while model and execution-provider assets are
-downloaded. Stay online and keep Enhanced AI Recorder open until all required model cards are
-ready; later demo actions can run offline.
+First preparation can take several minutes while uncached model and execution-provider assets
+download. Stay online and keep Enhanced AI Recorder open until all required model cards report
+READY; later demo actions can run offline.
 
 After successful Prepare, summary, Ask, Analyze, and Explain reuse the loaded shared CPU model
 without catalog lookup, model download, or provider acquisition. The application does not start

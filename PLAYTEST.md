@@ -10,9 +10,11 @@ floor plans, or general visual inspection.
 
 ## Requirements
 
-- Windows 11 x64.
-- Git for Windows.
-- Node.js 26.x with npm.
+- The committed setup and playtest path is Windows 11 x64; current formal validation uses the same
+  platform.
+- Git.
+- Node.js and npm; the root `package.json` currently declares neither an `engines` range nor a
+  pinned `packageManager`.
 - Internet access for the clone, npm packages, and any uncached model or execution-provider
   downloads.
 - Several GB of free disk space for Electron, dependencies, models, and model caches.
@@ -22,16 +24,13 @@ floor plans, or general visual inspection.
 
 ## Validated configuration
 
-This playtest's current E2E evidence was collected with Node.js `26.13.0` on a Windows 11 x64
-machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM. All Recorder models use the
+This playtest's current E2E evidence was collected with Node.js `26.13.0` and npm `11.20.0` on a
+Windows 11 x64 machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM. Those Node/npm
+versions are validation evidence, not a declared support range. All Recorder models use the
 documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and
 is not a model requirement. This configuration is not the product's only intended target. Foundry
 Local's broader public platform and hardware support is separate, and other app environments must
 not be presented as having equivalent evidence until tested to the same depth.
-
-First preparation can take several minutes while model and execution-provider assets are
-downloaded. Stay online and keep Enhanced AI Recorder open until all required model cards are
-ready; later demo actions can run offline.
 
 ## Clone the Enhanced branch and start
 
@@ -88,20 +87,18 @@ git diff --exit-code -- .\fixtures\ode-slide.png
 
 ## Prepare the local models
 
-1. Keep the PC online for the first preparation.
-2. Select **Prepare local models**.
-3. Confirm the button changes immediately and each card exposes its current step: runtime/endpoint
+First preparation can take several minutes while uncached model and execution-provider assets
+download. Keep the PC online and Enhanced AI Recorder open until Whisper, Nemotron, and Shared Qwen
+report READY; later demo actions can run offline.
+
+1. Select **Prepare local models**.
+2. Confirm the button changes immediately and each card exposes its current step: runtime/endpoint
    initialization, catalog/cache lookup, download, provider registration, or model load. Do not
    accept a static screen with no visible working state.
-4. Wait until the Whisper, Nemotron, and **Shared Qwen** cards all show **READY**, the status says
+3. Wait until the Whisper, Nemotron, and **Shared Qwen** cards all show **READY**, the status says
    **Enhanced AI Recorder offline ready · 3/3 models**, and the top-right pill says
    **In-process boundary validated**.
-5. Only after 3/3 readiness, disconnect the demo PC from the network for the offline rehearsal.
-
-The first preparation has no fixed latency. It may take several minutes while the three exact
-model payloads are downloaded and loaded. **Downloading** means an uncached asset still requires
-the online preflight; **Loading** means cached local bytes are being placed in memory. Subsequent
-launches use cached assets but still need local load time.
+4. Only after 3/3 readiness, disconnect the demo PC from the network for the offline rehearsal.
 
 Model preparation can use the network, but inference is performed by Foundry Local in-process.
 After successful 3/3 Prepare, summary, Ask, Analyze image, and Explain image reuse the loaded shared
@@ -187,8 +184,6 @@ Get-ChildItem -LiteralPath "$env:TEMP\FoundryLocalEnhancedAIRecorder\audio" `
 
 ### Initial model preparation is slow or fails
 
-- Keep the PC online and let the current download/load status finish; first load is expected to be
-  much slower than a cached launch.
 - For the complete play flow, all three model cards must show **READY**. A visible
   **2/3 local models are ready** warning may still support a reduced recorder path, but it does not
   validate the complete enhanced offline demo.

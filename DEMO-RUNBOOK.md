@@ -2,15 +2,16 @@
 
 ## Before the room
 
-1. Use the validated demo configuration: a Windows 11 x64 PC with AMD Radeon graphics and working
-   WebGPU. This identifies the environment used for the documented rehearsal and E2E evidence; it
-   does not make that hardware the product's only intended target. Foundry Local's broader public
-   platform and hardware support remains separate. Do not claim equivalent app evidence for other
-   environments until they have been tested to the same depth.
+1. Use the current evidence environment for the documented rehearsal: Windows 11 x64 on the
+   recorded AMD Radeon/WebGPU machine. Recorder inference uses `CPUExecutionProvider`, so AMD
+   graphics and WebGPU are not requirements and this machine is not the product's only intended
+   target. Do not claim equivalent app evidence for other environments until they have been tested
+   to the same depth.
 2. Run `npm ci`, confirm the tracked fixtures are present, and run the validation commands in
    `VALIDATION.md`.
 3. Start with `npm run start:built`.
-4. Select **Prepare local models** while network access is still available.
+4. Select **Prepare local models** and keep the app open and online until all required cards show
+   **READY**; later demo actions can run offline.
 5. Confirm the button/card detail visibly advances through runtime initialization, endpoint
    validation, catalog/cache lookup, provider registration, and exact model load. A static wait is
    a failed rehearsal.
@@ -167,8 +168,9 @@ Generate the summary again if time permits.
 
 ### 14:00-15:00 — Close with honest limits
 
-- The currently validated demo configuration is Windows 11 x64 on the recorded AMD Radeon/WebGPU
-  machine; other environments do not yet have equivalent app E2E evidence.
+- Current app E2E evidence is from Windows 11 x64 on the recorded AMD Radeon/WebGPU machine.
+  Recorder inference uses the CPU path, so AMD graphics and WebGPU are not requirements; other
+  environments do not yet have equivalent app evidence.
 - English only.
 - 30-second bounded prototype, not lecture-length stability.
 - Imported WAV must already be PCM16LE/16 kHz/mono.
