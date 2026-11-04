@@ -1,4 +1,4 @@
-# Enhanced AI Recorder colleague playtest
+# Enhanced AI Recorder Test Guide
 
 **Enhanced AI Recorder** extends
 [AI Recorder](https://github.com/Wayne-Ch/foundry-local-ai-recorder)
