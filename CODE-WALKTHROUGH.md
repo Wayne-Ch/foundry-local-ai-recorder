@@ -179,7 +179,9 @@ Show:
 - immediate visible Reset that clears user/session state, cancels and drains in-flight sessions, and
   retains the shared model as READY for the next summary or assistant request;
 - shutdown-only shared-slot unload under the manager cleanup barrier;
-- clinic prompt prohibitions.
+- clinic prompt prohibitions, fixed treating-clinician handoff normalization for bounded
+  medical-decision questions, and raw `chat-raw` evidence that excludes the application-owned
+  addition.
 
 Message:
 
@@ -187,7 +189,9 @@ Message:
 > borrow one prepared Qwen model but always use fresh ChatSessions and independent generations,
 > queues, histories, prompts, and safety boundaries. Requests capture immutable provenance at
 > enqueue and copy image bytes only at execution. Reset clears user/session state while keeping the
-> shared model READY; shutdown drains native work and unloads the shared slot.
+> shared model READY; shutdown drains native work and unloads the shared slot. Clinic handoff text
+> is an application-owned display safeguard and never changes the raw local-model trace or later
+> chat history.
 
 ## 12:15-13:15 — Model preparation preserves working slots
 
@@ -255,5 +259,5 @@ expect(summary.snapshot.trace.findLast((entry) => entry.phase === "summary-raw")
   .toBe(rawQwenResponse);
 ```
 
-Close with the measured core chain, cloud static evidence, and the still-mandatory target-Windows
-VLM/chat/concurrent-chain gates.
+Close with the completed target-Windows vision, assistant-chat, and concurrent-chain evidence.
+Only the physical network-disconnect rehearsal remains a manual release gate.

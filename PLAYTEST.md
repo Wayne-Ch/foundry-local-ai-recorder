@@ -1,5 +1,3 @@
-[Open the Enhanced branch](https://github.com/Wayne-Ch/foundry-local-ai-recorder/tree/enhanced-ai-recorder)
-
 # Enhanced AI Recorder colleague playtest
 
 **Enhanced AI Recorder** extends
@@ -10,15 +8,12 @@ floor plans, or general visual inspection.
 
 ## Requirements
 
-- The committed setup and playtest path is Windows 11 x64; current formal validation uses the same
-  platform.
-- Git.
-- Node.js and npm; the root `package.json` currently declares neither an `engines` range nor a
-  pinned `packageManager`.
+- A Windows 11 x64 PC.
+- Git for Windows.
+- Node.js and npm.
 - Internet access for the clone, npm packages, and any uncached model or execution-provider
   downloads.
 - Several GB of free disk space for Electron, dependencies, models, and model caches.
-- No minimum RAM value has been established by testing.
 - A microphone and permission are needed only for live voice-path testing; stage fallback WAV,
   typed assistant, and image flows remain available without one.
 
@@ -30,12 +25,15 @@ versions are validation evidence, not a declared support range. All Recorder mod
 documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and
 is not a model requirement. This configuration is not the product's only intended target. Foundry
 Local's broader public platform and hardware support is separate, and other app environments must
-not be presented as having equivalent evidence until tested to the same depth.
+not be presented as having equivalent evidence until tested to the same depth. No minimum RAM
+requirement has been established; 64 GB describes the validated machine, not a product minimum.
 
 ## Clone the Enhanced branch and start
 
 The playtest is on `enhanced-ai-recorder`, not the repository's default `main`
 branch. In PowerShell:
+
+[Open the Enhanced branch](https://github.com/Wayne-Ch/foundry-local-ai-recorder/tree/enhanced-ai-recorder)
 
 ```powershell
 git clone --branch enhanced-ai-recorder --single-branch https://github.com/Wayne-Ch/foundry-local-ai-recorder.git enhanced-ai-recorder
@@ -78,18 +76,14 @@ Use the committed fixtures; no download or fixture generation is needed for the 
   `fixtures\clinic-xray.provenance.md` for the pinned source, license, transformation, and
   de-identification review.
 
-To audit the deterministic image fixture rather than run the playtest:
-
-```powershell
-npm run fixture:image
-git diff --exit-code -- .\fixtures\ode-slide.png
-```
+Developer-only regeneration and diff checks are documented in
+[VALIDATION.md](VALIDATION.md#developer-fixture-integrity).
 
 ## Prepare the local models
 
 First preparation can take several minutes while uncached model and execution-provider assets
-download. Keep the PC online and Enhanced AI Recorder open until Whisper, Nemotron, and Shared Qwen
-report READY; later demo actions can run offline.
+download; keep the PC online and Enhanced AI Recorder open until Whisper, Nemotron, and Shared Qwen
+report **READY**. Later demo actions can run offline.
 
 1. Select **Prepare local models**.
 2. Confirm the button changes immediately and each card exposes its current step: runtime/endpoint
@@ -121,8 +115,10 @@ Speak this exact four-sentence script:
 4. Before the first caption, confirm the recorder says it is waiting for the first caption and the
    Live draft region is visibly busy. Speak the first two sentences and confirm the draft changes.
 5. While recording continues, open **Ask AI**, enter exactly `What is ODE?`, and select **Ask**.
-6. Immediately verify a **Local AI** row shows **Thinking locally…**. If another optional request is
-   already running, it first shows **Waiting locally…** and changes when that exact request starts.
+6. Immediately verify a **Local AI** row appears. It may first show **Waiting locally…**,
+   **Using the prepared offline assistant…**, or
+   **Loading the prepared cached shared model locally…** before changing to
+   **Thinking locally…** when that exact request begins inference.
 7. Speak the final two sentences, then select **Stop** before the 30-second limit.
    Verify Stop first shows capture finalization and then **Transcribing…** while Whisper runs.
 8. In the assistant reply, verify the context label says **live draft snapshot (may change)**.
@@ -140,9 +136,11 @@ Speak this exact four-sentence script:
     transformed into LaTeX.
 12. Open the **Image** tab, select **Choose PNG, JPEG, or WebP**, and choose the repository-relative
     file `fixtures\ode-slide.png`.
-13. Select **Analyze image**. While it runs, verify the button/metadata distinguish queued work,
-    prepared-offline startup and active **Analyzing…**; no Downloading phase may appear. Then verify the result has
-    **Visible text/objects**, **Relation to lesson**, and **Uncertainty** sections.
+13. Select **Analyze image**. While it runs, verify the button/metadata distinguish
+    **Analyzing… (queued)**, **Using offline assistant…**, **Loading cached model…**, and active
+    **Analyzing…** as applicable; **Prepare required** must not appear after successful 3/3
+    preparation. Then verify the result has **Visible text/objects**, **Relation to lesson**, and
+    **Uncertainty** sections.
 14. Return to **Ask AI**, select **Explain image**, and verify the answer refers to the analyzed ODE
     slide rather than inventing unrelated content.
 15. Change **Mode** to **Clinic · educational only**. Mode isolation intentionally clears the
@@ -214,7 +212,7 @@ npm run build
 npm run probe:prepare-ui
 ```
 
-Do not use `npm install --ignore-scripts`. A passing Prepare probe ends with
+Do not bypass lifecycle scripts with `--ignore-scripts`. A passing Prepare probe ends with
 `PREPARE_UI_PROBE_OK`, the 3/3 offline-ready label, and all three model states equal to `READY`.
 
 ### `OPTIONAL_ASSISTANT_FAILED`

@@ -2,11 +2,10 @@
 
 Core model evidence: 2026-10-30 (Windows 11 x64)
 
-Multimodal branch static/cloud evidence: 2026-11-02 (Linux cloud session)
+Separate multimodal static/cloud regression evidence: 2026-11-02 (Linux environment)
 
-Currently validated Windows configuration Prepare/progress/native recovery evidence: 2026-11-03
-
-Shared three-model offline-readiness evidence: 2026-11-03
+Target-Windows Prepare, progress, native recovery, shared-model, vision, assistant-chat, and
+concurrent-chain evidence: 2026-11-03
 
 Formal app validation and current E2E evidence were executed on a Windows 11 x64 machine with AMD
 Radeon graphics and working WebGPU. Those details identify the evidence machine, not product
@@ -37,11 +36,11 @@ Runtime log evidence:
 - default per-user Foundry model cache
 - nonessential telemetry disabled by configuration
 
-## 2026-11-03 Prepare failure diagnosis and recovery
+## Native runtime failure and recovery evidence
 
-The original screenshot predated application-level correlation, and the native log contained no
-failure entry at that time, so it cannot be tied conclusively to one exception after the fact. The
-same `e000b86` worktree did reproduce a concrete setup failure:
+An earlier Prepare failure predated application-level correlation and had no matching native log
+entry, so it is not treated as conclusive evidence for a specific exception. A controlled
+reproduction identified this actionable setup failure:
 
 ```text
 ERR_DLOPEN_FAILED: The specified procedure could not be found
@@ -50,10 +49,9 @@ ERR_DLOPEN_FAILED: The specified procedure could not be found
 
 The SDK addon files existed, but `onnxruntime.dll`, `onnxruntime-genai.dll`, and
 `onnxruntime_providers_shared.dll` were absent because a dependency update had been run with
-`--ignore-scripts`. `npm rebuild foundry-local-sdk` restored the supported SDK runtime payload and
-the real Whisper gate immediately passed. The persistent checkout now contains those files, and
-the isolated real Electron Prepare probe completes all three models, so cache corruption and
-second-manager contention were not reproduced.
+`--ignore-scripts`. `npm rebuild foundry-local-sdk` restored the supported SDK runtime payload, the
+real Whisper gate passed, and a fresh isolated Electron Prepare probe completed all three models.
+Cache corruption and second-manager contention were not reproduced.
 
 The repository now prevents and diagnoses this class:
 
@@ -84,7 +82,7 @@ registration is needed. The probe awaited clean native shutdown before process e
 
 | Command | Result |
 |---|---|
-| Full Biome check in an LF-clean archive overlay | Pass; 98 files checked. The in-place checkout retains inherited CRLF in untouched files, so direct `npm run lint` reports formatting-only line-ending diffs. |
+| `npm run lint` in a fresh LF checkout | Pass; 98 files checked. Older checkouts that predate `.gitattributes` can report line-ending-only diffs; use the guarded disposable-checkout procedure below. |
 | `npm run typecheck` | Pass |
 | `npm test` | Pass; 30 files, 394 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
@@ -194,6 +192,30 @@ Unit coverage includes:
 The test environment replaces only SDK-native `Request`, `Item`, and `ItemQueue` constructors with
 typed in-memory equivalents so the cloud suite does not load Windows ONNX native libraries.
 Production/integration builds continue to import the real `foundry-local-sdk@2.2.1`.
+
+## Developer fixture integrity
+
+Normal setup and colleague playtesting use the committed fixtures. Regeneration is a developer
+integrity check only and must run in a clean disposable validation checkout.
+
+The deterministic ODE image must reproduce without a diff:
+
+```powershell
+npm run fixture:image
+git diff --exit-code -- .\fixtures\ode-slide.png
+```
+
+The ODE WAV generator can be audited separately:
+
+```powershell
+npm run fixture:generate
+git diff --exit-code -- .\fixtures\ode-lesson.wav
+```
+
+Installed Windows voices can change regenerated WAV bytes. Treat any WAV diff as evidence to
+inspect, not as an automatic fixture update. The pinned Clinic X-ray source, transformation,
+decoded-pixel equivalence, and SHA-256 are documented in
+[`fixtures/clinic-xray.provenance.md`](fixtures/clinic-xray.provenance.md).
 
 ## Exact-model integrations
 
@@ -306,10 +328,9 @@ launchers add Chromium `--no-sandbox` only in that root-only test environment. P
 `BrowserWindow` settings remain `sandbox: true`, `contextIsolation: true`, and
 `nodeIntegration: false`; static tests enforce them.
 
-No Electron or recorder process started by these validation commands remained. The shared machine
-already had an OS-installed `foundrylocald` listener started on 2026-10-29, before this worktree
-session; it was not used by the in-process runtime and was not terminated because it is not owned by
-this validation run.
+No Electron or recorder process started by these validation commands remained. An unrelated
+OS-managed `foundrylocald` listener is outside the application's lifecycle; the gates verify that
+the in-process runtime does not use it and do not terminate services the application did not start.
 
 Populated-summary screenshot:
 
@@ -330,11 +351,11 @@ textarea content, or clipped trace text.
 The PNG is intentionally untracked under the repository's ignored `artifacts\` directory. The
 tracked `npm run capture:ui` path rebuilds the app and reproduces it at the path above.
 
-The current capture also shows the 1600×900 three-column layout with the readable/collapsible
+The captured 1600×900 three-column layout also shows the readable/collapsible
 **Lesson assistant** panel, Classroom/Clinic selector, Ask AI/Image tabs, chips, input, and
 non-color status text while the transcript and summary remain readable.
 
-## Currently validated configuration multimodal gates
+## Completed target-Windows multimodal gates
 
 All three gates were executed successfully on the currently validated Windows 11 x64 configuration
 on 2026-11-03. Linux cloud validation remains separate and must not substitute for this real CPU
@@ -346,6 +367,7 @@ Only when that worktree is clean and disposable:
 
 ```powershell
 if (git status --porcelain) { throw "Validation worktree must be clean" }
+# Disposable validation worktree only; this command rewrites tracked files.
 git config core.autocrlf false
 git reset --hard HEAD
 npm run lint
@@ -381,9 +403,9 @@ Measured target results:
   authoritative, shared Qwen summarized its exact final in 2,625 ms, and temporary WAV residue
   stayed zero.
 
-The earlier collision-induced `Device is lost` run is not evidence. The shared summary/assistant
-target is pinned to the exact CPU VLM; alternate model/provider overrides and silent fallback are
-rejected.
+Runs affected by concurrent external model activity, including any `Device is lost` result, are
+excluded from evidence. The shared summary/assistant target is pinned to the exact CPU VLM;
+alternate model/provider overrides and silent fallback are rejected.
 
 ## Local inference boundary
 
@@ -418,11 +440,11 @@ Prepare, then ran summary, Ask, ODE image analysis, and concurrent summary+Ask:
 | Concurrent summary + Ask | 3,351 ms |
 | Post-Prepare catalog/provider acquisition attempts | 0 |
 
-## Manual release gates
+## Manual network-disconnect rehearsal
 
 - [ ] Launch the built app while online.
-- [ ] Select Prepare and wait for Whisper, Nemotron, and Shared Qwen to show READY plus the visible
-      **Enhanced AI Recorder offline ready · 3/3 models** label.
+- [ ] Select **Prepare local models** and wait for Whisper, Nemotron, and Shared Qwen to show
+      **READY** plus the visible **Enhanced AI Recorder offline ready · 3/3 models** label.
 - [ ] Disconnect the PC from network only after that 3/3 gate.
 - [ ] Record the ODE segment with live captions.
 - [ ] Stop and confirm Whisper final.
@@ -434,9 +456,10 @@ Prepare, then ran summary, Ask, ODE image analysis, and concurrent summary+Ask:
       pause.
 - [ ] Correct the final transcript and confirm image analysis advances to a new version.
 - [ ] Switch to Clinic mode and confirm the visible non-diagnostic/clinician-led safety statement.
-- [ ] Reset and repeat with `fixtures\ode-lesson.wav`.
+- [ ] Select **Delete / reset** and repeat with `fixtures\ode-lesson.wav`.
 - [ ] Confirm recording and WAV import use the same formatted summary behavior.
-- [ ] Confirm Reset clears transcript/chat/image state while all three model cards remain READY.
+- [ ] Confirm **Delete / reset** clears transcript/chat/image state while all three model cards
+      remain **READY**.
 - [ ] Confirm no owned temporary WAV remains.
 
 Until that checklist is completed, describe the prototype as **local cached inference with no app
@@ -444,6 +467,7 @@ cloud endpoint**, not as a completed physically offline rehearsal.
 
 ## Known limitations
 
+- No minimum RAM requirement has been established; the validated machine had 64 GB.
 - 30-second bounded capture only.
 - English only.
 - PCM16LE/16 kHz/mono WAV import only.

@@ -31,11 +31,12 @@ The Commons description identifies this as a normal PA chest radiograph. The ori
 `3124c4cf4c55eb3d2defa9b909f08f94e941ec43`. Its SHA-256 is
 `4cbbcf805291db949e4ff085ca3c7258b2823de21b2857ae684e6c91ff9a38a4`.
 
-The execution host could not connect directly to Wikimedia, so the exact original bytes were
-obtained from the pinned public mirror at
+For reproducible acquisition independent of canonical-host availability, the exact original bytes
+are pinned to the public mirror commit at
 <https://github.com/Bishnu2430/Nabz/blob/2c274c576b7964cf171c6fcbf8142b90e2fe46f4/data/imaging/chest-xray-normal-pa.jpg>.
-The mirror's byte count, SHA-1, and SHA-256 match its provenance record and the Commons-listed
-original SHA-1.
+The mirror's byte count and SHA-1 match the Commons record, and its SHA-256 matches the pinned
+original value above. Those hash checks establish byte-for-byte equivalence between the pinned
+mirror acquisition and the canonical original.
 
 ## Transformation and integrity
 

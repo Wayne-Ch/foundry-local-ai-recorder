@@ -7,8 +7,8 @@
    graphics and WebGPU are not requirements and this machine is not the product's only intended
    target. Do not claim equivalent app evidence for other environments until they have been tested
    to the same depth.
-2. Run `npm ci`, confirm the tracked fixtures are present, and run the validation commands in
-   `VALIDATION.md`.
+2. Run `npm ci`, confirm the tracked fixtures are present, and run the release validation commands
+   in `VALIDATION.md`; skip the developer-only regeneration checks.
 3. Start with `npm run start:built`.
 4. Select **Prepare local models** and keep the app open and online until all required cards show
    **READY**; later demo actions can run offline.
@@ -70,8 +70,9 @@ Open **Ask AI** without stopping and select the chip:
 > What is ODE? Answer in one sentence.
 
 Point out that recording and live captions continue while the fresh shared-model chat session runs.
-The request-bound Local AI row distinguishes **Waiting locally…**, prepared-offline startup, and
-active **Thinking locally…**, and
+The request-bound Local AI row distinguishes **Waiting locally…**,
+**Using the prepared offline assistant…**, cached-model loading, and active
+**Thinking locally…**, and
 the chat context label must say **live draft snapshot (may change)**; the actual snapshot is not
 stored in chat history. If time permits, ask
 `What is the solution to y' = -2y with y(0) = y0?` and show that the Local AI answer states the
@@ -155,10 +156,10 @@ handoff shown in the visible answer.
 
 ### 12:45-14:00 — Stage fallback
 
-Optionally start a short recording and select **Cancel / reset** to show that cancellation discards
-audio without Whisper or Qwen; the control shows **Clearing session data** until cleanup settles,
-while all three cards remain READY. Then select **Open stage fallback WAV** and choose
-`fixtures/ode-lesson.wav`.
+Optionally start a short recording and select **Delete / reset** to show that cancellation discards
+audio without Whisper or Qwen; the button changes to **Cancelling / resetting…** and the recorder
+shows **Clearing session data** until cleanup settles, while all three cards remain **READY**. Then
+select **Open stage fallback WAV** and choose `fixtures/ode-lesson.wav`.
 
 The fixture is Windows-synthesized original text. It goes through the same validated PCM and
 Whisper temporary-WAV path; show select/read/decode/**Transcribing WAV…** progress. It is not a
@@ -179,7 +180,8 @@ Generate the summary again if time permits.
   or replace an interpreter in clinic mode. Bounded medical-decision questions receive a
   deterministic visible clinician handoff; equivalent model wording is normalized to one final
   sentence, while Developer Trace retains the raw local answer.
-- Do not claim real VLM evidence until the three target-Windows multimodal integration gates pass.
+- Target-Windows vision, assistant-chat, and concurrent-chain evidence is complete. The physical
+  network-disconnect rehearsal remains the only manual offline-evidence gate.
 
 ## Recovery
 
