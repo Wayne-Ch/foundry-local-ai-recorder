@@ -109,21 +109,26 @@ transcoding. Bounded inference resizing for genuinely large photos is separate f
 
 ## Fresh clone, install, and launch
 
-Prerequisites:
+### Requirements
 
-- The target Windows 11 x64 demo machine with AMD Radeon graphics and working WebGPU.
+- Windows 11 x64.
 - Git for Windows.
-- Node.js `26.13.0` with npm.
+- Node.js 26.x with npm.
 - Internet access for the clone, `npm ci`, and first model preparation.
 - Several GB of free disk space for Electron, dependencies, and model/execution-provider assets.
+- No minimum RAM value has been established by testing.
+- A microphone is needed only for live voice-path testing; stage fallback WAV, typed assistant, and
+  image flows remain available without one.
 
-> [!WARNING]
-> Formal release validation is limited to that target Windows 11 x64 AMD Radeon/WebGPU machine.
-> The three Foundry Local models still use the exact `CPUExecutionProvider` identities documented
-> below. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU, NPU, or
-> execution-provider configurations are not validated to the same level and must not be presented
-> as equivalent. Foundry Local's public platform support is a separate product support statement
-> and does not replace this app-specific evidence.
+### Validated configuration
+
+Formal app validation and current E2E evidence for this release were executed with Node.js
+`26.13.0` on a Windows 11 x64 machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM. All
+three Foundry Local models use the documented `CPUExecutionProvider` path; AMD Radeon/WebGPU
+identifies the evidence environment and is not a model requirement. This configuration is not the
+product's only intended target. Foundry Local's broader public platform and hardware support is
+separate, and other app environments must not be presented as having equivalent evidence until
+tested to the same depth.
 
 From the parent folder where you want the canonical `enhanced-ai-recorder` clone:
 
@@ -165,13 +170,9 @@ git reset --hard HEAD
 
 Then run lint and the model gates. Never use that reset recipe in a worktree containing changes.
 
-> [!IMPORTANT]
-> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
-> model and execution-provider assets. Remain online, keep **Enhanced AI Recorder** open, and wait
-> until Whisper, Nemotron, and Shared Qwen each show **READY** and the banner says
-> **Enhanced AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint.
-> After the cache is complete and all three models load successfully, subsequent summary, Ask,
-> Analyze image, Explain image, Classroom, and Clinic demo steps can run offline.
+First preparation can take several minutes while model and execution-provider assets are
+downloaded. Stay online and keep Enhanced AI Recorder open until all required model cards are
+ready; later demo actions can run offline.
 
 After successful Prepare, summary, Ask, Analyze, and Explain reuse the loaded shared CPU model
 without catalog lookup, model download, or provider acquisition. The application does not start
@@ -373,9 +374,11 @@ Other paths:
 
 ## Current limits
 
-- Formal validation is limited to the target Windows 11 x64 AMD Radeon/WebGPU machine.
-- Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU/NPU/EP
-  configurations are not equivalent validated targets.
+- Formal validation and current E2E evidence cover the currently validated Windows 11 x64 AMD
+  Radeon/WebGPU configuration.
+- That evidence scope does not limit the product to this hardware. Other app environments have not
+  yet been validated to the same depth and must not be presented as having equivalent evidence
+  until tested.
 - English speech only.
 - 30-second bounded capture; this is a classroom demo bound, not a lecture-length stability claim.
 - Imported WAV files must already be PCM16LE, 16 kHz, mono.
@@ -388,7 +391,8 @@ Other paths:
   proves in-process local inference and no application cloud endpoint, not that every machine-level
   network path was physically disconnected.
 - Cloud validation cannot prove the Windows CPU VLM. The three multimodal integration commands
-  above are mandatory on the target Windows machine before claiming real image/chat evidence.
+  above are mandatory on the currently validated configuration before claiming real image/chat
+  evidence.
 - Alternate shared summary/assistant model/provider overrides are rejected. There is no silent
   CPU/GPU fallback.
 - Foundry Local logs show nonessential telemetry disabled, while SDK process information may still

@@ -4,16 +4,16 @@ Core model evidence: 2026-10-30 (Windows 11 x64)
 
 Multimodal branch static/cloud evidence: 2026-11-02 (Linux cloud session)
 
-Target-Windows Prepare/progress/native recovery evidence: 2026-11-03
+Currently validated Windows configuration Prepare/progress/native recovery evidence: 2026-11-03
 
 Shared three-model offline-readiness evidence: 2026-11-03
 
-Formal release evidence is limited to the target Windows 11 x64 demo machine with AMD Radeon
-graphics and working WebGPU. The three models themselves use the exact CPU execution providers
-listed below. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU,
-NPU, or execution-provider configurations have not been validated to the same level and must not
-be presented as equivalent. Foundry Local's public platform support is a separate product support
-statement and does not expand this app-specific evidence.
+Formal app validation and current E2E evidence were executed on a Windows 11 x64 machine with AMD
+Radeon graphics and working WebGPU. This is the currently validated configuration, not a statement
+that Enhanced AI Recorder is intended only for that hardware. The three models themselves use the
+exact CPU execution providers listed below. Foundry Local's broader public platform and hardware
+support is separate from this app-specific evidence. Other app environments have not yet been
+validated to the same depth and must not be presented as having equivalent evidence until tested.
 
 ## Validated identities
 
@@ -329,10 +329,11 @@ The current capture also shows the 1600×900 three-column layout with the readab
 **Lesson assistant** panel, Classroom/Clinic selector, Ask AI/Image tabs, chips, input, and
 non-color status text while the transcript and summary remain readable.
 
-## Target-Windows multimodal gates
+## Currently validated configuration multimodal gates
 
-All three gates were executed successfully on the target Windows 11 machine on 2026-11-03. Linux
-cloud validation remains separate and must not substitute for this real CPU VLM evidence.
+All three gates were executed successfully on the currently validated Windows 11 x64 configuration
+on 2026-11-03. Linux cloud validation remains separate and must not substitute for this real CPU
+VLM evidence.
 
 Use a genuinely fresh Windows checkout so committed `.gitattributes` applies before files are
 materialized. If an older validation worktree predates the LF attributes, do not mass-convert it.

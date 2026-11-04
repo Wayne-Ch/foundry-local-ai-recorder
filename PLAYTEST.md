@@ -8,31 +8,30 @@ with Ask AI, image analysis/Explain image, Classroom mode, and Clinic educationa
 diagnostic software, does not provide medical decisions, and is not intended for arbitrary images,
 floor plans, or general visual inspection.
 
-> [!WARNING]
-> This formal playtest applies only to the target Windows 11 x64 demo machine with AMD Radeon
-> graphics and working WebGPU. The Recorder model cards must still show the documented
-> `CPUExecutionProvider` values. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS,
-> and other GPU, NPU, or execution-provider configurations are not validated to the same level and
-> must not be presented as equivalent. Foundry Local's public platform support is separate from
-> this app's release evidence.
+## Requirements
 
-> [!IMPORTANT]
-> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
-> model and execution-provider assets. Remain online, keep **Enhanced AI Recorder** open, and wait
-> for all three model cards to show **READY** and the status
-> **Enhanced AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint.
-> After the cache is complete and all three models load successfully, subsequent demo actions can
-> run offline.
-
-## Prerequisites
-
-- The target Windows 11 x64 AMD Radeon/WebGPU machine with current graphics drivers.
+- Windows 11 x64.
 - Git for Windows.
-- Node.js 26.x; the validated Windows version is `26.13.0`.
-- A working microphone and permission to record the test speaker.
+- Node.js 26.x with npm.
 - Internet access for the clone, npm packages, and any uncached model or execution-provider
   downloads.
 - Several GB of free disk space for Electron, dependencies, models, and model caches.
+- No minimum RAM value has been established by testing.
+- A microphone and permission are needed only for live voice-path testing; stage fallback WAV,
+  typed assistant, and image flows remain available without one.
+
+## Validated configuration
+
+This playtest's current E2E evidence was collected with Node.js `26.13.0` on a Windows 11 x64
+machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM. All Recorder models use the
+documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and
+is not a model requirement. This configuration is not the product's only intended target. Foundry
+Local's broader public platform and hardware support is separate, and other app environments must
+not be presented as having equivalent evidence until tested to the same depth.
+
+First preparation can take several minutes while model and execution-provider assets are
+downloaded. Stay online and keep Enhanced AI Recorder open until all required model cards are
+ready; later demo actions can run offline.
 
 ## Clone the Enhanced branch and start
 
