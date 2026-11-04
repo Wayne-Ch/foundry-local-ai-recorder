@@ -7,7 +7,8 @@
    graphics and WebGPU are not requirements and this machine is not the product's only intended
    target. Do not claim equivalent app evidence for other environments until they have been tested
    to the same depth.
-2. Run `npm install`, `npm run fixture:generate`, and every automated gate in `VALIDATION.md`.
+2. Run `npm ci` and the release validation commands in `VALIDATION.md`; use the committed
+   `fixtures\ode-lesson.wav` and skip the developer-only regeneration check.
 3. Launch with `npm run start:built`.
 4. Select **Prepare local models** and keep the app open and online until all required cards show
    **READY**; later demo actions can run offline.

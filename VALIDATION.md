@@ -57,6 +57,20 @@ Coverage includes:
 - AI Recorder profile, app-data, log, journal, and temporary-audio isolation;
 - cross-app cleanup isolation.
 
+## Developer fixture integrity
+
+Normal setup and playtesting use the committed `fixtures\ode-lesson.wav`; regeneration is not part
+of the user flow. To audit the generator, use a clean disposable validation checkout:
+
+```powershell
+npm run fixture:generate
+git diff --exit-code -- .\fixtures\ode-lesson.wav
+```
+
+Installed Windows voices can change the regenerated WAV bytes. Treat any diff as evidence to
+inspect, not as an automatic fixture update, and do not run this check in a working tree with
+uncommitted changes.
+
 ## Qwen3.5 factual accuracy gate
 
 Command:
@@ -187,7 +201,7 @@ It does not prove physical isolation of the PC. Model preparation can download u
 - [ ] Record the ODE segment with live captions.
 - [ ] Stop and confirm the Whisper final.
 - [ ] Generate the Qwen3.5 summary.
-- [ ] Reset and repeat with `fixtures\ode-lesson.wav`.
+- [ ] Select **Delete / reset** and repeat with `fixtures\ode-lesson.wav`.
 - [ ] Confirm no owned temporary WAV remains.
 
 Until this checklist passes, describe the app as **local cached inference with no app cloud
@@ -200,6 +214,7 @@ endpoint**, not as a completed physically offline rehearsal.
 - That evidence scope does not limit the product to this hardware. Other app environments have not
   yet been validated to the same depth and must not be presented as having equivalent evidence
   until tested.
+- No minimum RAM requirement has been established; the validated machine had 64 GB.
 - English only.
 - 30-second bounded capture.
 - PCM16LE/16 kHz/mono WAV import only.

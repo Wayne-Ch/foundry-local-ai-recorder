@@ -4,14 +4,11 @@ Record observations without including private transcript content or local paths.
 
 ## Requirements
 
-- The committed setup and playtest path is Windows 11 x64; current formal validation uses the same
-  platform.
-- Git.
-- Node.js and npm; the root `package.json` currently declares neither an `engines` range nor a
-  pinned `packageManager`.
+- A Windows 11 x64 PC.
+- Git for Windows.
+- Node.js and npm.
 - Internet access for installation and first preparation.
 - Several GB of free disk space for dependencies and model assets.
-- No minimum RAM value has been established by testing.
 - A microphone is needed only for live voice-path testing; use the stage fallback WAV flow when no
   microphone is available.
 
@@ -23,7 +20,8 @@ versions are validation evidence, not a declared support range. All Recorder mod
 documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and
 is not a model requirement. This configuration is not the product's only intended target. Foundry
 Local's broader public platform and hardware support is separate, and other app environments must
-not be presented as having equivalent evidence until tested to the same depth.
+not be presented as having equivalent evidence until tested to the same depth. No minimum RAM
+requirement has been established; 64 GB describes the validated machine, not a product minimum.
 
 ## Setup
 
@@ -34,16 +32,19 @@ not be presented as having equivalent evidence until tested to the same depth.
    Set-Location .\ai-recorder
    ```
 
-2. Run `npm install`, `npm run fixture:generate`, and `npm run build`.
+2. Run `npm ci` and `npm run build`. The committed `fixtures\ode-lesson.wav` is ready to use.
 3. Launch with `npm run start:built`.
 4. Confirm the window title and top heading both say **AI Recorder**.
 5. Leave live captions enabled and consent unchecked.
 
+Developer-only WAV regeneration and the required diff check are documented in
+[VALIDATION.md](VALIDATION.md#developer-fixture-integrity).
+
 ## Prepare
 
 First preparation can take several minutes while uncached model and execution-provider assets
-download. Stay online and keep AI Recorder open until all required model cards report READY; later
-demo actions can run offline.
+download; stay online and keep AI Recorder open until all three model cards report **READY**.
+Later demo actions can run offline.
 
 1. Select **Prepare local models**.
 2. Confirm the button and model rail immediately show busy state.

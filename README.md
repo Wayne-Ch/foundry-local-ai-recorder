@@ -26,14 +26,11 @@ service or URL.
 
 ### Requirements
 
-- The committed setup and playtest path is Windows 11 x64; current formal validation uses the same
-  platform.
-- Git.
-- Node.js and npm; the root `package.json` currently declares neither an `engines` range nor a
-  pinned `packageManager`.
-- Internet access for `npm install` and the first model preparation.
+- A Windows 11 x64 PC.
+- Git for Windows.
+- Node.js and npm.
+- Internet access for the clone, `npm ci`, and first model preparation.
 - Several GB of free disk space for dependencies and model assets.
-- No minimum RAM value has been established by testing.
 - A microphone is needed only for live voice-path testing; the stage fallback WAV flow remains
   available without one.
 
@@ -46,26 +43,28 @@ Recorder models use the documented `CPUExecutionProvider` path; AMD Radeon/WebGP
 evidence environment and is not a model requirement. This configuration is not the product's only
 intended target. Foundry Local's broader public platform and hardware support is separate, and
 other app environments must not be presented as having equivalent evidence until tested to the
-same depth.
+same depth. No minimum RAM requirement has been established; 64 GB describes the validated
+machine, not a product minimum.
 
 From the parent folder where you want the canonical `ai-recorder` clone:
 
 ```powershell
 git clone https://github.com/Wayne-Ch/foundry-local-ai-recorder.git ai-recorder
 Set-Location .\ai-recorder
-npm install
-npm run fixture:generate
+npm ci
 npm run build
 npm run start:built
 ```
+
+The committed `fixtures\ode-lesson.wav` is ready to use; normal setup does not regenerate it.
 
 Do not install with `--ignore-scripts`. The root `postinstall` first verifies and repairs the
 Foundry native payload, then verifies Electron. If native Foundry files are incomplete, Prepare
 returns an actionable `FOUNDRY_NATIVE_RUNTIME_MISSING` diagnostic with rebuild guidance.
 
 First preparation can take several minutes while uncached model and execution-provider assets
-download. Stay online and keep AI Recorder open until all required model cards report READY; later
-demo actions can run offline.
+download; stay online and keep AI Recorder open until all three model cards report **READY**.
+Later demo actions can run offline.
 
 Select **Prepare local models** before recording. The status becomes
 **AI Recorder offline ready · 3/3 models** only when Nemotron, Whisper, and Qwen3.5 0.8B all report
@@ -88,13 +87,13 @@ Close the **AI Recorder** window normally when the playtest is complete and wait
 - The final transcript is editable. Saving a correction increments its version and invalidates an
   older summary.
 - Summary submission captures the exact transcript string and version. Stale completion is
-  rejected if Reset or another edit changes that generation.
+  rejected if **Delete / reset** or another edit changes that generation.
 - Each summary uses a fresh text-only Qwen3.5 `ChatSession`; no conversation state is reused.
 - Qwen raw output is retained only in Developer Trace. The editable summary stores the result of a
   deterministic, idempotent formatter that preserves factual numeric prefixes, including signed
   and Unicode-digit facts.
-- Reset cancels current work, discards unsubmitted audio, clears derived state, removes owned
-  temporary WAV files, and preserves already prepared model readiness.
+- **Delete / reset** cancels current work, discards unsubmitted audio, clears derived state,
+  removes owned temporary WAV files, and preserves already prepared model readiness.
 - Shutdown waits for native request settlement before queue/session/model/manager teardown.
 
 ## Product and storage isolation
@@ -166,6 +165,7 @@ Other paths:
 - Current app E2E evidence covers the validated Windows 11 x64 AMD Radeon/WebGPU configuration;
   other environments require equivalent testing before making the same evidence claim.
 - That evidence boundary does not make the validated hardware the product's only intended target.
+- No minimum RAM requirement has been established; the validated machine had 64 GB.
 - English speech only.
 - 30-second bounded capture.
 - Imported WAV files must already be PCM16LE, 16 kHz, mono.
