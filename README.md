@@ -26,9 +26,11 @@ service or URL.
 
 ### Requirements
 
-- Windows 11 x64.
+- The committed setup and playtest path is Windows 11 x64; current formal validation uses the same
+  platform.
 - Git.
-- Node.js 22 or later with npm.
+- Node.js and npm; the root `package.json` currently declares neither an `engines` range nor a
+  pinned `packageManager`.
 - Internet access for `npm install` and the first model preparation.
 - Several GB of free disk space for dependencies and model assets.
 - No minimum RAM value has been established by testing.
@@ -37,12 +39,14 @@ service or URL.
 
 ### Validated configuration
 
-Formal app validation and current E2E evidence for this release were executed on a Windows 11 x64
-machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM. All Recorder models use the
-documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and
-is not a model requirement. This configuration is not the product's only intended target. Foundry
-Local's broader public platform and hardware support is separate, and other app environments must
-not be presented as having equivalent evidence until tested to the same depth.
+Formal app validation and current E2E evidence for this release were executed with Node.js
+`26.13.0` and npm `11.20.0` on a Windows 11 x64 machine with AMD Radeon graphics, working WebGPU,
+and 64 GB RAM. Those Node/npm versions are validation evidence, not a declared support range. All
+Recorder models use the documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the
+evidence environment and is not a model requirement. This configuration is not the product's only
+intended target. Foundry Local's broader public platform and hardware support is separate, and
+other app environments must not be presented as having equivalent evidence until tested to the
+same depth.
 
 From the parent folder where you want the canonical `ai-recorder` clone:
 
@@ -59,8 +63,8 @@ Do not install with `--ignore-scripts`. The root `postinstall` first verifies an
 Foundry native payload, then verifies Electron. If native Foundry files are incomplete, Prepare
 returns an actionable `FOUNDRY_NATIVE_RUNTIME_MISSING` diagnostic with rebuild guidance.
 
-First preparation can take several minutes while model and execution-provider assets are
-downloaded. Stay online and keep AI Recorder open until all required model cards are ready; later
+First preparation can take several minutes while uncached model and execution-provider assets
+download. Stay online and keep AI Recorder open until all required model cards report READY; later
 demo actions can run offline.
 
 Select **Prepare local models** before recording. The status becomes

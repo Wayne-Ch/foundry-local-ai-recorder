@@ -2,14 +2,15 @@
 
 ## Before the room
 
-1. Use the validated demo configuration: a Windows 11 x64 PC with AMD Radeon graphics and working
-   WebGPU. This identifies the environment used for the documented rehearsal and E2E evidence; it
-   does not make that hardware the product's only intended target. Foundry Local's broader public
-   platform and hardware support remains separate. Do not claim equivalent app evidence for other
-   environments until they have been tested to the same depth.
+1. Use the current evidence environment for the documented rehearsal: Windows 11 x64 on the
+   recorded AMD Radeon/WebGPU machine. Recorder inference uses `CPUExecutionProvider`, so AMD
+   graphics and WebGPU are not requirements and this machine is not the product's only intended
+   target. Do not claim equivalent app evidence for other environments until they have been tested
+   to the same depth.
 2. Run `npm install`, `npm run fixture:generate`, and every automated gate in `VALIDATION.md`.
 3. Launch with `npm run start:built`.
-4. Select **Prepare local models** while network access is available.
+4. Select **Prepare local models** and keep the app open and online until all required cards show
+   **READY**; later demo actions can run offline.
 5. Confirm **AI Recorder offline ready · 3/3 models**, all three cards show **READY**, and the
    boundary pill says **In-process boundary validated**.
 6. Leave the app reset, consent unchecked, and live captions enabled.
@@ -99,8 +100,9 @@ Show:
 
 ## 13:30-15:00 — Close with honest limits
 
-- The currently validated demo configuration is Windows 11 x64 on the recorded AMD Radeon/WebGPU
-  machine; other environments do not yet have equivalent app E2E evidence.
+- Current app E2E evidence is from Windows 11 x64 on the recorded AMD Radeon/WebGPU machine.
+  Recorder inference uses the CPU path, so AMD graphics and WebGPU are not requirements; other
+  environments do not yet have equivalent app evidence.
 - English only.
 - 30-second bounded prototype.
 - PCM16LE/16 kHz/mono WAV import only.

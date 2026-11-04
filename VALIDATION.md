@@ -3,13 +3,13 @@
 Date: 2026-11-03 (Windows 11 x64)
 
 Formal app validation and current E2E evidence were executed on a Windows 11 x64 machine with AMD
-Radeon graphics and working WebGPU. This is the currently validated configuration, not a statement
-that AI Recorder is intended only for that hardware. The Recorder models themselves use the exact
-CPU execution providers listed below. Foundry Local's broader public platform and hardware support
-is separate from this app-specific evidence. Other app environments, including other Windows
-hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU, NPU, or execution-provider
-configurations, have not yet been validated to the same depth for this app and must not be
-presented as having equivalent evidence until tested.
+Radeon graphics and working WebGPU. Those details identify the evidence machine, not product
+requirements: the Recorder models use the exact CPU execution providers listed below, and AI
+Recorder is not intended only for the validated hardware. Foundry Local's broader public platform
+and hardware support is separate from this app-specific evidence. Other app environments,
+including other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU, NPU, or
+execution-provider configurations, have not yet been validated to the same depth for this app and
+must not be presented as having equivalent evidence until tested.
 
 ## Exact required identities
 
@@ -20,6 +20,10 @@ presented as having equivalent evidence until tested.
 | Summary | `qwen3.5-0.8b-generic-cpu:3` | `CPUExecutionProvider` | 1,037 MB |
 
 SDK: `foundry-local-sdk@2.2.1`
+
+Toolchain evidence: Node.js `26.13.0` with npm `11.20.0`. The root `package.json` declares neither
+an `engines` range nor a pinned `packageManager`, so these versions are validated evidence rather
+than a declared support range.
 
 The standard app has exactly these three roles. Each summary request creates a fresh text-only
 `ChatSession`; no summary conversation state is reused.
