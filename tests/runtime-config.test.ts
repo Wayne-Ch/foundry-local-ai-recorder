@@ -20,21 +20,30 @@ describe("runtime configuration", () => {
   });
 
   it("requires model and provider overrides together", () => {
-    expect(() => resolveRuntimeTargets({ SMART_RECORDER_SUMMARY_MODEL_ID: "another-model:1" })).toThrow(
+    expect(() => resolveRuntimeTargets({ AI_RECORDER_SUMMARY_MODEL_ID: "another-model:1" })).toThrow(
       RuntimeConfigurationError,
     );
   });
 
-  it("labels explicit overrides as unvalidated without silently replacing them", () => {
+  it("rejects a different standard summary model", () => {
+    expect(() =>
+      resolveRuntimeTargets({
+        AI_RECORDER_SUMMARY_MODEL_ID: "another-model:1",
+        AI_RECORDER_SUMMARY_EXECUTION_PROVIDER: "CPUExecutionProvider",
+      }),
+    ).toThrow(`The standard summary model must use ${SUMMARY_MODEL_ID}`);
+  });
+
+  it("accepts an explicit exact summary pair", () => {
     const targets = resolveRuntimeTargets({
-      SMART_RECORDER_SUMMARY_MODEL_ID: "another-model:1",
-      SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: "CPUExecutionProvider",
+      AI_RECORDER_SUMMARY_MODEL_ID: SUMMARY_MODEL_ID,
+      AI_RECORDER_SUMMARY_EXECUTION_PROVIDER: SUMMARY_EXECUTION_PROVIDER,
     });
     expect(targets.summary).toMatchObject({
-      modelId: "another-model:1",
-      executionProvider: "CPUExecutionProvider",
+      modelId: SUMMARY_MODEL_ID,
+      executionProvider: SUMMARY_EXECUTION_PROVIDER,
       source: "environment_override",
-      stageValidated: false,
+      stageValidated: true,
     });
   });
 });

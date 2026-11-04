@@ -4,7 +4,7 @@ import electronPath from "electron";
 
 const child = spawn(electronPath, ["."], {
   cwd: process.cwd(),
-  env: { ...process.env, SMART_RECORDER_SMOKE_AND_EXIT: "1" },
+  env: { ...process.env, AI_RECORDER_SMOKE_AND_EXIT: "1" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 const output = [];

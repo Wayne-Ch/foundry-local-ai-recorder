@@ -1,10 +1,10 @@
 import type { ModelReadiness, RecorderSnapshot } from "../shared/contracts";
 
 export const POPULATED_SUMMARY_CAPTURE_RAW =
-  "The lesson derives $ y' = -2y $ and uses $ e^{-2t}} $ for exponential decay.";
+  "The lesson derives $ y' = -2y $. It uses $ e^{-2t}} $ for exponential decay. The initial condition determines c.";
 
 export const POPULATED_SUMMARY_CAPTURE_FORMATTED =
-  "The lesson derives y′ = −2y and uses e^(−2t) for exponential decay.";
+  "The lesson derives y′ = −2y.\n• It uses e^(−2t) for exponential decay.\n• The initial condition determines c.";
 
 export function createPopulatedSummaryCaptureSnapshot(base: RecorderSnapshot): RecorderSnapshot {
   return {

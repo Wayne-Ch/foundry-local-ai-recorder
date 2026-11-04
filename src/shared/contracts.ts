@@ -120,10 +120,36 @@ export interface RecorderSnapshot {
   readonly retention: "Temporary audio is deleted after transcription; transcript and summary remain in memory until Reset.";
 }
 
-export interface ProgressEvent {
+export type PrepareProgressStage =
+  | "initializing_runtime"
+  | "validating_endpoint"
+  | "checking_catalog"
+  | "checking_cache"
+  | "downloading_model"
+  | "checking_provider"
+  | "registering_provider"
+  | "loading_model"
+  | "model_ready";
+
+export interface PrepareProgressEvent {
+  readonly operation: "prepare";
   readonly phase: string;
+  readonly stage: PrepareProgressStage;
+  readonly role?: ModelRole;
+  readonly detail: string;
+  readonly readiness: RuntimeReadiness;
+}
+
+export type ImportProgressStage = "selecting_file" | "reading_file" | "decoding_audio" | "transcribing";
+
+export interface ImportProgressEvent {
+  readonly operation: "import";
+  readonly phase: string;
+  readonly stage: ImportProgressStage;
   readonly detail: string;
 }
+
+export type ProgressEvent = PrepareProgressEvent | ImportProgressEvent;
 
 export interface PrepareRecorderRequest {
   readonly enableLiveCaptions: boolean;

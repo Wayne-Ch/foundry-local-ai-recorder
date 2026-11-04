@@ -5,6 +5,8 @@ import type {
   AudioClient,
   ChatClient,
   EmbeddingClient,
+  EpDownloadResult,
+  EpInfo,
   IModel,
   ModelInfo,
   Request,
@@ -38,6 +40,222 @@ afterEach(async () => {
 });
 
 describe("FoundryRecorderRuntime", () => {
+  it("reports runtime initialization before the first awaited setup step", async () => {
+    const root = await createTempRoot();
+    const paths = deferred<ReturnType<typeof pathsFor>>();
+    const manager = new FakeManager(createModels());
+    const progress: Array<{ readonly stage: string; readonly role?: string }> = [];
+    const runtime = new FoundryRecorderRuntime({
+      resolvePaths: () => paths.promise,
+      createManager: () => manager,
+      assertNativeRuntime: () => {},
+      createAudioSession: () => fakeAudioSession(),
+      createChatSession: () => fakeChatSession(),
+    });
+
+    const preparing = runtime.prepare(false, (event) => {
+      progress.push({
+        stage: event.stage,
+        ...(event.role === undefined ? {} : { role: event.role }),
+      });
+    });
+
+    expect(progress).toEqual([{ stage: "initializing_runtime" }]);
+    paths.resolve(pathsFor(root));
+    await preparing;
+    await runtime.shutdown();
+  });
+
+  it("reports catalog and cache waits before their promises settle", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const whisper = models.get(WHISPER_AUDIO_MODEL_ID);
+    if (whisper === undefined) {
+      throw new Error("Expected fake Whisper model.");
+    }
+    const catalog = deferred<IModel>();
+    const cache = deferred<IModel[]>();
+    vi.mocked(manager.catalog.getModelVariant).mockImplementation(async (modelId) => {
+      if (modelId === WHISPER_AUDIO_MODEL_ID) {
+        return catalog.promise;
+      }
+      const model = models.get(modelId);
+      if (model === undefined) {
+        throw new Error(`Unknown fake model ${modelId}`);
+      }
+      return model;
+    });
+    vi.mocked(manager.catalog.getCachedModels).mockReturnValue(cache.promise);
+    const progress: Array<{
+      readonly stage: string;
+      readonly role?: string;
+      readonly status?: string;
+      readonly detail?: string;
+    }> = [];
+    const runtime = createRuntime(root, [manager]);
+    const preparing = runtime.prepare(false, (event) => {
+      progress.push({
+        stage: event.stage,
+        ...(event.role === undefined ? {} : { role: event.role }),
+        ...(event.role === undefined
+          ? {}
+          : {
+              status: event.readiness[event.role].status,
+              detail: event.readiness[event.role].detail,
+            }),
+      });
+    });
+
+    await vi.waitFor(() =>
+      expect(progress).toContainEqual(
+        expect.objectContaining({ stage: "checking_catalog", role: "whisper" }),
+      ),
+    );
+    catalog.reject(new Error("catalog unavailable"));
+    await vi.waitFor(() =>
+      expect(progress).toContainEqual(expect.objectContaining({ stage: "checking_cache", role: "whisper" })),
+    );
+    expect(
+      progress.find(({ stage, role }) => stage === "checking_cache" && role === "whisper"),
+    ).toMatchObject({
+      status: "checking",
+      detail: expect.stringContaining("checking the local cache"),
+    });
+    cache.resolve([...models.values()]);
+    await preparing;
+
+    expect(runtime.readiness.whisper.status).toBe("ready");
+    await runtime.shutdown();
+  });
+
+  it("keeps model cards truthful through download, provider check, loading, and ready", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const summary = models.get(SUMMARY_MODEL_ID);
+    if (summary === undefined) {
+      throw new Error("Expected fake summary model.");
+    }
+    summary.cached = false;
+    const manager = new FakeManager(models);
+    const progress: Array<{
+      readonly stage: string;
+      readonly status: string;
+      readonly detail: string;
+      readonly cached: boolean;
+      readonly loaded: boolean;
+    }> = [];
+    const runtime = createRuntime(root, [manager]);
+
+    await runtime.prepare(false, (event) => {
+      if (event.role !== "summary") {
+        return;
+      }
+      const readiness = event.readiness.summary;
+      progress.push({
+        stage: event.stage,
+        status: readiness.status,
+        detail: readiness.detail,
+        cached: readiness.cached,
+        loaded: readiness.loaded,
+      });
+    });
+
+    expect(progress.find(({ stage }) => stage === "checking_catalog")).toMatchObject({
+      status: "checking",
+      detail: expect.stringContaining("Resolving exact summary model"),
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "downloading_model")).toMatchObject({
+      status: "downloading",
+      detail: expect.stringContaining("Downloading"),
+      cached: false,
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "checking_provider")).toMatchObject({
+      status: "checking",
+      detail: expect.stringContaining("Checking"),
+      cached: true,
+      loaded: false,
+    });
+    expect(progress.some(({ stage }) => stage === "registering_provider")).toBe(false);
+    expect(progress.find(({ stage }) => stage === "loading_model")).toMatchObject({
+      status: "loading",
+      detail: expect.stringContaining("Loading"),
+      cached: true,
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "model_ready")).toMatchObject({
+      status: "ready",
+      detail: expect.stringContaining("ready"),
+      cached: true,
+      loaded: true,
+    });
+    await runtime.shutdown();
+  });
+
+  it.each([
+    {
+      name: "catalog and cache lookup",
+      role: "whisper" as const,
+      phase: "cache_lookup" as const,
+      arrange(manager: FakeManager) {
+        vi.mocked(manager.catalog.getModelVariant).mockRejectedValue(new Error("catalog failed"));
+        vi.mocked(manager.catalog.getCachedModels).mockRejectedValue(new Error("cache failed"));
+      },
+    },
+    {
+      name: "model download",
+      role: "whisper" as const,
+      phase: "model_download" as const,
+      arrange(_manager: FakeManager, models: ReadonlyMap<string, FakeModel>) {
+        const model = models.get(WHISPER_AUDIO_MODEL_ID);
+        if (model === undefined) {
+          throw new Error("Expected fake Whisper model.");
+        }
+        model.cached = false;
+        vi.spyOn(model, "download").mockRejectedValue(new Error("download failed"));
+      },
+    },
+    {
+      name: "model load",
+      role: "whisper" as const,
+      phase: "model_load" as const,
+      arrange(_manager: FakeManager, models: ReadonlyMap<string, FakeModel>) {
+        const model = models.get(WHISPER_AUDIO_MODEL_ID);
+        if (model === undefined) {
+          throw new Error("Expected fake Whisper model.");
+        }
+        vi.spyOn(model, "load").mockRejectedValue(new Error("load failed"));
+      },
+    },
+  ])("returns safe role and phase metadata for $name failure", async ({ arrange, role, phase }) => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    arrange(manager, models);
+    const runtime = createRuntime(root, [manager]);
+
+    const failure = await captureFailure(runtime.prepare(false));
+    const diagnostic = toSafeDiagnostic(failure, "LOCAL_OPERATION_FAILED");
+
+    expect(diagnostic).toMatchObject({
+      code: "MODEL_PREPARATION_FAILED",
+      context: {
+        operation: "prepare",
+        modelRole: role,
+        phase,
+      },
+    });
+    expect(runtime.readiness[role]).toMatchObject({
+      status: "error",
+      loaded: false,
+    });
+    expect(runtime.readiness[role].detail).toContain(`model=${role}`);
+    expect(runtime.readiness[role].detail).toContain(`phase=${phase}`);
+    await runtime.shutdown().catch(() => undefined);
+  });
+
   it("preserves exact Whisper text through the controller and exact Qwen prompt input", async () => {
     const root = await createTempRoot();
     const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
@@ -83,6 +301,88 @@ describe("FoundryRecorderRuntime", () => {
     }
   });
 
+  it("uses a fresh text-only ChatSession for every summary request", async () => {
+    const root = await createTempRoot();
+    const createChatSession = vi.fn(() =>
+      fakeChatSession({
+        processRequest: async (request) => {
+          expect(request.itemCount).toBe(2);
+          for (let index = 0; index < request.itemCount; index += 1) {
+            const item = request.getItem(index);
+            if (item.type !== "message") {
+              throw new Error(`Expected a text message item, received ${item.type}.`);
+            }
+            expect(typeof item.content).toBe("string");
+          }
+          return textResponse("Accurate concise summary.");
+        },
+      }),
+    );
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession,
+    });
+    await runtime.prepare(false);
+
+    await runtime.summarize("First exact transcript.");
+    await runtime.summarize("Second exact transcript.");
+
+    expect(createChatSession).toHaveBeenCalledTimes(2);
+    await runtime.shutdown();
+  });
+
+  it.each([
+    {
+      name: "non-stop finish reason",
+      response: { ...textResponse("partial"), finishReason: "length" as const },
+      message: "Summary generation ended with length.",
+    },
+    {
+      name: "empty output",
+      response: textResponse(" \n "),
+      message: "The local summary model returned no text.",
+    },
+    {
+      name: "oversized output",
+      response: textResponse("x".repeat(2_501)),
+      message: "The local summary exceeded the prototype output bound.",
+    },
+  ])("rejects $name with a stable summary error", async ({ response, message }) => {
+    const root = await createTempRoot();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async () => response,
+        }),
+    });
+    await runtime.prepare(false);
+
+    await expect(runtime.summarize("Exact transcript")).rejects.toThrow(message);
+    await runtime.shutdown();
+  });
+
+  it("rejects a summary request that does not fit the model context", async () => {
+    const root = await createTempRoot();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () =>
+        fakeChatSession({
+          preflightRequest: async () => ({
+            promptTokens: 4_000,
+            outputReserveTokens: 260,
+            requiredTokens: 4_260,
+            contextLimitTokens: 4_096,
+            fits: false,
+            deficitTokens: 164,
+          }),
+        }),
+    });
+    await runtime.prepare(false);
+
+    await expect(runtime.summarize("Exact transcript")).rejects.toThrow(
+      "Summary request needs 4260 tokens but the context limit is 4096.",
+    );
+    await runtime.shutdown();
+  });
+
   it("disposes a guard-failed manager and reruns the endpoint guard on retry", async () => {
     const root = await createTempRoot();
     const models = createModels();
@@ -92,6 +392,13 @@ describe("FoundryRecorderRuntime", () => {
 
     const firstFailure = await captureFailure(runtime.prepare(false));
     expect(errorMessages(firstFailure)).toContainEqual(expect.stringContaining("endpoint guard"));
+    expect(toSafeDiagnostic(firstFailure, "LOCAL_OPERATION_FAILED")).toMatchObject({
+      code: "ENDPOINT_VALIDATION_FAILED",
+      context: {
+        operation: "prepare",
+        phase: "endpoint_validation",
+      },
+    });
     expect(rejected.shutdown).toHaveBeenCalledOnce();
     expect(rejected.dispose).toHaveBeenCalledOnce();
     expect(rejected.catalog.getModelVariant).not.toHaveBeenCalled();
@@ -1311,11 +1618,14 @@ class FakeManager {
     });
   }
 
-  discoverEps() {
+  discoverEps(): EpInfo[] {
     return [{ name: SUMMARY_EXECUTION_PROVIDER, isRegistered: true }];
   }
 
-  async downloadAndRegisterEps() {
+  async downloadAndRegisterEps(
+    _names: string[],
+    _onProgress: (name: string, percent: number) => void,
+  ): Promise<EpDownloadResult> {
     return {
       success: true,
       status: "registered",
@@ -1339,7 +1649,7 @@ class FakeModel implements IModel {
     order?: string[],
   ) {
     this.#order = order;
-    const deviceType = executionProvider === SUMMARY_EXECUTION_PROVIDER ? DeviceType.GPU : DeviceType.CPU;
+    const deviceType = DeviceType.CPU;
     this.info = {
       id,
       name: alias,
@@ -1396,7 +1706,15 @@ class FakeModel implements IModel {
     return defaultValue;
   }
 
-  async download(): Promise<void> {
+  async download(signal?: AbortSignal): Promise<void>;
+  async download(progressCallback?: (progress: number) => void, signal?: AbortSignal): Promise<void>;
+  async download(
+    progressOrSignal?: AbortSignal | ((progress: number) => void),
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    if (typeof progressOrSignal === "function") {
+      progressOrSignal(50);
+    }
     this.cached = true;
   }
 
@@ -1461,7 +1779,7 @@ function createModels(order?: string[]): ReadonlyMap<string, FakeModel> {
     ],
     [
       SUMMARY_MODEL_ID,
-      new FakeModel(SUMMARY_MODEL_ID, "qwen", "chat-completion", SUMMARY_EXECUTION_PROVIDER, order),
+      new FakeModel(SUMMARY_MODEL_ID, "qwen", "vision-language-chat", SUMMARY_EXECUTION_PROVIDER, order),
     ],
   ]);
 }
@@ -1490,20 +1808,23 @@ function fakeAudioSession(
 
 function fakeChatSession(
   options: {
+    readonly preflightRequest?: (request: Request) => Promise<RequestPreflightResult>;
     readonly processRequest?: (request: Request) => Promise<Response>;
     readonly dispose?: () => void;
   } = {},
 ) {
   return {
     turnCount: 0,
-    preflightRequest: async (): Promise<RequestPreflightResult> => ({
-      promptTokens: 10,
-      outputReserveTokens: 260,
-      requiredTokens: 270,
-      contextLimitTokens: 4_096,
-      fits: true,
-      deficitTokens: 0,
-    }),
+    preflightRequest:
+      options.preflightRequest ??
+      (async (): Promise<RequestPreflightResult> => ({
+        promptTokens: 10,
+        outputReserveTokens: 260,
+        requiredTokens: 270,
+        contextLimitTokens: 4_096,
+        fits: true,
+        deficitTokens: 0,
+      })),
     processRequest:
       options.processRequest ??
       (async () => {

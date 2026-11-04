@@ -77,6 +77,15 @@ export function formatSummaryForDisplay(rawText: string): SummaryDisplayFormatRe
   };
 }
 
+export function formatSummaryPresentation(rawText: string): SummaryDisplayFormatResult {
+  const formatted = formatSummaryForDisplay(rawText);
+  const text = structureSummaryContent(formatted.text);
+  return {
+    text,
+    formattingApplied: formatted.formattingApplied || text !== formatted.text,
+  };
+}
+
 function formatOutsideProtectedRegions(value: string): string {
   const delimiterStack: MathOpeningDelimiter[] = [];
   let output = "";
@@ -1305,4 +1314,248 @@ function normalizeWhitespace(value: string): string {
     lines.pop();
   }
   return lines.join("\n");
+}
+
+const SUMMARY_MAX_BULLET_LINES = 6;
+const SUMMARY_VISUAL_LIST_MARKER = /^(?:•\s+|[-*]\s+(?=[\p{Lu}"'“‘`]))/u;
+const SUMMARY_VISUAL_LIST_WRAPPER = /^(?:•|[-*])\s+/u;
+const SUMMARY_NUMERIC_FACT_PREFIX = /^[+\-−]?\p{Nd}/u;
+const SUMMARY_ORDERED_LIST_MARKER = /^(\d+)([.)])\s+\S/u;
+const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
+  "dr",
+  "e.g",
+  "etc",
+  "i.e",
+  "mr",
+  "mrs",
+  "ms",
+  "prof",
+  "sr",
+  "st",
+  "vs",
+]);
+
+function structureSummaryContent(value: string): string {
+  const protectedContent = maskSummaryStructureRegions(value);
+  const lines = protectedContent.masked
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const units: string[] = [];
+
+  const orderedList = parseConfidentOrderedSummaryList(lines);
+  if (lines.some(hasNumericSummaryPrefix)) {
+    if (orderedList === null) {
+      return value;
+    }
+    units.push(...orderedList);
+  } else {
+    for (const line of lines) {
+      const content = summaryLineContent(line);
+      if (!content) {
+        continue;
+      }
+      const sentences = splitCompleteSummarySentences(content);
+      if (sentences === null) {
+        if (lines.length === 1) {
+          return value;
+        }
+        units.push(content);
+      } else {
+        const onlySentence = sentences.length === 1 ? sentences[0] : undefined;
+        units.push(...(onlySentence === undefined ? sentences : splitCompleteSummaryClauses(onlySentence)));
+      }
+    }
+  }
+
+  if (units.length < 2) {
+    return value;
+  }
+
+  const restored = units.map(protectedContent.restore);
+  const [overview, ...details] = restored;
+  if (overview === undefined || details.length === 0) {
+    return value;
+  }
+  const bullets = groupSummaryUnits(details, SUMMARY_MAX_BULLET_LINES);
+  const structured = [overview, ...bullets.map((bullet) => `• ${bullet}`)].join("\n");
+  return canonicalSummaryContent(structured) === canonicalSummaryContent(value) ? structured : value;
+}
+
+function summaryLineContent(line: string): string {
+  return line.replace(SUMMARY_VISUAL_LIST_MARKER, "").trim();
+}
+
+function hasNumericSummaryPrefix(line: string): boolean {
+  const content = line.trim().replace(SUMMARY_VISUAL_LIST_WRAPPER, "");
+  return SUMMARY_NUMERIC_FACT_PREFIX.test(content);
+}
+
+function parseConfidentOrderedSummaryList(lines: readonly string[]): readonly string[] | null {
+  if (lines.length < 2) {
+    return null;
+  }
+  const contents: string[] = [];
+  let delimiter: string | null = null;
+  for (const [index, line] of lines.entries()) {
+    const content = summaryLineContent(line);
+    const match = content.match(SUMMARY_ORDERED_LIST_MARKER);
+    const ordinalText = match?.[1];
+    const currentDelimiter = match?.[2];
+    if (ordinalText === undefined || currentDelimiter === undefined) {
+      return null;
+    }
+    const ordinal = Number(ordinalText);
+    if (
+      !Number.isSafeInteger(ordinal) ||
+      ordinal !== index + 1 ||
+      (delimiter !== null && currentDelimiter !== delimiter)
+    ) {
+      return null;
+    }
+    delimiter = currentDelimiter;
+    contents.push(content);
+  }
+  return contents;
+}
+
+function maskSummaryStructureRegions(value: string): {
+  readonly masked: string;
+  readonly restore: (value: string) => string;
+} {
+  const regions: { readonly placeholder: string; readonly text: string }[] = [];
+  let masked = "";
+  for (const span of tokenizeProtectedRegions(value)) {
+    const text = value.slice(span.start, span.end);
+    if (span.kind === "plain") {
+      masked += text;
+      continue;
+    }
+    let placeholder = `\uE100summary-structure-${regions.length}\uE101`;
+    while (value.includes(placeholder)) {
+      placeholder += "\uE102";
+    }
+    masked += placeholder;
+    regions.push({ placeholder, text });
+  }
+  return {
+    masked,
+    restore: (candidate) => {
+      let restored = candidate;
+      for (const region of regions) {
+        restored = restored.replaceAll(region.placeholder, region.text);
+      }
+      return restored;
+    },
+  };
+}
+
+function splitCompleteSummarySentences(value: string): readonly string[] | null {
+  const sentences: string[] = [];
+  let start = 0;
+  let index = 0;
+
+  while (index < value.length) {
+    const character = value[index] ?? "";
+    if (!/[.!?]/u.test(character) || isSummaryNonTerminalPeriod(value, index)) {
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    while (/["'”’)\]}]/u.test(value[end] ?? "")) {
+      end += 1;
+    }
+    const atEnd = end === value.length;
+    const whitespace = value.slice(end).match(/^\s+/u)?.[0] ?? "";
+    const next = value[end + whitespace.length];
+    if (!atEnd && (!whitespace || next === undefined || !/[\p{Lu}\p{N}\uE100]/u.test(next))) {
+      index = end;
+      continue;
+    }
+
+    const sentence = value.slice(start, end).trim();
+    if (!sentence) {
+      return null;
+    }
+    sentences.push(sentence);
+    start = end + whitespace.length;
+    index = start;
+  }
+
+  const tail = value.slice(start).trim();
+  if (tail) {
+    return null;
+  }
+  return sentences.length === 0 ? null : sentences;
+}
+
+function isSummaryNonTerminalPeriod(value: string, index: number): boolean {
+  if (value[index] !== ".") {
+    return false;
+  }
+  if (/\d/u.test(value[index - 1] ?? "") && /\d/u.test(value[index + 1] ?? "")) {
+    return true;
+  }
+  const prefix = value.slice(0, index + 1);
+  const abbreviation = prefix.match(/(?:^|\s)([A-Za-z](?:[A-Za-z.]*)?)\.$/u)?.[1];
+  return (
+    abbreviation !== undefined &&
+    (SUMMARY_SENTENCE_ABBREVIATIONS.has(abbreviation.toLowerCase()) ||
+      /^[A-Z]$/u.test(abbreviation) ||
+      /^(?:[A-Z]\.)+[A-Z]$/u.test(abbreviation))
+  );
+}
+
+function splitCompleteSummaryClauses(value: string): readonly string[] {
+  const clauses: string[] = [];
+  let start = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== ";") {
+      continue;
+    }
+    const whitespace = value.slice(index + 1).match(/^\s+/u)?.[0] ?? "";
+    const next = value[index + 1 + whitespace.length];
+    if (!whitespace || next === undefined || !/[\p{Lu}\p{N}\uE100]/u.test(next)) {
+      continue;
+    }
+    const clause = value.slice(start, index + 1).trim();
+    if (!clause) {
+      return [value];
+    }
+    clauses.push(clause);
+    start = index + 1 + whitespace.length;
+    index = start - 1;
+  }
+  const tail = value.slice(start).trim();
+  if (!tail || clauses.length === 0) {
+    return [value];
+  }
+  clauses.push(tail);
+  return clauses;
+}
+
+function groupSummaryUnits(units: readonly string[], maximumGroups: number): readonly string[] {
+  if (units.length <= maximumGroups) {
+    return units;
+  }
+  const groups: string[] = [];
+  let cursor = 0;
+  for (let remainingGroups = maximumGroups; remainingGroups > 0; remainingGroups -= 1) {
+    const remainingUnits = units.length - cursor;
+    const size = Math.ceil(remainingUnits / remainingGroups);
+    groups.push(units.slice(cursor, cursor + size).join(" "));
+    cursor += size;
+  }
+  return groups;
+}
+
+function canonicalSummaryContent(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => line.trim().replace(SUMMARY_VISUAL_LIST_MARKER, ""))
+    .filter(Boolean)
+    .join(" ")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
 }

@@ -19,19 +19,29 @@ import type {
   AudioStreamStartRequest,
 } from "../audio/audio-types";
 import { AUDIO_MAX_PCM_BYTES } from "../audio/audio-types";
+import { FoundryRecorderRuntime } from "../foundry/foundry-runtime";
 import {
   type EditTranscriptRequest,
+  type ImportProgressEvent,
   ipcChannels,
   type MicrophoneAuthorizationRequest,
   type PrepareRecorderRequest,
 } from "../shared/contracts";
-import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
+import { PRODUCT_NAME, PRODUCT_USER_DATA_NAMESPACE } from "../shared/product";
+import {
+  formatSafeDiagnostic,
+  type SafeDiagnosticCode,
+  serializeSafeDiagnostic,
+  toSafeDiagnostic,
+} from "../shared/safe-diagnostic";
 import { type AudioStreamOwnerIdentity, AudioStreamOwnership } from "./audio-stream-owner";
 import {
   isAllowedAppNavigation,
   MicrophonePermissionGate,
   permissionOriginForDocument,
 } from "./microphone-permission";
+import { createRecorderOperationJournal } from "./operation-journal";
+import { runPrepareUiProbe } from "./prepare-ui-probe";
 import { RecorderController } from "./recorder-controller";
 import { createPopulatedSummaryCaptureSnapshot } from "./ui-capture-fixture";
 
@@ -39,13 +49,14 @@ let mainWindow: BrowserWindow | null = null;
 let mainWebContents: WebContents | null = null;
 let microphonePermissionGate: MicrophonePermissionGate | null = null;
 let shutdownStarted = false;
-const controller = new RecorderController();
+const foundryRuntime = new FoundryRecorderRuntime();
+const controller = new RecorderController(foundryRuntime, createRecorderOperationJournal());
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const rendererFilePath = path.join(currentDirectory, "..", "renderer", "index.html");
 const populatedSummaryCaptureEnabled =
-  process.env.SMART_RECORDER_CAPTURE_FIXTURE === "populated-summary" &&
-  process.env.SMART_RECORDER_CAPTURE_AND_EXIT === "1" &&
-  Boolean(process.env.SMART_RECORDER_CAPTURE_PATH?.trim());
+  process.env.AI_RECORDER_CAPTURE_FIXTURE === "populated-summary" &&
+  process.env.AI_RECORDER_CAPTURE_AND_EXIT === "1" &&
+  Boolean(process.env.AI_RECORDER_CAPTURE_PATH?.trim());
 const rendererDocumentUrl = (() => {
   const url = pathToFileURL(rendererFilePath);
   if (populatedSummaryCaptureEnabled) {
@@ -54,8 +65,16 @@ const rendererDocumentUrl = (() => {
   return url.href;
 })();
 const rendererPermissionOrigin = permissionOriginForDocument(rendererDocumentUrl);
-const microphonePermissionProbeEnabled = process.env.SMART_RECORDER_MIC_PERMISSION_PROBE === "1";
-const streamOwnerProbeEnabled = process.env.SMART_RECORDER_STREAM_OWNER_PROBE === "1";
+const microphonePermissionProbeEnabled = process.env.AI_RECORDER_MIC_PERMISSION_PROBE === "1";
+const streamOwnerProbeEnabled = process.env.AI_RECORDER_STREAM_OWNER_PROBE === "1";
+const prepareUiProbeEnabled = process.env.AI_RECORDER_PREPARE_UI_PROBE === "1";
+const smokeProbeEnabled = process.env.AI_RECORDER_SMOKE_AND_EXIT === "1";
+const hideWindowForAutomation =
+  populatedSummaryCaptureEnabled ||
+  microphonePermissionProbeEnabled ||
+  streamOwnerProbeEnabled ||
+  prepareUiProbeEnabled ||
+  smokeProbeEnabled;
 const streamOwnerReloadProbeId = "00000000-0000-4000-8000-000000000001";
 const streamOwnerCloseProbeId = "00000000-0000-4000-8000-000000000002";
 const streamOwnerProbeIds = new Set([streamOwnerReloadProbeId, streamOwnerCloseProbeId]);
@@ -87,7 +106,10 @@ const audioStreamOwnership = new AudioStreamOwnership(async (streamId) => {
   await controller.cancelLiveStream(streamId);
 });
 
-if (process.env.SMART_RECORDER_CAPTURE_PATH?.trim()) {
+app.setName(PRODUCT_NAME);
+app.setPath("userData", path.join(app.getPath("appData"), PRODUCT_USER_DATA_NAMESPACE));
+
+if (process.env.AI_RECORDER_CAPTURE_PATH?.trim()) {
   app.disableHardwareAcceleration();
 }
 if (microphonePermissionProbeEnabled) {
@@ -106,7 +128,7 @@ function createWindow(): BrowserWindow {
     minHeight: 720,
     show: false,
     backgroundColor: "#071018",
-    title: "Smart AI Recorder",
+    title: PRODUCT_NAME,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(currentDirectory, "..", "preload", "preload.cjs"),
@@ -175,11 +197,11 @@ function createWindow(): BrowserWindow {
 
   void webContents.loadURL(rendererDocumentUrl);
   window.once("ready-to-show", () => {
-    if (!window.isDestroyed()) {
+    if (!window.isDestroyed() && !hideWindowForAutomation) {
       window.show();
     }
   });
-  if (process.env.SMART_RECORDER_SMOKE_AND_EXIT === "1") {
+  if (smokeProbeEnabled) {
     webContents.once("did-finish-load", () => setTimeout(() => app.quit(), 3_000));
   }
   if (microphonePermissionProbeEnabled) {
@@ -188,11 +210,24 @@ function createWindow(): BrowserWindow {
   if (streamOwnerProbeEnabled) {
     webContents.once("did-finish-load", () => void runStreamOwnerProbe(window, webContents, webContentsId));
   }
-  if (process.env.SMART_RECORDER_OPEN_DEVTOOLS === "1") {
+  if (prepareUiProbeEnabled) {
+    webContents.once(
+      "did-finish-load",
+      () =>
+        void runPrepareUiProbe(window, webContents, async () => {
+          await controller.shutdown();
+          const deferredCleanup = controller.cleanupCompletion;
+          if (deferredCleanup !== null) {
+            await deferredCleanup;
+          }
+        }),
+    );
+  }
+  if (process.env.AI_RECORDER_OPEN_DEVTOOLS === "1") {
     webContents.openDevTools({ mode: "detach" });
   }
 
-  const capturePath = process.env.SMART_RECORDER_CAPTURE_PATH?.trim();
+  const capturePath = process.env.AI_RECORDER_CAPTURE_PATH?.trim();
   if (capturePath) {
     webContents.once("did-finish-load", async () => {
       try {
@@ -200,14 +235,14 @@ function createWindow(): BrowserWindow {
         if (webContents.isDestroyed()) {
           throw new Error("The renderer was destroyed before UI capture.");
         }
-        const image = await webContents.capturePage();
+        const capture = await webContents.capturePage();
         await mkdir(path.dirname(capturePath), { recursive: true });
-        await writeFile(capturePath, image.toPNG());
-        if (process.env.SMART_RECORDER_CAPTURE_AND_EXIT === "1") {
+        await writeFile(capturePath, capture.toPNG());
+        if (process.env.AI_RECORDER_CAPTURE_AND_EXIT === "1") {
           app.quit();
         }
       } catch (error) {
-        console.error("Failed to capture Smart AI Recorder UI:", error);
+        console.error("Failed to capture AI Recorder UI:", error);
         app.exit(1);
       }
     });
@@ -223,9 +258,11 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.prepare, (event, request: PrepareRecorderRequest) => {
     const renderer = assertTrustedRendererIpc(event);
-    return controller.prepare(request, (progress) => {
-      sendToFrame(renderer.frame, ipcChannels.progress, progress);
-    });
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", () =>
+      controller.prepare(request, (progress) => {
+        sendToFrame(renderer.frame, ipcChannels.progress, progress);
+      }),
+    );
   });
   ipcMain.handle(ipcChannels.authorizeMicrophone, (event, request: MicrophoneAuthorizationRequest) => {
     const window = mainWindow;
@@ -294,28 +331,38 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.transcribeCapture, (event, request: AudioCapturePayload) => {
     assertTrustedRendererIpc(event);
-    return controller.transcribeCapture(request);
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", () => controller.transcribeCapture(request));
   });
   ipcMain.handle(ipcChannels.importWav, async (event) => {
-    assertTrustedRendererIpc(event);
-    const owner = mainWindow;
-    if (owner === null || owner.isDestroyed()) {
-      throw new Error("The application window is not available.");
-    }
-    const result = await dialog.showOpenDialog(owner, {
-      title: "Open a 16 kHz mono PCM WAV",
-      properties: ["openFile"],
-      filters: [{ name: "WAV audio", extensions: ["wav"] }],
+    const renderer = assertTrustedRendererIpc(event);
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", async () => {
+      const owner = mainWindow;
+      if (owner === null || owner.isDestroyed()) {
+        throw new Error("The application window is not available.");
+      }
+      const importToken = controller.captureOperationToken();
+      sendImportProgress(renderer.frame, "selecting_file", "Waiting for a bounded local WAV selection.");
+      const result = await dialog.showOpenDialog(owner, {
+        title: "Open a 16 kHz mono PCM WAV",
+        properties: ["openFile"],
+        filters: [{ name: "WAV audio", extensions: ["wav"] }],
+      });
+      const filePath = result.filePaths[0];
+      if (result.canceled || filePath === undefined) {
+        return null;
+      }
+      sendImportProgress(renderer.frame, "reading_file", "Reading the selected local WAV.");
+      const file = await stat(filePath);
+      if (file.size > AUDIO_MAX_PCM_BYTES + 1_048_576) {
+        throw new Error("The selected WAV exceeds the bounded 30-second import limit.");
+      }
+      return controller.transcribeImportedWav(
+        path.basename(filePath),
+        await readFile(filePath),
+        importToken,
+        (stage, detail) => sendImportProgress(renderer.frame, stage, detail),
+      );
     });
-    const filePath = result.filePaths[0];
-    if (result.canceled || filePath === undefined) {
-      return null;
-    }
-    const file = await stat(filePath);
-    if (file.size > AUDIO_MAX_PCM_BYTES + 1_048_576) {
-      throw new Error("The selected WAV exceeds the bounded 30-second import limit.");
-    }
-    return controller.transcribeImportedWav(path.basename(filePath), await readFile(filePath));
   });
   ipcMain.handle(ipcChannels.editTranscript, (event, request: EditTranscriptRequest) => {
     assertTrustedRendererIpc(event);
@@ -323,7 +370,7 @@ function registerIpc(): void {
   });
   ipcMain.handle(ipcChannels.generateSummary, (event) => {
     assertTrustedRendererIpc(event);
-    return controller.generateSummary();
+    return safeIpcInvoke("LOCAL_OPERATION_FAILED", () => controller.generateSummary());
   });
   ipcMain.handle(ipcChannels.reset, async (event) => {
     const renderer = assertTrustedRendererIpc(event);
@@ -337,6 +384,27 @@ function registerIpc(): void {
       });
     return controller.reset();
   });
+}
+
+async function safeIpcInvoke<T>(
+  fallbackCode: SafeDiagnosticCode,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throw new Error(serializeSafeDiagnostic(error, fallbackCode));
+  }
+}
+
+function sendImportProgress(frame: WebFrameMain, stage: ImportProgressEvent["stage"], detail: string): void {
+  const progress: ImportProgressEvent = {
+    operation: "import",
+    phase: `import:${stage}`,
+    stage,
+    detail,
+  };
+  sendToFrame(frame, ipcChannels.progress, progress);
 }
 
 function assertTrustedRendererIpc(event: IpcMainInvokeEvent): {
@@ -560,6 +628,7 @@ async function runStreamOwnerProbe(
     if (!(await audioStreamOwnership.activate(lease, streamOwnerReloadProbeId))) {
       throw new Error("The initial renderer frame could not acquire the probe stream.");
     }
+
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("Timed out waiting for renderer reload.")), 10_000);
       webContents.once("did-finish-load", () => {
@@ -639,7 +708,7 @@ function failStreamOwnerProbe(kind: string, error: unknown): void {
 }
 
 app.on("window-all-closed", () => {
-  if (streamOwnerProbeEnabled) {
+  if (streamOwnerProbeEnabled || prepareUiProbeEnabled) {
     return;
   }
   if (process.platform !== "darwin") {

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PRODUCT_STORAGE_NAMESPACE } from "../shared/product";
 
 export interface RecorderPaths {
   readonly appDataDir: string;
@@ -10,11 +11,26 @@ export interface RecorderPaths {
   readonly audioTempDir: string;
 }
 
+export function recorderOwnedPathLayout(
+  localAppDataRoot: string,
+  tempRoot: string,
+): Pick<RecorderPaths, "appDataDir" | "logsDir" | "audioTempDir"> {
+  const appDataDir = path.join(localAppDataRoot, PRODUCT_STORAGE_NAMESPACE);
+  return {
+    appDataDir,
+    logsDir: path.join(appDataDir, "logs"),
+    audioTempDir: path.join(tempRoot, PRODUCT_STORAGE_NAMESPACE, "audio"),
+  };
+}
+
 export async function resolveRecorderPaths(): Promise<RecorderPaths> {
-  const appDataDir = platformAppDataDir();
+  const owned = recorderOwnedPathLayout(platformAppDataRoot(), os.tmpdir());
+  const appDataDir = process.env.AI_RECORDER_APP_DATA_DIR?.trim()
+    ? path.resolve(process.env.AI_RECORDER_APP_DATA_DIR.trim())
+    : owned.appDataDir;
   const logsDir = path.join(appDataDir, "logs");
   const modelCacheDir = sharedModelCacheDir(appDataDir);
-  const audioTempDir = path.join(os.tmpdir(), "FoundryLocalSmartAIRecorder", "audio");
+  const audioTempDir = owned.audioTempDir;
   await Promise.all([
     mkdir(appDataDir, { recursive: true }),
     mkdir(logsDir, { recursive: true }),
@@ -24,13 +40,8 @@ export async function resolveRecorderPaths(): Promise<RecorderPaths> {
   return { appDataDir, logsDir, modelCacheDir, audioTempDir };
 }
 
-function platformAppDataDir(): string {
-  const override = process.env.SMART_RECORDER_APP_DATA_DIR?.trim();
-  if (override) {
-    return path.resolve(override);
-  }
-  const root = process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
-  return path.join(root, "FoundryLocalSmartAIRecorder");
+function platformAppDataRoot(): string {
+  return process.env.LOCALAPPDATA?.trim() || path.join(os.homedir(), "AppData", "Local");
 }
 
 function sharedModelCacheDir(appDataDir: string): string {

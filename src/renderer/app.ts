@@ -19,6 +19,7 @@ import {
   recordingLimitDelay,
   releaseMediaStream,
 } from "./audio-capture";
+import { applyRecorderProgress, type RecorderOperationState } from "./recorder-progress";
 
 interface RecordingOperation {
   readonly generation: number;
@@ -45,7 +46,7 @@ root.innerHTML = `
     <header class="topbar">
       <div>
         <p class="eyebrow">WINDOWS 11 · LOCAL CACHED INFERENCE</p>
-        <h1>Smart AI Recorder</h1>
+        <h1>AI Recorder</h1>
       </div>
       <div class="topbar-status">
         <span class="privacy-pill"><span class="pulse-dot"></span><span id="privacy-state">Endpoint guard pending</span></span>
@@ -53,22 +54,22 @@ root.innerHTML = `
       </div>
     </header>
 
-    <section class="model-rail" aria-label="Local model readiness">
-      <article class="model-card" data-model="nemotron">
+    <section id="model-rail" class="model-rail" aria-label="Local model readiness" aria-live="polite">
+      <article id="nemotron-card" class="model-card" data-model="nemotron">
         <span class="step-number">01</span>
-        <div><p>Live draft</p><strong>Nemotron</strong><small id="nemotron-id"></small></div>
+        <div><p>Live draft</p><strong>Nemotron</strong><small id="nemotron-id"></small><small id="nemotron-detail" class="model-detail"></small></div>
         <span id="nemotron-state" class="state-chip"></span>
       </article>
       <div class="flow-arrow" aria-hidden="true">→</div>
-      <article class="model-card model-card-primary" data-model="whisper">
+      <article id="whisper-card" class="model-card model-card-primary" data-model="whisper">
         <span class="step-number">02</span>
-        <div><p>Authoritative final</p><strong>Whisper</strong><small id="whisper-id"></small></div>
+        <div><p>Authoritative final</p><strong>Whisper</strong><small id="whisper-id"></small><small id="whisper-detail" class="model-detail"></small></div>
         <span id="whisper-state" class="state-chip"></span>
       </article>
       <div class="flow-arrow" aria-hidden="true">→</div>
-      <article class="model-card" data-model="summary">
+      <article id="summary-card-model" class="model-card" data-model="summary">
         <span class="step-number">03</span>
-        <div><p>Post-session</p><strong>Local summary</strong><small id="summary-id"></small></div>
+        <div><p>Post-session</p><strong>Qwen3.5 0.8B</strong><small id="summary-id"></small><small id="summary-detail" class="model-detail"></small></div>
         <span id="summary-state" class="state-chip"></span>
       </article>
     </section>
@@ -106,7 +107,7 @@ root.innerHTML = `
         <div class="record-controls">
           <button id="start-button" class="record-button" disabled aria-label="Start recording">
             <span class="record-icon"></span>
-            <span>Start</span>
+            <span id="start-button-label">Start</span>
           </button>
           <button id="stop-button" class="button button-danger" disabled>Stop</button>
         </div>
@@ -125,7 +126,7 @@ root.innerHTML = `
 
       <section class="content-panel">
         <div class="transcript-grid">
-          <article class="output-card live-card">
+          <article id="live-card" class="output-card live-card">
             <div class="output-heading">
               <div>
                 <p class="eyebrow">DISPLAY ONLY</p>
@@ -133,12 +134,12 @@ root.innerHTML = `
               </div>
               <span id="first-caption" class="metric-chip">First caption —</span>
             </div>
-            <div id="live-draft" class="live-draft empty">
+            <div id="live-draft" class="live-draft empty" role="status" aria-live="polite" aria-busy="false">
               Live hypotheses will replace each other here. They are never summary input.
             </div>
           </article>
 
-          <article class="output-card final-card">
+          <article id="final-card" class="output-card final-card">
             <div class="output-heading">
               <div>
                 <p class="eyebrow">DURABLE AFTER STOP</p>
@@ -154,11 +155,11 @@ root.innerHTML = `
           </article>
         </div>
 
-        <article class="output-card summary-card">
+        <article id="summary-card" class="output-card summary-card">
           <div class="output-heading">
             <div>
               <p class="eyebrow">AI-GENERATED · EDITABLE</p>
-              <h2>Session summary <span>Qwen</span></h2>
+              <h2>Session summary <span>Qwen3.5 0.8B</span></h2>
             </div>
             <button id="summary-button" class="button button-primary" disabled>Generate summary</button>
           </div>
@@ -188,25 +189,30 @@ root.innerHTML = `
 `;
 
 const elements = {
+  modelRail: required("#model-rail"),
   clock: required("#clock"),
   privacyState: required("#privacy-state"),
   consent: required<HTMLInputElement>("#consent"),
   liveToggle: required<HTMLInputElement>("#live-toggle"),
   prepare: required<HTMLButtonElement>("#prepare-button"),
   start: required<HTMLButtonElement>("#start-button"),
+  startLabel: required("#start-button-label"),
   stop: required<HTMLButtonElement>("#stop-button"),
   import: required<HTMLButtonElement>("#import-button"),
   elapsed: required("#elapsed"),
   status: required("#status-message"),
   recordingIndicator: required("#recording-indicator"),
   liveDraft: required("#live-draft"),
+  liveCard: required("#live-card"),
   firstCaption: required("#first-caption"),
   finalTranscript: required<HTMLTextAreaElement>("#final-transcript"),
+  finalCard: required("#final-card"),
   transcriptVersion: required("#transcript-version"),
   whisperTiming: required("#whisper-timing"),
   saveTranscript: required<HTMLButtonElement>("#save-transcript"),
   summary: required<HTMLButtonElement>("#summary-button"),
   summaryOutput: required<HTMLTextAreaElement>("#summary-output"),
+  summaryCard: required("#summary-card"),
   summaryTiming: required("#summary-timing"),
   summaryVersion: required("#summary-version"),
   reset: required<HTMLButtonElement>("#reset-button"),
@@ -214,15 +220,21 @@ const elements = {
   traceContent: required("#trace-content"),
   model: {
     whisper: {
+      card: required("#whisper-card"),
       id: required("#whisper-id"),
+      detail: required("#whisper-detail"),
       state: required("#whisper-state"),
     },
     nemotron: {
+      card: required("#nemotron-card"),
       id: required("#nemotron-id"),
+      detail: required("#nemotron-detail"),
       state: required("#nemotron-state"),
     },
     summary: {
+      card: required("#summary-card-model"),
       id: required("#summary-id"),
+      detail: required("#summary-detail"),
       state: required("#summary-state"),
     },
   },
@@ -236,7 +248,7 @@ let operationGeneration = 0;
 let prepared = populatedSummaryCapture;
 let liveAvailable = populatedSummaryCapture;
 let busy = false;
-let resetting = false;
+let recorderOperation: RecorderOperationState = { kind: "idle" };
 let summaryDraft = "";
 let progressDetail = "";
 let transcriptEditorDirty = false;
@@ -251,7 +263,25 @@ if (populatedSummaryCapture) {
 }
 
 api.onProgress((event) => {
-  progressDetail = event.detail;
+  if (event.operation === "prepare") {
+    if (recorderOperation.kind !== "prepare") {
+      return;
+    }
+    progressDetail = event.detail;
+    snapshot = { ...snapshot, readiness: event.readiness };
+    renderReadiness(snapshot);
+    setRecorderOperation({
+      kind: "prepare",
+      stage: event.stage,
+      ...(event.role === undefined ? {} : { role: event.role }),
+    });
+  } else {
+    if (recorderOperation.kind !== "import") {
+      return;
+    }
+    progressDetail = event.detail;
+    setRecorderOperation({ kind: "import", stage: event.stage });
+  }
   setStatus(event.detail, "working");
 });
 api.onAudioPartial((event) => {
@@ -260,6 +290,7 @@ api.onAudioPartial((event) => {
   }
   elements.liveDraft.textContent = event.text;
   elements.liveDraft.classList.remove("empty");
+  setRecorderOperation({ kind: "recording" });
   elements.firstCaption.textContent = `First caption ${formatMilliseconds(event.firstPartialMs)}`;
 });
 
@@ -309,29 +340,42 @@ async function prepareModels(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation({ kind: "prepare", stage: "initializing_runtime" });
   updateControls();
-  setStatus("Preparing Whisper and Qwen locally…", "working");
+  setStatus("Initializing the Foundry Local in-process runtime…", "working");
   try {
     const response = await api.prepare({ enableLiveCaptions: elements.liveToggle.checked });
+    if (generation !== operationGeneration) {
+      return;
+    }
     snapshot = response.snapshot;
-    prepared = true;
+    prepared = coreModelsReady(snapshot);
     liveAvailable = response.liveCaptionsAvailable;
+    const readyCount = preparedModelCount(snapshot);
     const recoveryWarning = startupRecoveryWarning(snapshot);
     if (recoveryWarning !== null) {
       setStatus(recoveryWarning, "warning");
-    } else if (elements.liveToggle.checked && !liveAvailable) {
+    } else if (readyCount < 3) {
       setStatus(
-        `Whisper-only fallback is ready. ${
-          response.liveCaptionsFailure === null
-            ? "Nemotron is unavailable."
-            : formatSafeDiagnostic(response.liveCaptionsFailure)
+        `${readyCount}/3 local models are ready. ${
+          !liveAvailable && response.liveCaptionsFailure !== null
+            ? formatSafeDiagnostic(response.liveCaptionsFailure)
+            : "Retry Prepare while online before disconnecting."
         }`,
         "warning",
       );
     } else {
-      setStatus("Local models are ready. Audio remains on this PC.", "success");
+      setStatus(
+        "AI Recorder offline ready · 3/3 models. Recording, transcription, and summary stay on this PC.",
+        "success",
+      );
     }
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     snapshot = await api.getBootstrap().catch(() => snapshot);
     prepared = false;
     liveAvailable = false;
@@ -341,8 +385,11 @@ async function prepareModels(): Promise<void> {
       "error",
     );
   } finally {
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -353,6 +400,7 @@ async function startRecording(): Promise<void> {
   busy = true;
   operationGeneration += 1;
   const generation = operationGeneration;
+  setRecorderOperation({ kind: "requesting_microphone" });
   updateControls();
   setStatus("Requesting microphone permission…", "working");
   let mediaStream: MediaStream | null = null;
@@ -363,6 +411,9 @@ async function startRecording(): Promise<void> {
   const pcm = new BoundedPcmCapture();
   try {
     await api.authorizeMicrophone();
+    if (generation !== operationGeneration) {
+      return;
+    }
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -372,9 +423,14 @@ async function startRecording(): Promise<void> {
       },
       video: false,
     });
+    if (generation !== operationGeneration) {
+      releaseMediaStream(mediaStream);
+      return;
+    }
 
     if (elements.liveToggle.checked && liveAvailable) {
       try {
+        setRecorderOperation({ kind: "starting_live_captions" });
         const stream = await api.startLiveStream({
           format: AUDIO_FORMAT,
           sampleRate: AUDIO_SAMPLE_RATE,
@@ -382,6 +438,11 @@ async function startRecording(): Promise<void> {
           maxDurationMs: AUDIO_MAX_DURATION_MS,
         });
         streamId = stream.streamId;
+        if (generation !== operationGeneration) {
+          void api.cancelLiveStream({ streamId }).catch(() => undefined);
+          releaseMediaStream(mediaStream);
+          return;
+        }
         pump = new BoundedAudioChunkPump(
           (sequence, data) => api.appendLiveChunk({ streamId: stream.streamId, sequence, data }),
           (error) => {
@@ -391,6 +452,7 @@ async function startRecording(): Promise<void> {
             if (recording?.generation === generation) {
               recording.pump = null;
             }
+            setRecorderOperation({ kind: "recording" });
             setStatus(
               `Live captions stopped: ${liveCaptionDiagnostic(error)}. Whisper still records.`,
               "warning",
@@ -399,6 +461,7 @@ async function startRecording(): Promise<void> {
         );
       } catch (error) {
         liveAvailable = false;
+        setRecorderOperation({ kind: "starting_live_captions" });
         setStatus(
           `Nemotron unavailable: ${liveCaptionDiagnostic(error)}. Recording continues for Whisper.`,
           "warning",
@@ -424,6 +487,7 @@ async function startRecording(): Promise<void> {
           if (recording?.generation === generation) {
             recording.pump = null;
           }
+          setRecorderOperation({ kind: "recording" });
           setStatus(
             `Live captions stopped: ${liveCaptionDiagnostic(error)}. Whisper still records.`,
             "warning",
@@ -435,6 +499,14 @@ async function startRecording(): Promise<void> {
       },
       (error) => void failActiveRecording(error),
     );
+    if (generation !== operationGeneration) {
+      releaseMediaStream(mediaStream);
+      await liveCapture.stop().catch(() => undefined);
+      if (streamId !== null) {
+        void api.cancelLiveStream({ streamId }).catch(() => undefined);
+      }
+      return;
+    }
     const operation: RecordingOperation = {
       generation,
       mediaStream,
@@ -458,6 +530,7 @@ async function startRecording(): Promise<void> {
         ? "Whisper-only recording active. No live draft is being stored."
         : "Listening for the first replaceable Nemotron hypothesis…";
     elements.liveDraft.classList.toggle("empty", streamId === null);
+    setRecorderOperation(streamId === null ? { kind: "recording" } : { kind: "recording_waiting_caption" });
     setStatus(
       streamId === null
         ? "Recording locally for Whisper final transcription."
@@ -473,10 +546,15 @@ async function startRecording(): Promise<void> {
       await liveCapture.stop().catch(() => undefined);
     }
     liveCaptionFailure.clear();
-    setStatus(microphoneError(error), "error");
+    if (generation === operationGeneration) {
+      setRecorderOperation({ kind: "idle" });
+      setStatus(microphoneError(error), "error");
+    }
   } finally {
-    busy = false;
-    updateControls();
+    if (generation === operationGeneration) {
+      busy = false;
+      updateControls();
+    }
   }
 }
 
@@ -486,6 +564,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
     return;
   }
   busy = true;
+  setRecorderOperation({ kind: "finalizing_capture" });
   window.clearInterval(active.timerId);
   window.clearTimeout(active.limitId);
   elements.recordingIndicator.textContent = "Finalizing";
@@ -505,6 +584,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
         pump: active.pump,
         streamId: active.streamId,
         failure: active.liveCaptionFailure.error,
+        isCurrent: () => active.generation === operationGeneration,
         finish: async (lastSequence, audioDurationMs) => {
           if (active.streamId === null) {
             return;
@@ -519,6 +599,9 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       },
       releaseStream: releaseMediaStream,
     });
+    if (active.generation !== operationGeneration) {
+      return;
+    }
     if (finalized.liveCaptionCleanup !== null) {
       void finalized.liveCaptionCleanup.then((diagnostic) => {
         if (diagnostic !== null) {
@@ -540,7 +623,12 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       ) as ArrayBuffer,
       liveCaptionFailure: finalized.liveCaptionError,
     };
+    setRecorderOperation({ kind: "transcribing" });
+    setStatus("Running the bounded capture through the local Whisper model…", "working");
     const response = await api.transcribeCapture(payload);
+    if (active.generation !== operationGeneration) {
+      return;
+    }
     snapshot = response.snapshot;
     summaryDraft = "";
     if (finalized.liveCaptionError === null) {
@@ -552,12 +640,18 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
       );
     }
   } catch (error) {
+    if (active.generation !== operationGeneration) {
+      return;
+    }
     snapshot = await api.getBootstrap().catch(() => snapshot);
     setStatus(errorMessage(error), "error");
   } finally {
-    recording = null;
-    busy = false;
-    render(snapshot);
+    if (active.generation === operationGeneration) {
+      recording = null;
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -566,10 +660,16 @@ async function importWav(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation({ kind: "import", stage: "selecting_file" });
   updateControls();
-  setStatus("Opening a local WAV through the Whisper pipeline…", "working");
+  setStatus("Waiting for a bounded local WAV selection…", "working");
   try {
     const response = await api.importWav();
+    if (generation !== operationGeneration) {
+      return;
+    }
     if (response === null) {
       setStatus("WAV import cancelled.", "neutral");
       return;
@@ -578,10 +678,16 @@ async function importWav(): Promise<void> {
     summaryDraft = "";
     setStatus("The selected WAV produced a Whisper final transcript.", "success");
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -590,16 +696,28 @@ async function saveTranscript(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation({ kind: "saving_transcript" });
   updateControls();
   try {
     snapshot = await api.editTranscript({ text: elements.finalTranscript.value });
+    if (generation !== operationGeneration) {
+      return;
+    }
     summaryDraft = "";
     setStatus(`Transcript correction saved as version ${snapshot.transcript.version}.`, "success");
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -608,31 +726,56 @@ async function generateSummary(): Promise<void> {
     return;
   }
   busy = true;
+  operationGeneration += 1;
+  const generation = operationGeneration;
+  setRecorderOperation(
+    transcriptEditorDirty ? { kind: "summary_saving_transcript" } : { kind: "summary_generating" },
+  );
   updateControls();
-  setStatus("Submitting the exact final transcript to the local summary model…", "working");
+  setStatus(
+    transcriptEditorDirty
+      ? "Saving the transcript correction before summary generation…"
+      : "Submitting the exact final transcript to the local summary model…",
+    "working",
+  );
   try {
     if (transcriptEditorDirty) {
       snapshot = await api.editTranscript({ text: elements.finalTranscript.value });
+      if (generation !== operationGeneration) {
+        return;
+      }
+      setRecorderOperation({ kind: "summary_generating" });
+      setStatus("Generating a local summary from the saved transcript version…", "working");
     }
     const response = await api.generateSummary();
+    if (generation !== operationGeneration) {
+      return;
+    }
     snapshot = response.snapshot;
     summaryDraft = snapshot.transcript.summary?.text ?? "";
     setStatus("Local AI summary is ready and editable.", "success");
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
 async function resetRecorder(): Promise<void> {
-  if (busy) {
+  if (recorderOperation.kind === "resetting") {
     return;
   }
   busy = true;
-  resetting = true;
+  setRecorderOperation({ kind: "resetting" });
   operationGeneration += 1;
+  const generation = operationGeneration;
   const active = recording;
   recording = null;
   if (active !== null) {
@@ -668,6 +811,9 @@ async function resetRecorder(): Promise<void> {
       void reset.liveCaptionCleanup.then(() => undefined);
     }
     snapshot = reset.result;
+    if (generation !== operationGeneration) {
+      return;
+    }
     summaryDraft = "";
     elements.consent.checked = false;
     setStatus(
@@ -681,12 +827,17 @@ async function resetRecorder(): Promise<void> {
       cancellationError === null ? "success" : "warning",
     );
   } catch (error) {
+    if (generation !== operationGeneration) {
+      return;
+    }
     setStatus(errorMessage(error), "error");
   } finally {
     active?.liveCaptionFailure.clear();
-    resetting = false;
-    busy = false;
-    render(snapshot);
+    if (generation === operationGeneration) {
+      busy = false;
+      setRecorderOperation({ kind: "idle" });
+      render(snapshot);
+    }
   }
 }
 
@@ -708,16 +859,14 @@ async function failActiveRecording(error: unknown): Promise<void> {
     void api.cancelLiveStream({ streamId: active.streamId }).catch(() => undefined);
   }
   busy = false;
+  setRecorderOperation({ kind: "idle" });
   setStatus(errorMessage(error), "error");
   updateControls();
 }
 
 function render(next: RecorderSnapshot): void {
   snapshot = next;
-  renderModel("whisper", snapshot.readiness.whisper);
-  renderModel("nemotron", snapshot.readiness.nemotron);
-  renderModel("summary", snapshot.readiness.summary);
-  renderPrivacyBoundary(snapshot);
+  renderReadiness(snapshot);
 
   const transcript = snapshot.transcript;
   if (recording === null) {
@@ -725,6 +874,7 @@ function render(next: RecorderSnapshot): void {
       transcript.liveDraft || "Live hypotheses will replace each other here. They are never summary input.";
     elements.liveDraft.classList.toggle("empty", !transcript.liveDraft);
   }
+
   elements.finalTranscript.disabled = !transcript.finalText || busy;
   elements.finalTranscript.value = transcript.finalText;
   transcriptEditorDirty = false;
@@ -750,11 +900,35 @@ function render(next: RecorderSnapshot): void {
   renderTrace(snapshot.trace);
   updateControls();
 }
+function renderReadiness(next: RecorderSnapshot): void {
+  renderModel("whisper", next.readiness.whisper);
+  renderModel("nemotron", next.readiness.nemotron);
+  renderModel("summary", next.readiness.summary);
+  renderPrivacyBoundary(next);
+}
 
 function renderModel(role: "whisper" | "nemotron" | "summary", readiness: ModelReadiness): void {
-  elements.model[role].id.textContent = `${readiness.target.modelId} · ${readiness.target.executionProvider}`;
+  elements.model[role].id.textContent = [
+    readiness.target.modelId,
+    readiness.model?.deviceType,
+    readiness.target.executionProvider,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  elements.model[role].detail.textContent = readiness.detail;
+  elements.model[role].detail.title = readiness.detail;
   elements.model[role].state.textContent = stateLabel(readiness.status);
   elements.model[role].state.className = `state-chip state-${readiness.status}`;
+  elements.model[role].state.setAttribute("role", "status");
+  elements.model[role].card.setAttribute(
+    "aria-busy",
+    String(
+      readiness.status === "checking" ||
+        readiness.status === "downloading" ||
+        readiness.status === "registering_provider" ||
+        readiness.status === "loading",
+    ),
+  );
 }
 
 function renderTrace(trace: readonly TraceEntry[]): void {
@@ -802,22 +976,39 @@ function updateControls(): void {
   elements.liveToggle.disabled = busy || recording !== null;
   elements.saveTranscript.disabled = busy || !transcriptChanged;
   elements.summary.disabled = busy || !hasFinal;
-  elements.reset.disabled = busy;
-  elements.reset.textContent = resetting
-    ? "Cancelling / resetting…"
-    : recording === null
-      ? "Delete / reset"
-      : "Cancel / reset";
-  elements.recordingIndicator.textContent = resetting
-    ? "Cancelling"
-    : recording === null
-      ? busy
-        ? "Working"
-        : "Idle"
-      : recording.stopping
-        ? "Finalizing"
-        : "Recording";
+  elements.reset.disabled = recorderOperation.kind === "resetting";
+  renderRecorderProgress();
   elements.recordingIndicator.classList.toggle("active", recording !== null);
+}
+
+function setRecorderOperation(operation: RecorderOperationState): void {
+  recorderOperation = operation;
+  renderRecorderProgress();
+}
+
+function renderRecorderProgress(): void {
+  applyRecorderProgress(
+    {
+      prepare: elements.prepare,
+      start: elements.start,
+      startLabel: elements.startLabel,
+      stop: elements.stop,
+      importButton: elements.import,
+      saveTranscript: elements.saveTranscript,
+      summary: elements.summary,
+      reset: elements.reset,
+      recordingIndicator: elements.recordingIndicator,
+      modelRail: elements.modelRail,
+      liveDraft: elements.liveDraft,
+      liveCard: elements.liveCard,
+      finalTranscript: elements.finalTranscript,
+      finalCard: elements.finalCard,
+      summaryOutput: elements.summaryOutput,
+      summaryCard: elements.summaryCard,
+    },
+    recorderOperation,
+    recording !== null,
+  );
 }
 
 function updateElapsed(): void {
@@ -835,6 +1026,7 @@ function setStatus(
 ): void {
   elements.status.textContent = message || progressDetail;
   elements.status.className = `status-message status-${tone}`;
+  elements.status.setAttribute("aria-busy", String(tone === "working"));
 }
 
 function required<T extends Element = HTMLElement>(selector: string): T {
@@ -859,6 +1051,16 @@ function formatMilliseconds(milliseconds: number | null): string {
 
 function stateLabel(status: ModelReadiness["status"]): string {
   return status.replaceAll("_", " ").toUpperCase();
+}
+
+function coreModelsReady(next: RecorderSnapshot): boolean {
+  return next.readiness.whisper.status === "ready" && next.readiness.summary.status === "ready";
+}
+
+function preparedModelCount(next: RecorderSnapshot): number {
+  return [next.readiness.whisper, next.readiness.nemotron, next.readiness.summary].filter(
+    ({ status }) => status === "ready",
+  ).length;
 }
 
 function microphoneError(error: unknown): string {

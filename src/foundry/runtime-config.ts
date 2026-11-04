@@ -4,8 +4,8 @@ import {
   WHISPER_AUDIO_MODEL_ID,
 } from "../audio/audio-types";
 
-export const SUMMARY_MODEL_ID = "qwen3-0.6b-generic-gpu:2";
-export const SUMMARY_EXECUTION_PROVIDER = "WebGPUExecutionProvider";
+export const SUMMARY_MODEL_ID = "qwen3.5-0.8b-generic-cpu:3";
+export const SUMMARY_EXECUTION_PROVIDER = AUDIO_EXECUTION_PROVIDER;
 
 export type ModelRole = "whisper" | "nemotron" | "summary";
 
@@ -27,20 +27,20 @@ const targetDefinitions = {
   whisper: {
     modelId: WHISPER_AUDIO_MODEL_ID,
     executionProvider: AUDIO_EXECUTION_PROVIDER,
-    modelVariable: "SMART_RECORDER_WHISPER_MODEL_ID",
-    providerVariable: "SMART_RECORDER_WHISPER_EXECUTION_PROVIDER",
+    modelVariable: "AI_RECORDER_WHISPER_MODEL_ID",
+    providerVariable: "AI_RECORDER_WHISPER_EXECUTION_PROVIDER",
   },
   nemotron: {
     modelId: NEMOTRON_AUDIO_MODEL_ID,
     executionProvider: AUDIO_EXECUTION_PROVIDER,
-    modelVariable: "SMART_RECORDER_NEMOTRON_MODEL_ID",
-    providerVariable: "SMART_RECORDER_NEMOTRON_EXECUTION_PROVIDER",
+    modelVariable: "AI_RECORDER_NEMOTRON_MODEL_ID",
+    providerVariable: "AI_RECORDER_NEMOTRON_EXECUTION_PROVIDER",
   },
   summary: {
     modelId: SUMMARY_MODEL_ID,
     executionProvider: SUMMARY_EXECUTION_PROVIDER,
-    modelVariable: "SMART_RECORDER_SUMMARY_MODEL_ID",
-    providerVariable: "SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER",
+    modelVariable: "AI_RECORDER_SUMMARY_MODEL_ID",
+    providerVariable: "AI_RECORDER_SUMMARY_EXECUTION_PROVIDER",
   },
 } as const;
 
@@ -52,10 +52,7 @@ export class RuntimeConfigurationError extends Error {
 }
 
 export function canonicalExecutionProvider(name: string): string {
-  const trimmed = name.trim();
-  return trimmed === "WebGpuExecutionProvider" || trimmed === "WebGPUExecutionProvider"
-    ? SUMMARY_EXECUTION_PROVIDER
-    : trimmed;
+  return name.trim();
 }
 
 export function resolveRuntimeTargets(
@@ -85,6 +82,14 @@ function resolveTarget(
   }
   const resolvedModelId = modelId || definition.modelId;
   const resolvedProvider = canonicalExecutionProvider(provider || definition.executionProvider);
+  if (
+    role === "summary" &&
+    (resolvedModelId !== SUMMARY_MODEL_ID || resolvedProvider !== SUMMARY_EXECUTION_PROVIDER)
+  ) {
+    throw new RuntimeConfigurationError(
+      `The standard summary model must use ${SUMMARY_MODEL_ID} with ${SUMMARY_EXECUTION_PROVIDER}.`,
+    );
+  }
   return {
     role,
     modelId: resolvedModelId,

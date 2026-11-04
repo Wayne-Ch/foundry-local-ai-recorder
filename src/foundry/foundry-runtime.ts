@@ -34,10 +34,24 @@ import {
   type ValidatedAudioCapture,
 } from "../audio/audio-types";
 import { TempAudioStore, withTemporaryWav } from "../audio/temp-audio-store";
-import type { ModelIdentity, ModelReadiness, ProgressEvent, RuntimeReadiness } from "../shared/contracts";
-import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
+import type {
+  ModelIdentity,
+  ModelReadiness,
+  PrepareProgressEvent,
+  PrepareProgressStage,
+  RuntimeReadiness,
+} from "../shared/contracts";
+import { PRODUCT_STORAGE_NAMESPACE } from "../shared/product";
+import {
+  createSafeDiagnosticError,
+  formatSafeDiagnostic,
+  type SafeDiagnostic,
+  type SafeDiagnosticContext,
+  toSafeDiagnostic,
+} from "../shared/safe-diagnostic";
 import { SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../summary/summary-prompt";
 import { ModelSlot } from "./model-slot";
+import { assertFoundryNativeRuntimeReady, foundryNativeRuntimeError } from "./native-runtime";
 import { type RecorderPaths, resolveRecorderPaths } from "./paths";
 import {
   canonicalExecutionProvider,
@@ -159,6 +173,7 @@ export interface FoundryRecorderRuntimeOptions {
   readonly createManager?: (config: FoundryLocalConfig) => ManagerHandle;
   readonly createChatSession?: (model: IModel) => ChatSessionHandle;
   readonly createAudioSession?: (model: IModel) => AudioSessionHandle;
+  readonly assertNativeRuntime?: () => void;
   readonly tempAudioStore?: TempAudioStore;
   readonly settlementTimeoutMs?: number;
 }
@@ -171,6 +186,7 @@ export class FoundryRecorderRuntime {
   readonly #createManager: (config: FoundryLocalConfig) => ManagerHandle;
   readonly #createChatSession: (model: IModel) => ChatSessionHandle;
   readonly #createAudioSession: (model: IModel) => AudioSessionHandle;
+  readonly #assertNativeRuntime: () => void;
   readonly #slots: Record<ModelRole, ModelSlot<IModel>> = {
     whisper: new ModelSlot<IModel>(),
     nemotron: new ModelSlot<IModel>(),
@@ -200,6 +216,9 @@ export class FoundryRecorderRuntime {
     this.#createManager = options.createManager ?? ((config) => FoundryLocalManager.create(config));
     this.#createChatSession = options.createChatSession ?? ((model) => new ChatSession(model));
     this.#createAudioSession = options.createAudioSession ?? ((model) => new AudioSession(model));
+    this.#assertNativeRuntime =
+      options.assertNativeRuntime ??
+      (options.createManager === undefined ? assertFoundryNativeRuntimeReady : () => {});
     this.#tempAudioStore = options.tempAudioStore ?? null;
     this.#settlementTimeoutMs = options.settlementTimeoutMs ?? DEFAULT_SETTLEMENT_TIMEOUT_MS;
     if (!Number.isFinite(this.#settlementTimeoutMs) || this.#settlementTimeoutMs <= 0) {
@@ -216,13 +235,13 @@ export class FoundryRecorderRuntime {
     return this.#cleanupCompletion;
   }
 
-  initialize(): Promise<void> {
+  initialize(onProgress?: (event: PrepareProgressEvent) => void): Promise<void> {
     this.#assertNotShutdown();
     if (this.#initializePromise !== null) {
       return this.#initializePromise;
     }
     let trackedPromise: Promise<void>;
-    trackedPromise = this.#initializeOrRevalidate().finally(() => {
+    trackedPromise = this.#initializeOrRevalidate(onProgress).finally(() => {
       if (this.#initializePromise === trackedPromise) {
         this.#initializePromise = null;
       }
@@ -233,7 +252,7 @@ export class FoundryRecorderRuntime {
 
   prepare(
     enableLiveCaptions: boolean,
-    onProgress?: (event: ProgressEvent) => void,
+    onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<PrepareRuntimeResult> {
     this.#assertNotShutdown();
     if (this.#preparePromise !== null) {
@@ -582,16 +601,16 @@ export class FoundryRecorderRuntime {
     return this.#startLifecycleCleanup(true);
   }
 
-  async #initializeOrRevalidate(): Promise<void> {
+  async #initializeOrRevalidate(onProgress?: (event: PrepareProgressEvent) => void): Promise<void> {
     await this.#recoverBlockingCleanup();
     if (this.#manager !== null) {
-      await this.#revalidateExistingManager(this.#manager);
+      await this.#revalidateExistingManager(this.#manager, onProgress);
       return;
     }
-    await this.#initialize();
+    await this.#initialize(onProgress);
   }
 
-  async #initialize(): Promise<void> {
+  async #initialize(onProgress?: (event: PrepareProgressEvent) => void): Promise<void> {
     const paths = await this.#resolvePaths();
     this.#assertAvailable();
     this.#tempAudioStore ??= new TempAudioStore(paths.audioTempDir);
@@ -607,32 +626,74 @@ export class FoundryRecorderRuntime {
         retained: recovery.retained,
       },
     };
-    const manager: ManagerContext = {
-      handle: this.#createManager({
-        appName: "FoundryLocalSmartAIRecorder",
+    let handle: ManagerHandle;
+    try {
+      this.#assertNativeRuntime();
+      handle = this.#createManager({
+        appName: PRODUCT_STORAGE_NAMESPACE,
         appDataDir: paths.appDataDir,
         modelCacheDir: paths.modelCacheDir,
         logsDir: paths.logsDir,
         logLevel: "info",
         disableNonessentialTelemetry: true,
-      }),
+      });
+    } catch (error) {
+      throw foundryNativeRuntimeError(error);
+    }
+    const manager: ManagerContext = {
+      handle,
       epoch: this.#managerEpoch + 1,
     };
     this.#managerEpoch = manager.epoch;
     try {
       this.#assertAvailable();
+      this.#emitPrepareProgress(
+        onProgress,
+        "validating_endpoint",
+        "Validating the in-process endpoint boundary.",
+      );
       this.#validateInProcessBoundary(manager.handle);
       this.#manager = manager;
     } catch (error) {
-      await this.#invalidateManager(manager, error);
+      try {
+        await this.#invalidateManager(manager, error);
+      } catch (failure) {
+        throw createSafeDiagnosticError(
+          "ENDPOINT_VALIDATION_FAILED",
+          {
+            operation: "prepare",
+            phase: "endpoint_validation",
+          },
+          failure,
+        );
+      }
     }
   }
 
-  async #revalidateExistingManager(manager: ManagerContext): Promise<void> {
+  async #revalidateExistingManager(
+    manager: ManagerContext,
+    onProgress?: (event: PrepareProgressEvent) => void,
+  ): Promise<void> {
     try {
+      this.#emitPrepareProgress(
+        onProgress,
+        "validating_endpoint",
+        "Revalidating the in-process endpoint boundary.",
+      );
       this.#validateInProcessBoundary(manager.handle);
     } catch (error) {
-      await this.#invalidateManager(manager, error);
+      try {
+        await this.#invalidateManager(manager, error);
+      } catch (failure) {
+        throw createSafeDiagnosticError(
+          "ENDPOINT_VALIDATION_FAILED",
+          {
+            operation: "prepare",
+            phase: "endpoint_validation",
+          },
+          failure,
+        );
+      }
     }
   }
 
@@ -695,9 +756,14 @@ export class FoundryRecorderRuntime {
   async #prepare(
     enableLiveCaptions: boolean,
     generation: number,
-    onProgress?: (event: ProgressEvent) => void,
+    onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<PrepareRuntimeResult> {
-    await this.initialize();
+    this.#emitPrepareProgress(
+      onProgress,
+      "initializing_runtime",
+      "Initializing the Foundry Local in-process runtime.",
+    );
+    await this.initialize(onProgress);
     this.#assertCurrent(generation);
     await this.#prepareModel("whisper", generation, onProgress);
     await this.#prepareModel("summary", generation, onProgress);
@@ -721,10 +787,11 @@ export class FoundryRecorderRuntime {
   async #prepareModel(
     role: ModelRole,
     generation: number,
-    onProgress?: (event: ProgressEvent) => void,
+    onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<IModel> {
     const target = this.#targets[role];
     const manager = this.#requireManager();
+    let phase: NonNullable<SafeDiagnosticContext["phase"]> = "catalog_lookup";
     if (role === "nemotron" && this.#activeStream !== null) {
       throw new Error("The previous live-caption stream is still active or draining.");
     }
@@ -739,38 +806,61 @@ export class FoundryRecorderRuntime {
       ) {
         this.#assertCurrent(generation);
         this.#setReadiness(role, current, "ready", `${current.id} is loaded and ready.`);
+        this.#emitPrepareProgress(
+          onProgress,
+          "model_ready",
+          `${current.id} is already loaded and ready.`,
+          role,
+        );
         return current;
       }
 
       this.#setReadiness(role, null, "checking", `Resolving exact ${role} model ${target.modelId}.`);
-      candidate = await this.#resolveModel(target, manager);
+      this.#emitPrepareProgress(
+        onProgress,
+        "checking_catalog",
+        `Checking the exact ${role} model in the public catalog.`,
+        role,
+      );
+      candidate = await this.#resolveModel(target, manager, onProgress);
       this.#assertCurrent(generation);
       this.#assertModel(role, candidate, target);
-      this.#setReadiness(
-        role,
-        candidate,
-        candidate.isCached ? "loading" : "downloading",
-        candidate.isCached ? `Loading ${candidate.id}.` : `Downloading ${candidate.id}.`,
-      );
       if (!candidate.isCached) {
-        onProgress?.({ phase: `${role}:download`, detail: `Downloading exact model ${candidate.id}.` });
+        phase = "model_download";
+        const detail = `Downloading exact model ${candidate.id}.`;
+        this.#setReadiness(role, candidate, "downloading", detail);
+        this.#emitPrepareProgress(onProgress, "downloading_model", detail, role);
         await candidate.download((percent) => {
-          onProgress?.({
-            phase: `${role}:download`,
-            detail: `${candidate?.id ?? target.modelId} ${percent.toFixed(1)}%`,
-          });
+          const progressDetail = `${candidate?.id ?? target.modelId} ${percent.toFixed(1)}%`;
+          if (candidate !== null) {
+            this.#setReadiness(role, candidate, "downloading", progressDetail);
+          }
+          this.#emitPrepareProgress(onProgress, "downloading_model", progressDetail, role);
         });
         this.#assertCurrent(generation);
         if (!candidate.isCached) {
           throw new Error(`Model download completed without caching ${candidate.id}.`);
         }
       }
-      await this.#ensureProvider(target, manager.handle, onProgress);
+      phase = "provider_discovery";
+      const providerDetail = `Checking ${target.executionProvider} for ${target.modelId}.`;
+      this.#setReadiness(role, candidate, "checking", providerDetail);
+      this.#emitPrepareProgress(onProgress, "checking_provider", providerDetail, role);
+      await this.#ensureProvider(target, candidate, manager.handle, onProgress);
       this.#assertCurrent(generation);
-      onProgress?.({ phase: `${role}:load`, detail: `Loading ${candidate.id} in-process.` });
+      phase = "model_load";
+      const loadingDetail = `Loading ${candidate.id} in-process.`;
+      this.#setReadiness(role, candidate, "loading", loadingDetail);
+      this.#emitPrepareProgress(onProgress, "loading_model", loadingDetail, role);
       await this.#slots[role].activate(candidate, manager);
       this.#assertCurrent(generation);
       this.#setReadiness(role, candidate, "ready", `${candidate.id} is ready for local inference.`);
+      this.#emitPrepareProgress(
+        onProgress,
+        "model_ready",
+        `${candidate.id} is ready for local inference.`,
+        role,
+      );
       return candidate;
     } catch (error) {
       const cleanupErrors: unknown[] = [];
@@ -791,43 +881,67 @@ export class FoundryRecorderRuntime {
         cleanupErrors,
         `Failed to clean up ${role} after model preparation failed.`,
       );
+      const safeFailure = modelPreparationError(failure, role, phase);
       this.#setReadiness(
         role,
         current,
         currentLoaded ? "ready" : "error",
         currentLoaded
           ? `Keeping working model ${current.id}; replacement preparation failed. ${formatSafeDiagnostic(
-              toSafeDiagnostic(failure, "LOCAL_OPERATION_FAILED"),
+              toSafeDiagnostic(safeFailure, "MODEL_PREPARATION_FAILED"),
             )}`
-          : formatSafeDiagnostic(toSafeDiagnostic(failure, "LOCAL_OPERATION_FAILED")),
+          : formatSafeDiagnostic(toSafeDiagnostic(safeFailure, "MODEL_PREPARATION_FAILED")),
       );
-      throw new Error(`Failed to prepare ${role}: ${errorMessage(failure)}`, { cause: failure });
+      throw safeFailure;
     }
   }
 
-  async #resolveModel(target: RuntimeTarget, manager: ManagerContext): Promise<IModel> {
+  async #resolveModel(
+    target: RuntimeTarget,
+    manager: ManagerContext,
+    onProgress?: (event: PrepareProgressEvent) => void,
+  ): Promise<IModel> {
     try {
       return await manager.handle.catalog.getModelVariant(target.modelId);
     } catch (catalogError) {
-      const cached = (await manager.handle.catalog.getCachedModels()).find(
-        (model) => model.id === target.modelId,
-      );
+      const detail = `The catalog lookup failed; checking the local cache for ${target.modelId}.`;
+      this.#setReadiness(target.role, null, "checking", detail);
+      this.#emitPrepareProgress(onProgress, "checking_cache", detail, target.role);
+      let cachedModels: IModel[];
+      try {
+        cachedModels = await manager.handle.catalog.getCachedModels();
+      } catch (cacheError) {
+        throw createSafeDiagnosticError(
+          "MODEL_PREPARATION_FAILED",
+          {
+            operation: "prepare",
+            modelRole: target.role,
+            phase: "cache_lookup",
+          },
+          new AggregateError([catalogError, cacheError], "Catalog and local cache lookup failed."),
+        );
+      }
+      const cached = cachedModels.find((model) => model.id === target.modelId);
       if (cached !== undefined) {
         return cached;
       }
-      throw new Error(
-        `Exact model ${target.modelId} is unavailable in the public catalog and local cache: ${errorMessage(
-          catalogError,
-        )}`,
-        { cause: catalogError },
+      throw createSafeDiagnosticError(
+        "MODEL_PREPARATION_FAILED",
+        {
+          operation: "prepare",
+          modelRole: target.role,
+          phase: "cache_lookup",
+        },
+        catalogError,
       );
     }
   }
 
   async #ensureProvider(
     target: RuntimeTarget,
+    model: IModel,
     manager: ManagerHandle,
-    onProgress?: (event: ProgressEvent) => void,
+    onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<void> {
     if (target.executionProvider === AUDIO_EXECUTION_PROVIDER) {
       return;
@@ -841,16 +955,47 @@ export class FoundryRecorderRuntime {
     if (provider.isRegistered) {
       return;
     }
-    this.#setReadiness(target.role, null, "registering_provider", `Registering ${provider.name}.`);
+    const detail = `Registering ${provider.name}.`;
+    this.#setReadiness(target.role, model, "registering_provider", detail);
+    this.#emitPrepareProgress(
+      onProgress,
+      "registering_provider",
+      `Registering ${provider.name} for ${target.modelId}.`,
+      target.role,
+    );
     const result = await manager.downloadAndRegisterEps([provider.name], (name, percent) => {
-      onProgress?.({
-        phase: `${target.role}:provider`,
-        detail: `${name} ${percent.toFixed(1)}%`,
-      });
+      const progressDetail = `${name} ${percent.toFixed(1)}%`;
+      this.#setReadiness(target.role, model, "registering_provider", progressDetail);
+      this.#emitPrepareProgress(onProgress, "registering_provider", progressDetail, target.role);
     });
     if (!result.success || result.failedEps.length > 0) {
-      throw new Error(`Execution provider registration failed: ${result.status}`);
+      throw createSafeDiagnosticError(
+        "MODEL_PREPARATION_FAILED",
+        {
+          operation: "prepare",
+          modelRole: target.role,
+          phase: "provider_registration",
+        },
+        new Error(`Execution provider registration failed: ${result.status}`),
+      );
     }
+  }
+
+  #emitPrepareProgress(
+    onProgress: ((event: PrepareProgressEvent) => void) | undefined,
+    stage: PrepareProgressStage,
+    detail: string,
+    role?: ModelRole,
+  ): void {
+    const event: PrepareProgressEvent = {
+      operation: "prepare",
+      phase: role === undefined ? `prepare:${stage}` : `${role}:${stage}`,
+      stage,
+      detail,
+      readiness: this.#readiness,
+      ...(role === undefined ? {} : { role }),
+    };
+    onProgress?.(event);
   }
 
   #assertModel(role: ModelRole, model: IModel, target: RuntimeTarget): void {
@@ -864,8 +1009,8 @@ export class FoundryRecorderRuntime {
     if ((role === "whisper" || role === "nemotron") && task !== "automatic-speech-recognition") {
       throw new Error(`${model.id} is not an automatic-speech-recognition model.`);
     }
-    if (role === "summary" && !["chat-completion", "coding"].includes(task)) {
-      throw new Error(`${model.id} does not expose a supported text generation task.`);
+    if (role === "summary" && task !== "vision-language-chat") {
+      throw new Error(`${model.id} does not expose the expected vision-language-chat task.`);
     }
   }
 
@@ -1539,7 +1684,9 @@ export class FoundryRecorderRuntime {
 
   #assertCurrent(generation: number): void {
     if (generation !== this.#generation || this.#shutdownRequested) {
-      throw new Error("The recorder operation was cancelled.");
+      const error = new Error("The recorder operation was cancelled.");
+      error.name = "AbortError";
+      throw error;
     }
   }
 
@@ -1634,6 +1781,34 @@ function audioModelIdentity(model: IModel, streaming: boolean): AudioModelIdenti
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function modelPreparationError(
+  error: unknown,
+  role: ModelRole,
+  phase: NonNullable<SafeDiagnosticContext["phase"]>,
+): Error {
+  const existing = toSafeDiagnostic(error, "MODEL_PREPARATION_FAILED");
+  if (existing.code === "OPERATION_ABORTED") {
+    return createSafeDiagnosticError(
+      "OPERATION_ABORTED",
+      existing.context ?? {
+        operation: "prepare",
+        modelRole: role,
+        phase,
+      },
+      error,
+    );
+  }
+  return createSafeDiagnosticError(
+    "MODEL_PREPARATION_FAILED",
+    existing.context ?? {
+      operation: "prepare",
+      modelRole: role,
+      phase,
+    },
+    error,
+  );
 }
 
 class NativeSettlementTimeoutError extends Error {

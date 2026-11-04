@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { formatSummaryForDisplay } from "../src/summary/summary-format";
+import { formatSummaryForDisplay, formatSummaryPresentation } from "../src/summary/summary-format";
 import { SUMMARY_SYSTEM_PROMPT } from "../src/summary/summary-prompt";
 
 describe("formatSummaryForDisplay", () => {
   it("instructs Qwen to return readable plain text notation", () => {
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("concise plain text only");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not add a title, heading, or label");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not use Markdown markers");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("dollar-sign math");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("y′ = −2y");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("y(t) = c · e^(−2t)");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Never repeat or refer to these instructions");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Prefer the transcript's own wording");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("cover every source sentence and clause");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("definitions, qualifiers, purposes, conditions");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Preserve named concepts and technical terms");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("initial conditions and resolved constants");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("every number with its unit");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("each value's stated role unchanged");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not add a title, heading, label");
+    expect(SUMMARY_SYSTEM_PROMPT).not.toContain("exactly five");
+    expect(SUMMARY_SYSTEM_PROMPT).not.toContain("begin with the character");
   });
 
   it.each([
@@ -27,6 +32,228 @@ describe("formatSummaryForDisplay", () => {
       formattingApplied: true,
     });
   });
+
+  describe("formatSummaryPresentation", () => {
+    const fixtures = [
+      {
+        name: "ODE",
+        raw: "An ordinary differential equation relates a function to its derivatives. For the first order equation y prime equals negative two y, separate the variables. The solution is y of t equals c times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.",
+        expected: [
+          "An ordinary differential equation relates a function to its derivatives.",
+          "• For the first order equation y prime equals negative two y, separate the variables.",
+          "• The solution is y of t equals c times e to the negative two t for decay over time.",
+          "• If y of 0 equals 3, then c equals 3.",
+        ].join("\n"),
+      },
+      {
+        name: "Project Atlas",
+        raw: "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache. The target remains 250 milliseconds. Maya Chen owns the follow-up, and the next review is November 12.",
+        expected: [
+          "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache.",
+          "• The target remains 250 milliseconds.",
+          "• Maya Chen owns the follow-up, and the next review is November 12.",
+        ].join("\n"),
+      },
+      {
+        name: "Team Aurora",
+        raw: "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius. After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging. Priya will rerun the test at 0.5 C on December 5.",
+        expected: [
+          "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius.",
+          "• After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging.",
+          "• Priya will rerun the test at 0.5 C on December 5.",
+        ].join("\n"),
+      },
+    ] as const;
+
+    it.each(fixtures)(
+      "structures the $name fixture without losing or duplicating content",
+      ({ raw, expected }) => {
+        const formatted = formatSummaryPresentation(raw);
+
+        expect(formatted).toEqual({ text: expected, formattingApplied: true });
+        expect(contentWords(formatted.text)).toEqual(contentWords(raw));
+        expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+      },
+    );
+
+    it("normalizes math once while preserving protected code and sentence content", () => {
+      const raw =
+        "Dr. Rivera kept `v1.2.3 stays literal`. The model uses $ y' = -2y $. Save C:\\work\\summary.txt.";
+      const expected = [
+        "Dr. Rivera kept `v1.2.3 stays literal`.",
+        "• The model uses y′ = −2y.",
+        "• Save C:\\work\\summary.txt.",
+      ].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(formatSummaryPresentation(expected).text).toBe(expected);
+    });
+
+    it("keeps a factual paragraph when it cannot identify multiple complete safe units", () => {
+      const paragraph = "Project Atlas remains at 280 milliseconds without final punctuation";
+
+      expect(formatSummaryPresentation(paragraph)).toEqual({
+        text: paragraph,
+        formattingApplied: false,
+      });
+    });
+
+    it("splits complete semicolon clauses without changing their text", () => {
+      const raw =
+        "Project Atlas improved latency; Maya Chen owns the follow-up; The next review is November 12.";
+      const expected = [
+        "Project Atlas improved latency;",
+        "• Maya Chen owns the follow-up;",
+        "• The next review is November 12.",
+      ].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(contentWords(expected)).toEqual(contentWords(raw));
+    });
+
+    it("converts existing list structure without changing its content", () => {
+      const raw = ["- First exact fact.", "- Second exact fact.", "- Third exact fact."].join("\n");
+      const expected = ["First exact fact.", "• Second exact fact.", "• Third exact fact."].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(contentWords(expected)).toEqual(contentWords(raw));
+    });
+
+    it.each([
+      "2026. Project Atlas launches in November. The target remains 250 milliseconds.",
+      "2) Equation y′ = −2y identifies the decay law.\nThe solution remains stable.",
+      "250. The latency target remains 250 milliseconds.\nMaya Chen owns the follow-up.",
+      "2.1. Equation 2.1 defines the decay model.\nSection 3. Results retain the identifier.",
+      "2.0. Version 2.0 remains the approved release.\n2026-11-03 is the review date.",
+      "-5. The temperature is five degrees below baseline. Maya Chen owns the follow-up.",
+      "+5. The voltage is five units above baseline. Priya owns the follow-up.",
+      "−5. The signed measurement remains a fact. The next review is November 12.",
+      "٠٥. The specimen identifier uses Arabic digits. The label must remain attached.",
+      "+1. Signed section one remains factual.\n+2. Signed section two remains factual.",
+      "١. Arabic one remains factual.\n٢. Arabic two remains factual.",
+    ])("keeps ambiguous numeric-leading factual text unchanged: %s", (raw) => {
+      expect(formatSummaryPresentation(raw)).toEqual({
+        text: raw,
+        formattingApplied: false,
+      });
+    });
+
+    it("preserves numeric-leading facts through visual-marker and whitespace wrappers", () => {
+      const raw = [
+        "  •   -5. The measurement stays attached.  ",
+        "\t*   +5. The section identifier stays attached.",
+        " -   ٠٥. The Unicode numeral stays attached. ",
+      ].join("\r\n");
+      const expected = [
+        "• -5. The measurement stays attached.",
+        "* +5. The section identifier stays attached.",
+        "- ٠٥. The Unicode numeral stays attached.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted).toEqual({ text: expected, formattingApplied: true });
+      expect(formatted.text.split("\n")).toEqual(expected.split("\n"));
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+    });
+
+    it("preserves proven monotonic ordered-list markers inside presentation bullets", () => {
+      const raw = ["1. First exact fact.", "2. Second exact fact.", "3. Third exact fact."].join("\n");
+      const expected = ["1. First exact fact.", "• 2. Second exact fact.", "• 3. Third exact fact."].join(
+        "\n",
+      );
+
+      expect(formatSummaryPresentation(raw)).toEqual({
+        text: expected,
+        formattingApplied: true,
+      });
+      expect(contentWords(expected)).toEqual(contentWords(raw));
+      expect(formatSummaryPresentation(expected).text).toBe(expected);
+    });
+
+    it("falls back without loss, duplication, or reordering for mixed numeric factual lines", () => {
+      const raw = [
+        "2026. Project Atlas launches in November.",
+        "2) Equation 2 identifies the decay law.",
+        "250. The latency target remains 250 milliseconds.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted.text).toBe(raw);
+      expect(contentWords(formatted.text)).toEqual(contentWords(raw));
+      expect(formatted.text.match(/2026\.|2\)|250\./gu)).toEqual(["2026.", "2)", "250."]);
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+    });
+
+    it("falls back without loss, duplication, or reordering for mixed signed and Unicode facts", () => {
+      const lines = [
+        "Project Atlas remains the baseline.",
+        "-5. Temperature fell below baseline. Maya Chen owns the follow-up.",
+        "+5. Voltage rose above baseline. Priya owns the review.",
+        "−5. The Unicode-minus measurement remains attached.",
+        "٠٥. Specimen 05 retains its Arabic-digit identifier.",
+      ];
+      const raw = lines.join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted).toEqual({ text: raw, formattingApplied: false });
+      expect(formatted.text.split("\n")).toEqual(lines);
+      expect(formatted.text.match(/-5\.|\+5\.|−5\.|٠٥\./gu)).toEqual(["-5.", "+5.", "−5.", "٠٥."]);
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+    });
+
+    it("formats math once while preserving numeric prefixes and protected spans", () => {
+      const raw = [
+        "2026. Project Atlas keeps `v1.2.3` literal.",
+        String.raw`2) Equation $ y' = -2y $ uses C:\work\summary.txt.`,
+        "250. The target remains 250 milliseconds.",
+      ].join("\n");
+      const expected = [
+        "2026. Project Atlas keeps `v1.2.3` literal.",
+        String.raw`2) Equation y′ = −2y uses C:\work\summary.txt.`,
+        "250. The target remains 250 milliseconds.",
+      ].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(formatSummaryPresentation(expected).text).toBe(expected);
+      expect(contentWords(expected)).toEqual(contentWords(raw.replace("$ y' = -2y $", "y′ = −2y")));
+    });
+
+    it("formats math once without detaching signed facts from protected code or paths", () => {
+      const raw = [
+        "• -5. Keep `v1.2.3` literal at C:\\work\\summary.txt.",
+        "* +5. Equation $ y' = -2y $ remains signed.",
+        "−5. Keep `/tmp/05.report` and `section ٠٥` literal.",
+      ].join("\n");
+      const expected = [
+        "• -5. Keep `v1.2.3` literal at C:\\work\\summary.txt.",
+        "* +5. Equation y′ = −2y remains signed.",
+        "−5. Keep `/tmp/05.report` and `section ٠٥` literal.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted).toEqual({ text: expected, formattingApplied: true });
+      expect(formatted.text.split("\n")).toEqual(expected.split("\n"));
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+    });
+
+    it("groups long outputs into at most six bullets without sentence loss or duplication", () => {
+      const raw = Array.from({ length: 10 }, (_value, index) => `Sentence ${index + 1}.`).join(" ");
+      const formatted = formatSummaryPresentation(raw).text;
+      const lines = formatted.split("\n");
+
+      expect(lines).toHaveLength(7);
+      expect(lines.slice(1).every((line) => line.startsWith("• "))).toBe(true);
+      expect(contentWords(formatted)).toEqual(contentWords(raw));
+      expect(formatSummaryPresentation(formatted).text).toBe(formatted);
+    });
+  });
+
+  function contentWords(value: string): readonly string[] {
+    return value
+      .replaceAll(/^(?:•|-)\s+/gmu, "")
+      .split(/\s+/u)
+      .filter(Boolean);
+  }
 
   it("leaves correct plain text unchanged", () => {
     const text = "The class reviewed a first-order equation and its initial condition.";

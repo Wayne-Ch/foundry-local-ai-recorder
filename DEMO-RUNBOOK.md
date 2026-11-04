@@ -1,128 +1,116 @@
-# 15-minute classroom demo runbook
+# AI Recorder 15-minute demo runbook
 
 ## Before the room
 
-1. Use Wayne's Windows 11 x64 demo PC.
-2. Run `npm install`, `npm run fixture:generate`, and the validation commands in `VALIDATION.md`.
-3. Start with `npm run start:built`.
-4. Select **Prepare local models** while network access is still available.
-5. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary
-   validated**, and the Developer Trace reports no embedded web service URL.
-6. Confirm `fixtures/ode-lesson.wav` exists for the stage fallback.
-7. Leave the app reset, the consent box unchecked, and live captions enabled.
+1. Use the validated Windows 11 x64 demo PC.
+2. Run `npm install`, `npm run fixture:generate`, and every automated gate in `VALIDATION.md`.
+3. Launch with `npm run start:built`.
+4. Select **Prepare local models** while network access is available.
+5. Confirm **AI Recorder offline ready · 3/3 models**, all three cards show **READY**, and the
+   boundary pill says **In-process boundary validated**.
+6. Leave the app reset, consent unchecked, and live captions enabled.
+7. Keep `fixtures\ode-lesson.wav` available for the stage fallback.
 
-Do not claim a completed offline rehearsal unless the manual network-disconnect gate in
-`VALIDATION.md` has been performed for this exact build and cache.
+Do not claim a completed offline rehearsal until the manual network-disconnect gate has been run for
+this exact build and cache.
 
-## Minute-by-minute flow
-
-### 0:00-1:30 — Set the contract
+## 0:00-1:30 — Set the contract
 
 Point to the three cards:
 
-> This recorder has three distinct local stages. Nemotron shows a replaceable live draft, Whisper
-> writes the authoritative final transcript after Stop, and Qwen summarizes only that final
-> version.
+> Nemotron is the replaceable live draft, Whisper is the authoritative transcript after Stop, and
+> Qwen3.5 0.8B summarizes only the reviewed Whisper version.
 
-Point to **In-process boundary validated** and say:
+Point to the boundary pill:
 
-> Inference uses Foundry Local's in-process SDK. Model preparation may download missing assets; the
-> app does not call an external inference endpoint or start Foundry's embedded web service.
+> Foundry Local inference runs in process. Prepare may download missing assets, but the app rejects
+> an active embedded web service or URL.
 
-### 1:30-3:00 — Consent and model readiness
+## 1:30-3:00 — Consent and truthful readiness
 
 1. Open Developer Trace briefly.
-2. Show exact IDs and execution providers.
-3. Check the consent box.
-4. Explain the transient microphone permission gate and 30-second prototype bound.
+2. Show the exact model IDs and providers.
+3. Explain that complete offline readiness is shown only at 3/3.
+4. Check consent and describe the transient microphone permission gate.
 
-### 3:00-6:00 — Live ODE recording
+## 3:00-6:00 — Live ODE recording
 
-Select **Start** and say this original segment at a natural pace:
+Select **Start** and say naturally:
 
 > An ordinary differential equation relates a function to its derivatives. For the first order
 > equation y prime equals negative two y, separate the variables. The solution is y of t equals c
-> times e to the negative two t. The initial value determines the constant c.
+> times e to the negative two t. If y of zero equals three, then c equals three.
 
-While speaking:
+Show:
 
-- point to the changing **Live draft — Nemotron** text;
-- point to first-caption timing;
-- state that each partial replaces the prior hypothesis;
-- emphasize that it is not history, final state, or summary input.
+- **Recording · waiting for caption** before the first result;
+- replaceable Nemotron text;
+- first-caption timing;
+- the 30-second bounded timer.
 
-### 6:00-7:30 — Stop and authoritative transcript
+State that the draft never becomes durable transcript or summary input.
+
+## 6:00-7:30 — Stop and authoritative transcript
 
 Select **Stop**.
 
-1. Nemotron finalizes for evidence only.
-2. If Nemotron finalization fails, the warning remains visible but cannot block Whisper.
-3. The same exact bounded PCM capture runs through Whisper.
-4. Point to **Final transcript — Whisper**, its version, and stop-to-final timing.
-5. Explain that Whisper's returned string is preserved exactly, including whitespace, and that the
-   application-owned temporary WAV is already deleted.
+1. Point out **Finalizing capture** and **Transcribing with Whisper**.
+2. Explain that tracks are released before Whisper runs.
+3. Show the final transcript version and stop-to-final timing.
+4. Explain that the temporary WAV is app-owned and deleted after native settlement.
 
-### 7:30-9:00 — Correction and invalidation
+## 7:30-9:00 — Correction and stale-result guard
 
-Make a small correction in the final transcript and select **Save correction**.
+Edit one word, then select **Generate summary** directly.
 
-Point out:
+Show that the app first saves the correction, increments the transcript version, and only then
+submits Qwen. A completion for an older version cannot attach after the edit or Reset.
 
-- the transcript version increments;
-- a prior summary would be removed;
-- the live draft never appears in this versioned state.
-
-### 9:00-10:30 — Local summary
-
-Select **Generate summary**.
+## 9:00-10:30 — Qwen3.5 0.8B summary
 
 Point to:
 
-- the submitted transcript version;
+- the exact Qwen3.5 0.8B / CPU card;
 - transcript-final-to-summary timing;
-- Qwen's exact model/EP card;
+- overview-plus-bullets presentation;
 - the **AI-generated · editable** label.
 
-Do not present the summary as a citation source. It is a concise transformation of the reviewed
-transcript.
+Do not present the summary as a citation source.
 
-### 10:30-12:00 — Developer trace
+## 10:30-12:00 — Developer Trace
 
-Open the trace and show the responsibility boundary:
+Show:
 
-- Application: consent, PCM capture, frame ownership, WAV ownership, transcript versions, reset.
-- Foundry Local: model lifecycle, `AudioSession`, `ChatSession`, preflight, native inference.
+- Prepare correlation and phase evidence;
+- exact raw `summary-raw` text;
+- whether deterministic presentation formatting was applied;
+- canonical safe diagnostics with operation/model/phase metadata only.
 
-Show that the live terminal was explicitly discarded before Whisper finalization.
+## 12:00-13:30 — Reset and stage fallback
 
-### 12:00-13:30 — Stage fallback
+1. Select **Delete / reset** and show its busy state.
+2. Confirm session data clears while prepared model cards stay ready.
+3. Select **Open stage fallback WAV** and choose `fixtures\ode-lesson.wav`.
+4. Show choose/read/decode/transcribe progress and generate a new summary.
 
-Optionally start a short recording and select **Cancel / reset** to show that cancellation discards
-audio without Whisper or Qwen. Then select **Open stage fallback WAV** and choose
-`fixtures/ode-lesson.wav`.
+## 13:30-15:00 — Close with honest limits
 
-The fixture is Windows-synthesized original text. It goes through the same validated PCM and
-Whisper temporary-WAV path; it is not a canned transcript.
-
-Generate the summary again if time permits.
-
-### 13:30-15:00 — Close with honest limits
-
-- Windows 11 x64 only.
-- English only.
-- 30-second bounded prototype, not lecture-length stability.
-- Imported WAV must already be PCM16LE/16 kHz/mono.
-- Network-disconnect rehearsal is a separate manual gate.
-- Image processing is a later typed service boundary, not a hidden disabled feature.
+- Windows 11 x64 and English only.
+- 30-second bounded prototype.
+- PCM16LE/16 kHz/mono WAV import only.
+- Qwen3.5 0.8B is the standard summary-only model and passed the omission-tolerant factual accuracy
+  gate without output rewriting.
+- Physical network disconnection is a separate manual release gate.
 
 ## Recovery
 
 | Symptom | Recovery |
 |---|---|
-| Nemotron preparation fails | Continue with the visible Whisper-only fallback. Do not unload or reprepare the working core model. |
+| Native preflight fails | Close the app, run `npm ci` or `npm rebuild foundry-local-sdk`, rebuild, and retry. |
+| Nemotron preparation fails | Continue with the visible degraded recorder state; do not claim 3/3 offline readiness. |
 | Microphone denied or absent | Use **Open stage fallback WAV**. |
-| Live captions fail mid-recording | Keep speaking; Stop still sends the complete application-owned capture to Whisper. |
-| Whisper fails | Do not summarize the Nemotron terminal. Reset, confirm Whisper readiness, then retry or use the fixture. |
-| Summary fails/truncates | Keep the final transcript visible. Retry only after confirming Qwen readiness; never show canned summary text. |
-| Renderer reloads or window closes | Main-process ownership cancels the stream. Reopen, prepare if needed, and start a fresh recording. |
-| Locked temporary file found at startup | The status/trace shows only the retained count and app-owned path policy. Close the process holding the file, then use **Delete / reset** or restart to retry cleanup. |
+| Live draft fails mid-recording | Keep speaking; Stop still sends the complete bounded capture to Whisper. |
+| Whisper fails | Do not summarize the Nemotron terminal. Reset, confirm Whisper readiness, and retry. |
+| Summary fails | Keep the final transcript visible; never substitute canned text. |
+| Renderer reloads or closes | Main-process ownership cancels the exact stream lease. |
+| Locked temporary WAV remains | Close the process holding it, then use **Delete / reset** or restart to retry cleanup. |

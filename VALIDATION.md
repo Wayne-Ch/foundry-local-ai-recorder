@@ -1,140 +1,91 @@
-# Validation record
+# AI Recorder validation
 
-Date: 2026-10-30 (Windows 11 x64)
+Date: 2026-11-03 (Windows 11 x64)
 
-## Validated identities
+## Exact required identities
 
-| Role | Exact model | Execution provider | Catalog size |
+| Role | Model | Execution provider | Catalog size |
 |---|---|---|---:|
-| Live captions | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` | `CPUExecutionProvider` | 696 MB |
+| Live draft | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` | `CPUExecutionProvider` | 696 MB |
 | Final transcript | `openai-whisper-tiny-generic-cpu:4` | `CPUExecutionProvider` | 131 MB |
-| Summary | `qwen3-0.6b-generic-gpu:2` | `WebGPUExecutionProvider` | 529 MB |
+| Summary | `qwen3.5-0.8b-generic-cpu:3` | `CPUExecutionProvider` | 1,037 MB |
 
 SDK: `foundry-local-sdk@2.2.1`
 
-Runtime log evidence:
-
-- ONNX Runtime `1.31.0`
-- ONNX Runtime GenAI `0.18.0`
-- WebGPU bundle `webgpu-ep-0.2.1-win-x64`
-- model cache `C:\Users\waynechuang\.foundry\cache\models`
-- nonessential telemetry disabled by configuration
+The standard app has exactly these three roles. Each summary request creates a fresh text-only
+`ChatSession`; no summary conversation state is reused.
 
 ## Static validation
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 48 files checked |
+| `npm run lint` | Pass; 62 files checked |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 11 files, 190 tests |
-| `npm run build` | Pass; main, preload, and Vite renderer |
-| `npm audit --audit-level=low` | Pass against the live advisory service; 0 vulnerabilities |
+| `npm test` | Pass; 16 files, 261 tests |
+| `npm run build` | Pass; main, preload, and renderer |
+| `npm audit --audit-level=low` | Pass; 0 vulnerabilities |
+| `git diff --check` | Pass |
 
-Unit coverage includes:
+Coverage includes:
 
-- replaceable partial versus final transcript semantics;
-- transcript versioning and summary invalidation;
-- exact Whisper-only summary input;
-- exact newlines, repeated spaces, Unicode, and punctuation preserved through runtime, controller,
-  durable snapshot, submitted snapshot, and Qwen prompt construction;
-- summary prompt enforcement for concise plain text and readable Unicode notation;
-- left-to-right protected-span and dollar-delimiter scanning for both observed malformed ODE
-  outputs, tight/spaced inline and display math, independent currency tokens, escaped/unmatched
-  dollars, bounded implicit equations, `\cdot`, `\times`, primes, braced exponents, safe
-  single-token superscripts, and multiple equations;
-- one full-string delimiter/token pass that carries outer context across protected content, removes
-  only globally unmatched math-adjacent closers, and preserves balanced/nested outer delimiters such
-  as `{e^(−2t)}`, `f(e^(−2t))`, and `("rate", e^(−2t))`;
-- no invented grouping for unbraced multi-token exponents, plus idempotent preservation of
-  Windows/UNC/POSIX paths, literal and quoted commands, currency, inline/fenced code, complete
-  generic HTML/XML-like elements, malformed tags, script/style/code/pre content, nested or
-  unmatched braces, ordinary prose, Unicode, intentional bullets, and a generated cross-product of
-  protected spans, outer delimiters, multiple math spans, currency, paths, and malformed closers;
-- pathological whitespace normalization outside protected code/HTML regions, exact raw Qwen trace
-  evidence, textarea/textContent-only rendering, the formatted editable-summary split, the shared
-  recording/import summary path, and the deterministic populated-summary capture fixture;
-- audio format, byte, duration, queue, and sequence bounds;
-- exact 30-second accumulation, one-frame overflow trimming, multi-chunk boundary crossing, and
-  automatic/manual Stop race;
-- sticky live IPC/pump failure continuing to Whisper with track/stream cleanup and no unhandled
-  rejection;
-- callback-time live-caption failure retained after the pump reference is detached, including
-  pending-forever cancellation, Whisper success/failure, warning UI/trace, and Reset clearing;
-- cancellation/reset making zero finish, transcribe, or summary calls;
-- manager-epoch model ownership, retain-for-retry cleanup, and fail-closed guard recovery when
-  `isLoaded`, model unload, manager shutdown/disposal, or multiple cleanup actions fail;
-- rejected-manager quarantine across combined shutdown/disposal failure, repeated cleanup failure,
-  concurrent Prepare retry, later successful retry, and shutdown without replacement creation;
-- endpoint guard first-fail/retry disposal, stale-model rejection, and inference blocking for
-  active URL/service state;
-- request-cancel failure never skipping Whisper/Qwen/Nemotron session disposal, tracked-operation
-  settlement, or temporary-file deletion;
-- in-flight Whisper/Qwen cancellation and settlement before session/model/manager/temp teardown,
-  including Reset and shutdown races;
-- scoped Nemotron drain isolation: a pending cancel rejects a new live stream while valid PCM still
-  reaches Whisper, the exact final still reaches Qwen, and global shutdown defers model/manager
-  teardown until the native stream settles;
-- one durable Reset/shutdown cleanup generation across timeout, repeated Reset/shutdown calls,
-  upgrade from Reset to shutdown, late settlement, cleanup error, and retry, with counters proving
-  no duplicate temporary cleanup, model unload, manager shutdown, or manager disposal;
-- canonical structured diagnostics for quoted/unquoted Windows drive, spaced UNC, POSIX, Unicode,
-  credential-like, and very-long raw messages; status and Developer Trace retain no path suffix,
-  username, or arbitrary raw phrase;
-- temporary WAV creation, recovery, and failure cleanup;
-- EACCES/EBUSY/EPERM startup retention warnings with hidden paths and retry guidance;
-- model-slot replacement failure preserving a working model;
-- exact override validation;
-- microphone permission gating;
-- frame-token stream ownership, stale routing, reload, and close behavior;
-- static absence of cloud inference endpoints, `fetch`, and embedded web-service startup.
+- truthful Prepare phases and model-card readiness;
+- native Foundry preflight, partial-DLL repair, and safe rebuild guidance;
+- exact three-model target validation;
+- fresh text-only summary sessions;
+- bounded PCM, queue, duration, and WAV contracts;
+- replaceable Nemotron draft versus exact durable Whisper final;
+- transcript correction, versioning, summary invalidation, and stale-result rejection;
+- summary non-`stop`, empty, context-overflow, and oversized error contracts;
+- omission-tolerant factual accuracy that rejects false roles, relationships, equations, numbers,
+  units, names, dates, and causes;
+- deterministic formatter idempotence and signed/Unicode numeric-prefix preservation;
+- Reset/shutdown single-flight cleanup and native settlement;
+- safe diagnostics with operation/model/phase metadata and no raw local paths;
+- AI Recorder profile, app-data, log, journal, and temporary-audio isolation;
+- cross-app cleanup isolation.
 
-## Exact-model integrations
-
-### Complete chain
+## Qwen3.5 factual accuracy gate
 
 Command:
 
 ```powershell
-npm run test:chain-integration
+npm run test:summary-integration
 ```
 
-Result: `CHAIN_INTEGRATION_OK`
+Result: `SUMMARY_FACT_GATE_OK`
 
-| Evidence | Measured result |
-|---|---:|
-| Nemotron partial count | 92 |
-| First live caption | 1,289 ms |
-| Stop to Whisper final | 486 ms |
-| Transcript final to summary | 2,875 ms |
-| Qwen generation | 2,872 ms |
-| Qwen prompt/completion tokens | 277 / 52 |
-| Owned temporary WAV residue | 0 |
-| Summary input equals exact Whisper final | true |
-| In-process mode validated | true |
-| External inference endpoint used | false |
-| Embedded web service running / URLs | false / 0 |
+The acceptance policy first proves that a correct concise result with omitted secondary facts
+passes, while an invented number and a false ownership relationship fail.
 
-Nemotron terminal:
+| Fixture | Latency | Prompt / completion tokens | Result |
+|---|---:|---:|---|
+| ODE | 3,356 ms | 242 / 64 | Pass |
+| Project Atlas | 2,415 ms | 234 / 55 | Pass |
+| Team Aurora | 2,916 ms | 251 / 70 | Pass |
+| Concise Project Cedar | 1,820 ms | 202 / 24 | Pass |
 
-> An ordinary differential equation relates a function to its derivatives for the first order
-> equation y prime equals negative two y separate the variables. The solution is y of t equals c
-> times e to the negative two t. The initial value determines the constant c.
+ODE raw:
 
-Whisper authoritative final:
+> An ordinary differential equation relates a function to its derivatives. For the first order
+> equation y prime equals negative two y, separate the variables. The solution is y of t equals c
+> times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.
 
->  an ordinary differential equation relates a function to its derivatives. For the first order
-> equation y prime equals negative 2y, separate the variables. The solution is y of t equals c times
-> e to the negative 2t. The initial value determines the constant c.
+ODE display:
 
-The leading space in that Whisper result is intentional evidence: the integration asserted that the
-summary input equals the returned Whisper string exactly and differs from both the last live partial
-and Nemotron terminal.
+> An ordinary differential equation relates a function to its derivatives.
+> • For the first order equation y prime equals negative two y, separate the variables.
+> • The solution is y of t equals c times e to the negative two t for decay over time.
+> • If y of 0 equals 3, then c equals 3.
 
-The real chain was not deliberately wedged inside the native SDK. The forced cancellation-failure
-gate is covered deterministically by a direct runtime regression whose Nemotron response and
-iterator remain pending: the cancel caller times out, valid PCM still reaches Whisper, Qwen receives
-the exact Whisper final, the live warning remains, another live stream is rejected, and global
-shutdown defers teardown until the stream is released.
+The ODE result preserves the equation, general solution, decay relationship, initial condition, and
+resolved constant without claiming that `c` is the initial condition.
+
+Atlas and Aurora preserved every emitted number/unit, name/date, owner/action, and causal
+relationship. The concise case returned 24 completion tokens and remained accurate. All four runs
+used `qwen3.5-0.8b-generic-cpu:3` / `CPUExecutionProvider`, finished with `stop`, stayed below
+10 seconds, remained bounded, and were stable under a second formatting pass.
+
+## Exact-model integrations
 
 ### Whisper
 
@@ -142,13 +93,12 @@ Command: `npm run test:whisper-integration`
 
 Result: `WHISPER_INTEGRATION_OK`
 
-- exact ID/CPU provider asserted;
-- 20,270 ms synthetic fixture;
-- 354 ms transcription;
-- 6/6 expected ODE words matched;
-- terminal `whisper_file_final`;
-- no owned temporary WAV residue;
-- `externalEndpointUsed: false`.
+- fixture duration: 20,270 ms;
+- transcription: 2,064 ms;
+- expected ODE words: 6/6;
+- exact model/provider asserted;
+- no external endpoint;
+- no owned temporary WAV residue.
 
 ### Nemotron
 
@@ -156,104 +106,85 @@ Command: `npm run test:nemotron-integration`
 
 Result: `NEMOTRON_INTEGRATION_OK`
 
-- exact ID/CPU provider asserted;
-- 92 partials;
-- first partial 1,299 ms;
-- terminal finalization 109 ms;
-- 6/6 expected ODE words matched;
-- terminal `live_stream_final`.
+- partial count: 92;
+- first partial: 1,345 ms;
+- terminal finalization: 88 ms;
+- expected ODE words: 6/6;
+- exact model/provider asserted.
 
-### Qwen summary robustness
+### Full chain
 
-Command: `npm run test:summary-integration`
+Command: `npm run test:chain-integration`
 
-Result: `SUMMARY_INTEGRATION_OK`
+Result: `CHAIN_INTEGRATION_OK`
 
-| Prompt | Latency | Prompt tokens | Completion tokens |
-|---|---:|---:|---:|
-| ODE solution | 2,633 ms | 262 | 44 |
-| Euler comparison | 2,520 ms | 248 | 33 |
-| Solution procedure | 3,000 ms | 246 | 56 |
+| Evidence | Measured result |
+|---|---:|
+| Nemotron partial count | 92 |
+| First live caption | 1,276 ms |
+| Stop to Whisper final | 2,061 ms |
+| Transcript final to summary | 2,794 ms |
+| Qwen3.5 generation | 2,550 ms |
+| Qwen3.5 prompt / completion tokens | 233 / 55 |
+| Summary input equals exact Whisper final | true |
+| Owned temporary WAV residue | 0 |
+| In-process mode validated | true |
+| External inference endpoint used | false |
+| Embedded web service running / URLs | false / 0 |
 
-All three runs returned nonempty bounded user-visible output. Each run asserts exact submitted
-transcript input, no raw math dollar delimiter, and formatter stability on a second pass. This
-allows intentional literal commands outside math while still proving that every supported display
-repair was completed. In the ODE run, raw Qwen emitted `y'` and `e^(−2t))`; the display result was
-`y′` and `e^(−2t)`. The integration evidence logs both the exact raw Qwen response and the
-formatted display text plus the trace flag that says whether formatting was applied. Qwen thinking
-was disabled via `chat_template_kwargs` after an initial validation run showed the default
-reasoning mode exhausting the 260-token output budget.
-
-## Electron validation
+## Prepare, Reset, and Electron probes
 
 | Command | Result |
 |---|---|
+| `npm run probe:prepare-ui` | Pass; 12,010 ms to 3/3 ready; truthful phases; Reset preserved all three ready states |
+| `npm run probe:microphone-permission` | Pass; one audio track, zero video tracks, exact document/security origin |
+| `npm run probe:stream-owner` | Pass; reload/close revoked leases; stale partial routable = false |
 | `npm run smoke:electron` | `ELECTRON_SMOKE_OK` |
-| `npm run probe:microphone-permission` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
-| `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
-| `npm run capture:ui` | `UI_CAPTURE_OK`; deterministic populated-summary capture inspected successfully |
+| `npm run capture:ui` | Pass; `artifacts\ai-recorder-populated-summary.png` |
 
-No Electron or recorder process started by these validation commands remained. The shared machine
-already had an OS-installed `foundrylocald` listener started on 2026-10-29, before this worktree
-session; it was not used by the in-process runtime and was not terminated because it is not owned by
-this validation run.
+The Prepare capture shows:
 
-Populated-summary screenshot:
+- **AI Recorder** identity;
+- Nemotron, Whisper, and Qwen3.5 0.8B cards at **READY**;
+- exact CPU providers;
+- **AI Recorder offline ready · 3/3 models**;
+- no secondary feature surface.
 
-`artifacts\smart-ai-recorder-populated-summary.png`
+The populated-summary capture shows the final transcript, editable Qwen3.5 summary, exact
+`summary-raw` evidence, and formatter-applied flag without clipping or horizontal overflow.
 
-The capture-only bootstrap fixture renders a final transcript, the formatted summary text
-`y′ = −2y` and `e^(−2t)`, and an expanded `summary-raw` trace row containing the exact Qwen-like
-source `$ y' = -2y $` and `$ e^{-2t}} $` with **Summary display formatting applied**. The
-`BrowserWindow` is 1600×900; the deterministic capture scroll position keeps the final transcript,
-summary, raw trace, and flag visible together. Inspection found no horizontal overflow, clipped
-textarea content, or clipped trace text.
-
-The PNG is intentionally untracked under the repository's ignored `artifacts\` directory. The
-tracked `npm run capture:ui` path rebuilds the app and reproduces it at the path above.
+No Electron or recorder process started by these gates remained after exit.
 
 ## Local inference boundary
 
-Evidence:
+1. Runtime uses in-process `AudioSession` and `ChatSession`.
+2. Readiness becomes validated only when the embedded service is stopped and URL list is empty.
+3. The app never starts the Foundry embedded web service.
+4. Integration results report `externalEndpointUsed: false`.
+5. No CLI subprocess performs inference.
 
-1. Runtime uses `AudioSession` and `ChatSession` directly.
-2. `RuntimeReadiness.inProcessModeValidated` becomes true only after observing
-   `embeddedWebServiceRunning: false` and an empty URL list.
-3. The application never calls `FoundryLocalManager.startWebService()`.
-4. Static tests reject cloud inference endpoint strings and renderer/main `fetch(...)`.
-5. Integration results report `externalEndpointUsed: false`.
-6. No CLI subprocess performs inference.
-7. Static source audit found no `startWebService(...)`, `fetch(...)`, or HTTP endpoint string in
-   `src` or integration scripts.
+This proves the application inference path is in process and has no external inference endpoint.
+It does not prove physical isolation of the PC. Model preparation can download uncached assets.
 
-This proves the application's inference path is in-process and has no external inference endpoint.
-It does not prove physical isolation of the PC. Model/EP preparation can download uncached assets,
-and Foundry Local logs state that nonessential telemetry is disabled while process information may
-still initialize.
+## Manual release gate
 
-## Manual release gates
-
-- [ ] Disconnect the PC from network after all three exact models and WebGPU EP are cached.
+- [ ] Disconnect the PC after all three exact CPU models are cached.
 - [ ] Launch the built app.
+- [ ] Confirm **AI Recorder offline ready · 3/3 models**.
 - [ ] Record the ODE segment with live captions.
-- [ ] Stop and confirm Whisper final.
-- [ ] Generate the Qwen summary; inspect readable display notation and the exact raw Qwen Developer
-      Trace entry.
+- [ ] Stop and confirm the Whisper final.
+- [ ] Generate the Qwen3.5 summary.
 - [ ] Reset and repeat with `fixtures\ode-lesson.wav`.
-- [ ] Confirm recording and WAV import use the same formatted summary behavior.
 - [ ] Confirm no owned temporary WAV remains.
 
-Until that checklist is completed, describe the prototype as **local cached inference with no app
-cloud endpoint**, not as a completed physically offline rehearsal.
+Until this checklist passes, describe the app as **local cached inference with no app cloud
+endpoint**, not as a completed physically offline rehearsal.
 
 ## Known limitations
 
-- 30-second bounded capture only.
+- Windows 11 x64 only.
 - English only.
+- 30-second bounded capture.
 - PCM16LE/16 kHz/mono WAV import only.
-- The Qwen 0.6B model can format equations imperfectly. Known notation artifacts are repaired only
-  in explicit or strongly signaled math spans for display; ambiguous notation and literal commands
-  remain unchanged, raw text remains trace evidence, and the editable summary is not a citation
-  source.
-- No transcript/summary export or persistence.
-- No image processing.
+- Summary omissions are allowed; emitted facts must remain accurate.
+- Transcript and summary state are memory-only.
