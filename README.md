@@ -35,9 +35,7 @@ summary, text assistance, and image assistance run locally without a cloud infer
 
 ## Tested configuration
 
-This guide was tested on Windows 11 x64 with AMD Radeon graphics, working WebGPU, 64 GB RAM,
-Node.js 26.13.0, and npm 11.20.0. All three models use `CPUExecutionProvider`; AMD Radeon and
-WebGPU are not model requirements.
+This guide was tested on Windows 11 x64 with Node.js 26.13.0 and npm 11.20.0.
 
 ## Clone, install, build, and launch
 

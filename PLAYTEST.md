@@ -17,9 +17,7 @@ decisions, and is not intended for arbitrary images, floor plans, or general vis
 
 ## Tested configuration
 
-This guide was tested on Windows 11 x64 with AMD Radeon graphics, working WebGPU, 64 GB RAM,
-Node.js 26.13.0, and npm 11.20.0. All Recorder models use `CPUExecutionProvider`; AMD Radeon and
-WebGPU are not model requirements.
+This guide was tested on Windows 11 x64 with Node.js 26.13.0 and npm 11.20.0.
 
 ## Clone the Enhanced branch and start
 
