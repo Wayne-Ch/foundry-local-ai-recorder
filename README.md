@@ -31,6 +31,15 @@ Prerequisites:
 - Node.js 22 or later with npm.
 - Internet access for `npm install` and the first model preparation.
 
+> [!WARNING]
+> Formal release validation for this app is limited to the target Windows 11 x64 demo machine with
+> AMD Radeon graphics and working WebGPU. The Recorder models still use the exact
+> `CPUExecutionProvider` identities listed above; AMD Radeon/WebGPU describes the validated machine,
+> not a different model execution provider. Other Windows hardware, Windows Arm64, Linux,
+> Apple-silicon macOS, and other GPU, NPU, or execution-provider configurations are not validated
+> to the same level and must not be presented as equivalent. Foundry Local's public platform
+> support is a separate product support statement and does not replace this app-specific evidence.
+
 From the parent folder where you want the canonical `ai-recorder` clone:
 
 ```powershell

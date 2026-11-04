@@ -2,7 +2,10 @@
 
 ## Before the room
 
-1. Use the validated Windows 11 x64 demo PC.
+1. Use the target Windows 11 x64 demo PC with AMD Radeon graphics and working WebGPU. This
+   runbook's formal evidence does not transfer to other Windows hardware, Windows Arm64, Linux,
+   Apple-silicon macOS, or other GPU/NPU/execution-provider configurations. Foundry Local's public
+   platform support remains a separate statement.
 2. Run `npm install`, `npm run fixture:generate`, and every automated gate in `VALIDATION.md`.
 3. Launch with `npm run start:built`.
 4. Select **Prepare local models** while network access is available.

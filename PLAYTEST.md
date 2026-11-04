@@ -4,6 +4,14 @@ Use a Windows 11 x64 PC with Git, Node.js 22 or later, npm, and internet access 
 and first preparation. Record observations without including private transcript content or local
 paths.
 
+> [!WARNING]
+> This formal playtest applies only to the target Windows 11 x64 demo machine with AMD Radeon
+> graphics and working WebGPU. The Recorder model cards must still show the documented
+> `CPUExecutionProvider` values. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS,
+> and other GPU, NPU, or execution-provider configurations are not validated to the same level and
+> must not be presented as equivalent. Foundry Local's public platform support is separate from
+> this app's release evidence.
+
 > [!IMPORTANT]
 > The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
 > model and execution-provider assets. Remain online, keep **AI Recorder** open, and wait until all

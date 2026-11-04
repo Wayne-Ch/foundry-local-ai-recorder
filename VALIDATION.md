@@ -2,6 +2,13 @@
 
 Date: 2026-11-03 (Windows 11 x64)
 
+Formal release evidence is limited to the target Windows 11 x64 demo machine with AMD Radeon
+graphics and working WebGPU. The Recorder models themselves use the exact CPU execution providers
+listed below. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU,
+NPU, or execution-provider configurations have not been validated to the same level and must not
+be presented as equivalent. Foundry Local's public platform support is a separate product support
+statement and does not expand this app-specific evidence.
+
 ## Exact required identities
 
 | Role | Model | Execution provider | Catalog size |
@@ -182,7 +189,9 @@ endpoint**, not as a completed physically offline rehearsal.
 
 ## Known limitations
 
-- Windows 11 x64 only.
+- Formal validation is limited to the target Windows 11 x64 AMD Radeon/WebGPU machine.
+- Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU/NPU/EP
+  configurations are not equivalent validated targets.
 - English only.
 - 30-second bounded capture.
 - PCM16LE/16 kHz/mono WAV import only.
