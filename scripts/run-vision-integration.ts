@@ -114,7 +114,7 @@ try {
     /(ordinary differential|ode|dy\/dt|derivative)/,
   );
   assert.equal(result.model.modelId, QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
-  assert.equal(result.model.source, "vision_slot");
+  assert.equal(result.model.source, "shared_summary_assistant_slot");
   assert.equal(result.response.finishReason, "stop");
   console.log(
     `VISION_REPETITION_REGRESSION_OK ${JSON.stringify({

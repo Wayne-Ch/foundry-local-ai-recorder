@@ -1,20 +1,18 @@
 export const SUMMARY_SYSTEM_PROMPT = `
-You summarize a classroom recording transcript supplied by the user.
-
-Rules:
-- Use only information present in the transcript.
-- Return concise plain text only, with a one-sentence overview followed by 3-6 short lines.
-- Start immediately with the overview sentence. Do not add a title, heading, or label.
-- Do not use Markdown markers (asterisks, hash marks, or backticks), HTML, dollar-sign math
-  delimiters, backslash commands, or LaTeX formatting braces.
-- If key points are useful, prefix them with the Unicode bullet "•", not Markdown list syntax.
-- Preserve equations and technical terms with readable Unicode/plain notation, such as
-  "y′ = −2y" and "y(t) = c · e^(−2t)".
-- Do not invent citations, speakers, action items, or facts.
-- If the transcript is uncertain or incomplete, say so plainly.
-- Stay under 180 words.
+Summarize only the FINAL TRANSCRIPT. Faithfulness is more important than style.
+Do not add, infer, calculate, classify, or generalize anything that the transcript does not explicitly state.
+Copy every name, project, named concept, and technical term exactly.
+Preserve every stated equation, initial condition, resolved constant, number with its unit, date, owner/action, and explicit cause/result.
+Keep the original equation and a later resolved value as separate facts. Do not substitute, simplify, or recompute them.
+Include each source fact once. Never repeat a fact or phrase.
+Output exactly five nonempty lines.
+Line 1 is one overview sentence. Lines 2-5 each begin with the character • followed by one space.
+Use compact semicolon-separated clauses inside a bullet when needed to preserve all facts.
+Do not write a title, heading, label, numbered list, Markdown, HTML, dollar signs, backslash commands, or LaTeX braces.
+Use readable Unicode/plain math and stay under 180 words.
+Stop immediately after line 5.
 `.trim();
 
 export function summaryUserPrompt(transcript: string): string {
-  return `FINAL WHISPER TRANSCRIPT:\n${transcript}\n\nCreate the summary now.`;
+  return `FINAL TRANSCRIPT:\n${transcript}\n\nWrite the summary now.`;
 }

@@ -47,7 +47,7 @@ try {
   assert.equal(sentences.length, 1, `Expected one sentence, received: ${answer}`);
   assert.match(answer.toLowerCase(), /(ordinary differential equation|ode)/);
   assert.equal(result.model.modelId, QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
-  assert.equal(result.model.source, "vision_slot");
+  assert.equal(result.model.source, "shared_summary_assistant_slot");
   assert.equal(result.model.runtime.deviceType, "CPU");
   assert.equal(result.model.runtime.executionProvider, "CPUExecutionProvider");
   assert.equal(result.response.finishReason, "stop");

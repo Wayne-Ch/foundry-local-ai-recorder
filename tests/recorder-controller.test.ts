@@ -29,7 +29,7 @@ import {
 } from "../src/main/ui-capture-fixture";
 import type { PrepareProgressEvent, RuntimeReadiness } from "../src/shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../src/shared/safe-diagnostic";
-import { formatSummaryForDisplay } from "../src/summary/summary-format";
+import { formatSummaryPresentation } from "../src/summary/summary-format";
 
 const targets = resolveRuntimeTargets({});
 
@@ -55,14 +55,16 @@ class FakeRuntime implements RecorderRuntime {
     _enableLiveCaptions: boolean,
     onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<PrepareRuntimeResult> {
-    onProgress?.({
-      operation: "prepare",
-      phase: "summary:checking_catalog",
-      stage: "checking_catalog",
-      role: "summary",
-      detail: "Checking the exact summary model in the public catalog.",
-      readiness: this.readiness,
-    });
+    for (const role of ["whisper", "nemotron", "summary"] as const) {
+      onProgress?.({
+        operation: "prepare",
+        phase: `${role}:checking_catalog`,
+        stage: "checking_catalog",
+        role,
+        detail: `Checking the exact ${role} model in the public catalog.`,
+        readiness: this.readiness,
+      });
+    }
     return {
       readiness: this.readiness,
       liveCaptionsAvailable: true,
@@ -122,7 +124,7 @@ class FakeRuntime implements RecorderRuntime {
       model: {
         role: "summary",
         id: SUMMARY_MODEL_ID,
-        alias: "qwen3-0.6b",
+        alias: "qwen3.5-0.8b",
         deviceType: "GPU",
         executionProvider: SUMMARY_EXECUTION_PROVIDER,
         fileSizeMb: 600,
@@ -158,7 +160,10 @@ describe("RecorderController", () => {
       generation: 0,
     });
     expect(
-      events.find((event) => event.operation === "prepare" && event.status === "progress"),
+      events.find(
+        (event) =>
+          event.operation === "prepare" && event.status === "progress" && event.modelRole === "summary",
+      ),
     ).toMatchObject({
       modelRole: "summary",
       modelSource: "built_in_default",
@@ -175,8 +180,8 @@ describe("RecorderController", () => {
   ])("never persists a raw %s-shaped model override", async (_label, modelId) => {
     const events: RecorderOperationJournalEvent[] = [];
     const targetsWithOverride = resolveRuntimeTargets({
-      SMART_RECORDER_SUMMARY_MODEL_ID: modelId,
-      SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: SUMMARY_EXECUTION_PROVIDER,
+      SMART_RECORDER_WHISPER_MODEL_ID: modelId,
+      SMART_RECORDER_WHISPER_EXECUTION_PROVIDER: AUDIO_EXECUTION_PROVIDER,
     });
     const controller = new RecorderController(
       new FakeRuntime(undefined, undefined, undefined, targetsWithOverride),
@@ -188,11 +193,14 @@ describe("RecorderController", () => {
 
     await controller.prepare({ enableLiveCaptions: false });
 
-    const progress = events.find((event) => event.operation === "prepare" && event.status === "progress");
+    const progress = events.find(
+      (event) =>
+        event.operation === "prepare" && event.status === "progress" && event.modelRole === "whisper",
+    );
     expect(progress).toMatchObject({
-      modelRole: "summary",
+      modelRole: "whisper",
       modelSource: "environment_override",
-      modelRef: expect.stringMatching(/^override:summary:[a-f0-9]{12}$/),
+      modelRef: expect.stringMatching(/^override:whisper:[a-f0-9]{12}$/),
     });
     expect(progress).not.toHaveProperty("modelId");
     expect(JSON.stringify(events)).not.toContain(modelId);
@@ -371,7 +379,10 @@ describe("RecorderController", () => {
     const summary = await controller.generateSummary();
 
     expect(summary.snapshot.transcript.summary?.text).toBe(
-      String.raw`Keep C:\times\reports and \cdot literal. The solution is expressed as y(t) = c · e^(−2t), where c is the initial constant.`,
+      [
+        String.raw`Keep C:\times\reports and \cdot literal.`,
+        "• The solution is expressed as y(t) = c · e^(−2t), where c is the initial constant.",
+      ].join("\n"),
     );
     expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
       detail: raw,
@@ -384,7 +395,7 @@ describe("RecorderController", () => {
       new RecorderController(new FakeRuntime()).bootstrap(),
     );
 
-    expect(formatSummaryForDisplay(POPULATED_SUMMARY_CAPTURE_RAW)).toEqual({
+    expect(formatSummaryPresentation(POPULATED_SUMMARY_CAPTURE_RAW)).toEqual({
       text: POPULATED_SUMMARY_CAPTURE_FORMATTED,
       formattingApplied: true,
     });
@@ -566,7 +577,7 @@ function modelReadiness(
       role,
       id,
       alias: id.split(":")[0] ?? id,
-      deviceType: role === "summary" ? "GPU" : "CPU",
+      deviceType: "CPU",
       executionProvider,
       fileSizeMb: 100,
     },

@@ -80,7 +80,7 @@ root.innerHTML = `
       <div class="flow-arrow" aria-hidden="true">→</div>
       <article id="summary-card-model" class="model-card" data-model="summary">
         <span class="step-number">03</span>
-        <div><p>Post-session</p><strong>Local summary</strong><small id="summary-id"></small><small id="summary-detail" class="model-detail"></small></div>
+        <div><p>Summary + assistant</p><strong>Shared Qwen</strong><small id="summary-id"></small><small id="summary-detail" class="model-detail"></small></div>
         <span id="summary-state" class="state-chip"></span>
       </article>
     </section>
@@ -170,7 +170,7 @@ root.innerHTML = `
           <div class="output-heading">
             <div>
               <p class="eyebrow">AI-GENERATED · EDITABLE</p>
-              <h2>Session summary <span>Qwen</span></h2>
+              <h2>Session summary <span>Shared Qwen</span></h2>
             </div>
             <button id="summary-button" class="button button-primary" disabled>Generate summary</button>
           </div>
@@ -185,7 +185,7 @@ root.innerHTML = `
       <aside id="assistant-panel" class="assistant-panel" aria-label="Local AI assistant">
         <div class="assistant-heading">
           <div class="assistant-title">
-            <p class="eyebrow">OPTIONAL · LOCAL</p>
+            <p class="eyebrow">SHARED MODEL · LOCAL</p>
             <h2>Lesson assistant</h2>
           </div>
           <button
@@ -444,7 +444,7 @@ let assistantUiAction: AssistantUiAction = "idle";
 let assistantStatusMessage =
   initialAssistantBootstrap === null
     ? "Optional assistant IPC is unavailable; the core recorder remains usable."
-    : "Optional assistant lane is ready on demand.";
+    : "Shared local summary and assistant model is ready.";
 let assistantStatusTone: "neutral" | "working" | "success" | "warning" | "error" =
   initialAssistantBootstrap === null ? "error" : "neutral";
 
@@ -597,22 +597,26 @@ async function prepareModels(): Promise<void> {
       return;
     }
     snapshot = response.snapshot;
-    prepared = true;
+    prepared = coreModelsReady(snapshot);
     liveAvailable = response.liveCaptionsAvailable;
+    const readyCount = preparedModelCount(snapshot);
     const recoveryWarning = startupRecoveryWarning(snapshot);
     if (recoveryWarning !== null) {
       setStatus(recoveryWarning, "warning");
-    } else if (elements.liveToggle.checked && !liveAvailable) {
+    } else if (readyCount < 3) {
       setStatus(
-        `Whisper-only fallback is ready. ${
-          response.liveCaptionsFailure === null
-            ? "Nemotron is unavailable."
-            : formatSafeDiagnostic(response.liveCaptionsFailure)
+        `${readyCount}/3 local models are ready. ${
+          !liveAvailable && response.liveCaptionsFailure !== null
+            ? formatSafeDiagnostic(response.liveCaptionsFailure)
+            : "Retry Prepare while online before disconnecting."
         }`,
         "warning",
       );
     } else {
-      setStatus("Local models are ready. Audio remains on this PC.", "success");
+      setStatus(
+        "Enhanced offline ready · 3/3 models. Recording, summary, chat, and image analysis stay on this PC.",
+        "success",
+      );
     }
   } catch (error) {
     if (generation !== operationGeneration) {
@@ -1446,7 +1450,7 @@ function renderAssistant(): void {
       assistantStatusMessage = `Image analysis v${analysis.version} is ready.`;
       assistantStatusTone = "success";
     } else if (assistantStatusMessage.startsWith("Prepare local models")) {
-      assistantStatusMessage = "Optional assistant lane is ready.";
+      assistantStatusMessage = "Shared local summary and assistant model is ready.";
       assistantStatusTone = "neutral";
     }
   }
@@ -1461,7 +1465,14 @@ function renderAssistant(): void {
 }
 
 function renderModel(role: "whisper" | "nemotron" | "summary", readiness: ModelReadiness): void {
-  elements.model[role].id.textContent = `${readiness.target.modelId} · ${readiness.target.executionProvider}`;
+  const deviceType = readiness.model?.deviceType ?? (role === "summary" ? "CPU" : null);
+  elements.model[role].id.textContent = [
+    readiness.target.modelId,
+    deviceType,
+    readiness.target.executionProvider,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   elements.model[role].detail.textContent = readiness.detail;
   elements.model[role].detail.title = readiness.detail;
   elements.model[role].state.textContent = stateLabel(readiness.status);
@@ -1713,6 +1724,16 @@ function formatMilliseconds(milliseconds: number | null): string {
 
 function stateLabel(status: ModelReadiness["status"]): string {
   return status.replaceAll("_", " ").toUpperCase();
+}
+
+function coreModelsReady(next: RecorderSnapshot): boolean {
+  return next.readiness.whisper.status === "ready" && next.readiness.summary.status === "ready";
+}
+
+function preparedModelCount(next: RecorderSnapshot): number {
+  return [next.readiness.whisper, next.readiness.nemotron, next.readiness.summary].filter(
+    ({ status }) => status === "ready",
+  ).length;
 }
 
 function microphoneError(error: unknown): string {

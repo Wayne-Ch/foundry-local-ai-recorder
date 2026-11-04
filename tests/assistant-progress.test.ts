@@ -46,7 +46,7 @@ describe("assistant progress presentation", () => {
           phase: "loading_model",
         }),
       ),
-    ).toBe("Loading the local assistant model…");
+    ).toBe("Loading the prepared cached shared model locally…");
     expect(
       imageAnalysisProgress(
         snapshot({
@@ -57,9 +57,9 @@ describe("assistant progress presentation", () => {
         }),
       ),
     ).toMatchObject({
-      buttonLabel: "Loading model…",
-      metadataLabel: "Loading model",
-      detailLabel: "Loading the local assistant model…",
+      buttonLabel: "Loading cached model…",
+      metadataLabel: "Loading cached model",
+      detailLabel: "Loading the prepared cached shared model locally…",
     });
   });
 

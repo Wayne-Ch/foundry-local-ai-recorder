@@ -10,11 +10,13 @@
 5. Confirm the button/card detail visibly advances through runtime initialization, endpoint
    validation, catalog/cache lookup, provider registration, and exact model load. A static wait is
    a failed rehearsal.
-6. Confirm all three model cards show **READY**, the top-right pill says **In-process boundary
+6. Confirm all three model cards show **READY**, the status says
+   **Enhanced offline ready · 3/3 models**, the top-right pill says **In-process boundary
    validated**, and the Developer Trace reports no embedded web service URL.
-7. Confirm `fixtures/ode-lesson.wav`, `fixtures/ode-slide.png`, and
+7. Disconnect the demo PC from the network. Do not disconnect before 3/3 readiness.
+8. Confirm `fixtures/ode-lesson.wav`, `fixtures/ode-slide.png`, and
    `fixtures/clinic-xray.png` exist.
-8. Leave the app reset, the consent box unchecked, and live captions enabled.
+9. Leave the app reset, the consent box unchecked, and live captions enabled.
 
 Do not claim a completed offline rehearsal unless the manual network-disconnect gate in
 `VALIDATION.md` has been performed for this exact build and cache.
@@ -25,14 +27,15 @@ Do not claim a completed offline rehearsal unless the manual network-disconnect 
 
 Point to the three cards:
 
-> This recorder has three distinct local stages. Nemotron shows a replaceable live draft, Whisper
-> writes the authoritative final transcript after Stop, and Qwen summarizes only that final
-> version.
+> This recorder has three prepared local models. Nemotron shows a replaceable live draft, Whisper
+> writes the authoritative final transcript after Stop, and one shared Qwen model summarizes that
+> final version or handles text/image assistance through fresh sessions.
 
 Point to **In-process boundary validated** and say:
 
-> Inference uses Foundry Local's in-process SDK. Model preparation may download missing assets; the
-> app does not call an external inference endpoint or start Foundry's embedded web service.
+> Inference uses Foundry Local's in-process SDK. Prepare may download missing assets while online;
+> after the visible 3/3 state, this demo runs summary, chat, and image work from the loaded local
+> models without catalog or download work.
 
 ### 1:30-3:00 — Consent and model readiness
 
@@ -61,9 +64,9 @@ Open **Ask AI** without stopping and select the chip:
 
 > What is ODE? Answer in one sentence.
 
-Point out that recording and live captions continue while the separate local chat request runs. The
-request-bound Local AI row distinguishes **Waiting locally…**, assistant model/provider loading,
-and active **Thinking locally…**, and
+Point out that recording and live captions continue while the fresh shared-model chat session runs.
+The request-bound Local AI row distinguishes **Waiting locally…**, prepared-offline startup, and
+active **Thinking locally…**, and
 the chat context label must say **live draft snapshot (may change)**; the actual snapshot is not
 stored in chat history. If time permits, submit
 `Render this decay equation: $y(t) = y_0 e^{-2t}$.` and show that the chat renders the subscript and
@@ -75,7 +78,7 @@ exponent without literal delimiters or braces.
 2. Choose `fixtures/ode-slide.png`.
 3. Show basename, PNG type, byte size, dimensions, and thumbnail—never a filesystem path.
 4. Select **Analyze image**.
-5. Point out queued work, assistant model/provider loading, then **Analyzing…** on the button and
+5. Point out queued work, prepared-offline startup, then **Analyzing…** on the button and
    **Analysis: Analyzing** in metadata.
 6. Show the three fields: visible text/objects, relation to lesson, and uncertainty.
 
@@ -123,10 +126,13 @@ Point to:
 - the submitted transcript version;
 - transcript-final-to-summary timing;
 - Qwen's exact model/EP card;
+- that the same Shared Qwen card also powers the assistant while fresh sessions keep context separate;
 - the **AI-generated · editable** label.
 
 Do not present the summary as a citation source. It is a concise transformation of the reviewed
-transcript.
+transcript. The shared model preserves facts; the application deterministically turns safely
+segmentable sentences into one overview plus Unicode bullets and falls back to the factual
+paragraph rather than inventing or dropping text.
 
 ### 11:45-12:45 — Developer trace
 
@@ -143,8 +149,8 @@ handoff shown in the visible answer.
 ### 12:45-14:00 — Stage fallback
 
 Optionally start a short recording and select **Cancel / reset** to show that cancellation discards
-audio without Whisper or Qwen; the control shows **Cancelling and unloading** until cleanup
-settles. Then select **Open stage fallback WAV** and choose
+audio without Whisper or Qwen; the control shows **Clearing session data** until cleanup settles,
+while all three cards remain READY. Then select **Open stage fallback WAV** and choose
 `fixtures/ode-lesson.wav`.
 
 The fixture is Windows-synthesized original text. It goes through the same validated PCM and
@@ -159,7 +165,7 @@ Generate the summary again if time permits.
 - English only.
 - 30-second bounded prototype, not lecture-length stability.
 - Imported WAV must already be PCM16LE/16 kHz/mono.
-- Network-disconnect rehearsal is a separate manual gate.
+- The room flow remains offline only because the PC was disconnected after the visible 3/3 gate.
 - Image/chat are optional local lanes; they do not diagnose, assess urgency, recommend treatment,
   or replace an interpreter in clinic mode. Bounded medical-decision questions receive a
   deterministic visible clinician handoff; equivalent model wording is normalized to one final
@@ -177,7 +183,7 @@ Generate the summary again if time permits.
 | Whisper fails | Do not summarize the Nemotron terminal. Reset, confirm Whisper readiness, then retry or use the fixture. |
 | Summary fails/truncates | Keep the final transcript visible. Retry only after confirming Qwen readiness; never show canned summary text. |
 | Image is rejected | Confirm PNG/JPEG/WebP extension, signature, 10 MiB bound, and dimensions. Convert the source locally; do not bypass validation. |
-| VLM/image analysis fails | Keep recording and use the final transcript/summary. Replace the image or retry the optional request; never substitute canned output. |
-| Chat fails or is cancelled | Continue recording. Ask again after the optional queue settles; do not restart or unload core models. |
+| Shared Qwen image analysis fails | Keep recording and use the final transcript. Retry after the assistant queue settles; never substitute canned output or download after Prepare. |
+| Chat fails or is cancelled | Continue recording. Ask again after the assistant queue settles; do not restart or unload the shared model. |
 | Renderer reloads or window closes | Main-process ownership cancels the stream. Reopen, prepare if needed, and start a fresh recording. |
 | Locked temporary file found at startup | The status/trace shows only the retained count and app-owned path policy. Close the process holding the file, then use **Delete / reset** or restart to retry cleanup. |

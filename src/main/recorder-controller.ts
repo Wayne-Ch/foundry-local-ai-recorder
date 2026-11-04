@@ -45,7 +45,7 @@ import type {
   TranscriptionResponse,
 } from "../shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
-import { formatSummaryForDisplay } from "../summary/summary-format";
+import { formatSummaryPresentation } from "../summary/summary-format";
 import { TranscriptStore } from "../transcript/transcript-store";
 import { noopRecorderOperationJournal, type RecorderOperationJournal } from "./operation-journal";
 
@@ -138,9 +138,7 @@ export class RecorderController {
     this.#traceEvent(
       "Application",
       "prepare",
-      `Prepare ${correlationId}: Whisper core, Qwen summary, and ${
-        request.enableLiveCaptions ? "optional Nemotron live captions" : "no live-caption model"
-      }.`,
+      `Prepare ${correlationId}: Whisper final ASR, Nemotron streaming ASR, and shared Qwen summary/assistant.`,
     );
     try {
       const result = await this.#runtime.prepare(request.enableLiveCaptions, (event) => {
@@ -399,7 +397,7 @@ export class RecorderController {
     try {
       const result = await this.#runtime.summarize(submitted.text);
       this.#assertCurrent(generation);
-      const displaySummary = formatSummaryForDisplay(result.text);
+      const displaySummary = formatSummaryPresentation(result.text);
       this.#traceEvent(
         "Foundry Local",
         "summary-raw",

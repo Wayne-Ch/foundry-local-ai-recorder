@@ -25,16 +25,25 @@ describe("runtime configuration", () => {
     );
   });
 
-  it("labels explicit overrides as unvalidated without silently replacing them", () => {
+  it("rejects a different shared summary and assistant model", () => {
+    expect(() =>
+      resolveRuntimeTargets({
+        SMART_RECORDER_SUMMARY_MODEL_ID: "another-model:1",
+        SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: "CPUExecutionProvider",
+      }),
+    ).toThrow("shared summary and assistant model");
+  });
+
+  it("accepts an explicit exact shared-model override", () => {
     const targets = resolveRuntimeTargets({
-      SMART_RECORDER_SUMMARY_MODEL_ID: "another-model:1",
-      SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: "CPUExecutionProvider",
+      SMART_RECORDER_SUMMARY_MODEL_ID: SUMMARY_MODEL_ID,
+      SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: SUMMARY_EXECUTION_PROVIDER,
     });
     expect(targets.summary).toMatchObject({
-      modelId: "another-model:1",
-      executionProvider: "CPUExecutionProvider",
+      modelId: SUMMARY_MODEL_ID,
+      executionProvider: SUMMARY_EXECUTION_PROVIDER,
       source: "environment_override",
-      stageValidated: false,
+      stageValidated: true,
     });
   });
 });

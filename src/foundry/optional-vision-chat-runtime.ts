@@ -54,7 +54,7 @@ export type VisionModelCompatibility =
 
 export interface PreparedAssistantModel {
   readonly modelId: string;
-  readonly source: "vision_slot";
+  readonly source: "shared_summary_assistant_slot";
   readonly task: string;
   readonly runtime: VisionChatRuntimeTarget;
   readonly inputModalities: readonly string[];

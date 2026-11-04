@@ -153,14 +153,16 @@ function chatProgressLabel(operation: AssistantPendingOperation, dependsOnImage:
     case "initializing_runtime":
     case "checking_catalog":
     case "checking_cache":
-      return dependsOnImage ? "Starting the local image assistant…" : "Starting the local assistant…";
+      return dependsOnImage
+        ? "Using the prepared offline image assistant…"
+        : "Using the prepared offline assistant…";
     case "downloading_model":
-      return "Downloading the local assistant model…";
+      return "Assistant model is not prepared; retry Prepare while online…";
     case "checking_provider":
     case "registering_provider":
-      return "Preparing the local assistant execution provider…";
+      return "Using the prepared local assistant execution provider…";
     case "loading_model":
-      return "Loading the local assistant model…";
+      return "Loading the prepared cached shared model locally…";
     case "running_inference":
       return dependsOnImage ? "Thinking about the selected image…" : "Thinking locally…";
   }
@@ -181,28 +183,28 @@ function imageProgressLabels(
     case "checking_catalog":
     case "checking_cache":
       return {
-        buttonLabel: "Starting assistant…",
-        metadataLabel: "Starting assistant",
-        detailLabel: "Starting the local image assistant…",
+        buttonLabel: "Using offline assistant…",
+        metadataLabel: "Using offline assistant",
+        detailLabel: "Using the prepared offline image assistant…",
       };
     case "downloading_model":
       return {
-        buttonLabel: "Downloading model…",
-        metadataLabel: "Downloading model",
-        detailLabel: "Downloading the local assistant model…",
+        buttonLabel: "Prepare required",
+        metadataLabel: "Prepare required",
+        detailLabel: "Assistant model is not prepared; retry Prepare while online…",
       };
     case "checking_provider":
     case "registering_provider":
       return {
-        buttonLabel: "Preparing provider…",
-        metadataLabel: "Preparing provider",
-        detailLabel: "Preparing the local assistant execution provider…",
+        buttonLabel: "Using local provider…",
+        metadataLabel: "Using local provider",
+        detailLabel: "Using the prepared local assistant execution provider…",
       };
     case "loading_model":
       return {
-        buttonLabel: "Loading model…",
-        metadataLabel: "Loading model",
-        detailLabel: "Loading the local assistant model…",
+        buttonLabel: "Loading cached model…",
+        metadataLabel: "Loading cached model",
+        detailLabel: "Loading the prepared cached shared model locally…",
       };
     case "running_inference":
       return {

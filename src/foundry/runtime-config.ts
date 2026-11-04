@@ -3,9 +3,11 @@ import {
   NEMOTRON_AUDIO_MODEL_ID,
   WHISPER_AUDIO_MODEL_ID,
 } from "../audio/audio-types";
+import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "./optional-vision-chat-runtime";
 
-export const SUMMARY_MODEL_ID = "qwen3-0.6b-generic-gpu:2";
-export const SUMMARY_EXECUTION_PROVIDER = "WebGPUExecutionProvider";
+export const SUMMARY_MODEL_ID = QWEN_VISION_CHAT_CANDIDATE_MODEL_ID;
+export const SUMMARY_EXECUTION_PROVIDER = AUDIO_EXECUTION_PROVIDER;
+const CANONICAL_WEBGPU_EXECUTION_PROVIDER = "WebGPUExecutionProvider";
 
 export type ModelRole = "whisper" | "nemotron" | "summary";
 
@@ -54,7 +56,7 @@ export class RuntimeConfigurationError extends Error {
 export function canonicalExecutionProvider(name: string): string {
   const trimmed = name.trim();
   return trimmed === "WebGpuExecutionProvider" || trimmed === "WebGPUExecutionProvider"
-    ? SUMMARY_EXECUTION_PROVIDER
+    ? CANONICAL_WEBGPU_EXECUTION_PROVIDER
     : trimmed;
 }
 
@@ -85,6 +87,14 @@ function resolveTarget(
   }
   const resolvedModelId = modelId || definition.modelId;
   const resolvedProvider = canonicalExecutionProvider(provider || definition.executionProvider);
+  if (
+    role === "summary" &&
+    (resolvedModelId !== SUMMARY_MODEL_ID || resolvedProvider !== SUMMARY_EXECUTION_PROVIDER)
+  ) {
+    throw new RuntimeConfigurationError(
+      `The shared summary and assistant model must use ${SUMMARY_MODEL_ID} with ${SUMMARY_EXECUTION_PROVIDER}.`,
+    );
+  }
   return {
     role,
     modelId: resolvedModelId,

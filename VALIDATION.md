@@ -6,14 +6,15 @@ Multimodal branch static/cloud evidence: 2026-11-02 (Linux cloud session)
 
 Target-Windows Prepare/progress/native recovery evidence: 2026-11-03
 
+Shared three-model offline-readiness evidence: 2026-11-03
+
 ## Validated identities
 
 | Role | Exact model | Execution provider | Catalog size |
 |---|---|---|---:|
 | Live captions | `nemotron-speech-streaming-en-0.6b-generic-cpu:3` | `CPUExecutionProvider` | 696 MB |
 | Final transcript | `openai-whisper-tiny-generic-cpu:4` | `CPUExecutionProvider` | 131 MB |
-| Summary | `qwen3-0.6b-generic-gpu:2` | `WebGPUExecutionProvider` | 529 MB |
-| Optional text + image chat target | `qwen3.5-0.8b-generic-cpu:3` | CPU / `CPUExecutionProvider` | Runtime catalog/task/modality validation required; one optional slot |
+| Shared summary + text/image assistant | `qwen3.5-0.8b-generic-cpu:3` | CPU / `CPUExecutionProvider` | 1,037 MB; one prepared shared slot, fresh `ChatSession` per request |
 
 SDK: `foundry-local-sdk@2.2.1`
 
@@ -21,7 +22,6 @@ Runtime log evidence:
 
 - ONNX Runtime `1.31.0`
 - ONNX Runtime GenAI `0.18.0`
-- WebGPU bundle `webgpu-ep-0.2.1-win-x64`
 - default per-user Foundry model cache
 - nonessential telemetry disabled by configuration
 
@@ -40,7 +40,7 @@ The SDK addon files existed, but `onnxruntime.dll`, `onnxruntime-genai.dll`, and
 `onnxruntime_providers_shared.dll` were absent because a dependency update had been run with
 `--ignore-scripts`. `npm rebuild foundry-local-sdk` restored the supported SDK runtime payload and
 the real Whisper gate immediately passed. The persistent checkout now contains those files, and
-the isolated real Electron Prepare probe completes all three core models, so cache corruption and
+the isolated real Electron Prepare probe completes all three models, so cache corruption and
 second-manager contention were not reproduced.
 
 The repository now prevents and diagnoses this class:
@@ -58,22 +58,23 @@ Real isolated Electron Prepare result:
 
 ```text
 PREPARE_UI_PROBE_OK
-elapsedMs=8707
+elapsedMs=10805
 finalModelStates=["READY","READY","READY"]
+finalStatus="Enhanced offline ready · 3/3 models. Recording, summary, chat, and image analysis stay on this PC."
+resetPreservedModelStates=["READY","READY","READY"]
 ```
 
 Observed button phases included runtime initialization, endpoint validation, Whisper catalog/load,
-summary provider registration/load, and Nemotron catalog/load. The correlated journal recorded one
-Prepare start, every phase, and complete in 8,671 ms; the probe awaited clean native shutdown
-before process exit.
+Nemotron catalog/load, and shared-Qwen catalog/load. All three are CPU models, so no WebGPU provider
+registration is needed. The probe awaited clean native shutdown before process exit.
 
 ## Static validation
 
 | Command | Result |
 |---|---|
-| `npm run lint` | Pass; 97 files checked |
+| Full Biome check in an LF-clean archive overlay | Pass; 98 files checked. The in-place checkout retains inherited CRLF in untouched files, so direct `npm run lint` reports formatting-only line-ending diffs. |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass; 30 files, 374 tests |
+| `npm test` | Pass; 30 files, 394 tests |
 | `npm run build` | Pass; main, preload, and Vite renderer |
 | `npm audit --audit-level=low` | Pass after bounded retry of a feed HTTP 429; 0 vulnerabilities |
 | Fresh clone with `core.autocrlf=true` | Pass; `README.md`, `src/main/main.ts`, and `src/foundry/foundry-runtime.ts` all had `CRLF=0` |
@@ -85,7 +86,10 @@ Unit coverage includes:
 - exact Whisper-only summary input;
 - exact newlines, repeated spaces, Unicode, and punctuation preserved through runtime, controller,
   durable snapshot, submitted snapshot, and Qwen prompt construction;
-- summary prompt enforcement for concise plain text and readable Unicode notation;
+- generic summary fact preservation for ODE equations/conditions/constants, Project Atlas
+  names/numbers/ownership/causality, and Team Aurora units/cycles/causality/action/date;
+- deterministic summary presentation that preserves content while converting safely segmentable
+  sentences into one overview plus bounded Unicode bullets, with idempotent fallback;
 - left-to-right protected-span and dollar-delimiter scanning for both observed malformed ODE
   outputs, tight/spaced inline and display math, independent currency tokens, escaped/unmatched
   dollars, bounded implicit equations, `\cdot`, `\times`, primes, braced exponents, safe
@@ -130,11 +134,11 @@ Unit coverage includes:
   username, or arbitrary raw phrase;
 - native SDK materialization preflight, actionable recovery, structured IPC serialization, and
   Prepare fault/delay matrices for initialization, endpoint validation, catalog, cache, download,
-  provider discovery/registration, and model load;
+  provider discovery/registration where applicable, and model load;
 - immediate accessible renderer progress for Prepare/model cards, microphone/start, first Nemotron
   caption wait, Stop/finalize, Whisper final, WAV select/read/decode/transcribe, transcript save,
-  summary save/generation, queued/lazy-loaded assistant inference, image analysis, Reset, cleanup,
-  and stale-generation suppression;
+  summary save/generation, queued prepared-offline assistant inference, image analysis, Reset,
+  cleanup, and stale-generation suppression;
 - temporary WAV creation, recovery, and failure cleanup;
 - EACCES/EBUSY/EPERM startup retention warnings with hidden paths and retry guidance;
 - model-slot replacement failure preserving a working model;
@@ -154,13 +158,12 @@ Unit coverage includes:
 - bounded serialized assistant queue, active/queued cancellation, owner revocation, Reset, mode
   changes, and stale generations;
 - exact Foundry Local 2.2.1 text/image request parts, runtime catalog/task/modality/device/EP
-  validation, per-turn session disposal, request cancellation, CPU vision-slot-only unload,
-  core summary-slot exclusivity, core model preservation, one manager creation, and the shared
-  endpoint guard;
+  validation, fresh summary/assistant session disposal, request cancellation, shared-slot
+  preservation across Reset, one manager creation, and the shared endpoint guard;
 - concurrent Nemotron chunk acceptance while text chat runs, Whisper completion during assistant
-  drain, CPU VLM identity for both text and image requests, pending-forever assistant cancellation
-  with immediate core summary/reset, deferred one-time shutdown cleanup, and immediate Reset
-  snapshots with no stale active request;
+  drain, shared CPU VLM identity for summary/text/image requests, pending-forever assistant
+  cancellation with immediate summary/reset, deferred one-time shutdown cleanup, and immediate
+  Reset snapshots with no stale active request;
 - enqueue-time assistant generation/mode/image/context tokens, queued replace/remove/reset
   cancellation without byte ownership, execution-time copies, tracked zero-fill after request
   construction/cancel failure, and exact analysis/history provenance checks;
@@ -195,11 +198,11 @@ Result: `CHAIN_INTEGRATION_OK`
 | Evidence | Measured result |
 |---|---:|
 | Nemotron partial count | 92 |
-| First live caption | 1,381 ms |
-| Stop to Whisper final | 376 ms |
-| Transcript final to summary | 3,531 ms |
-| Qwen generation | 3,528 ms |
-| Qwen prompt/completion tokens | 277 / 52 |
+| First live caption | 3,085 ms |
+| Stop to Whisper final | 423 ms |
+| Transcript final to summary | 2,767 ms |
+| Shared Qwen generation | 2,573 ms |
+| Shared Qwen prompt/completion tokens | 310 / 58 |
 | Owned temporary WAV residue | 0 |
 | Summary input equals exact Whisper final | true |
 | In-process mode validated | true |
@@ -261,20 +264,18 @@ Command: `npm run test:summary-integration`
 
 Result: `SUMMARY_INTEGRATION_OK`
 
-| Prompt | Latency | Prompt tokens | Completion tokens |
+| Fixture | Latency | Prompt tokens | Completion tokens |
 |---|---:|---:|---:|
-| ODE solution | 2,633 ms | 262 | 44 |
-| Euler comparison | 2,520 ms | 248 | 33 |
-| Solution procedure | 3,000 ms | 246 | 56 |
+| ODE equation/initial condition/resolved constant | 2,976 ms | 319 | 64 |
+| Project Atlas names/numbers/cache cause/owner/date | 2,793 ms | 311 | 55 |
+| Team Aurora units/cycles/charging cause/action/date | 3,159 ms | 328 | 73 |
 
-All three runs returned nonempty bounded user-visible output. Each run asserts exact submitted
-transcript input, no raw math dollar delimiter, and formatter stability on a second pass. This
-allows intentional literal commands outside math while still proving that every supported display
-repair was completed. In the ODE run, raw Qwen emitted `y'` and `e^(−2t))`; the display result was
-`y′` and `e^(−2t)`. The integration evidence logs both the exact raw Qwen response and the
-formatted display text plus the trace flag that says whether formatting was applied. Qwen thinking
-was disabled via `chat_template_kwargs` after an initial validation run showed the default
-reasoning mode exhausting the 260-token output budget.
+`SUMMARY_FACT_GATE_OK` requires every source-backed fact, rejects fixture-crossing claims and
+unexpected numbers, requires `finishReason: stop`, and asserts current bounds plus formatter
+stability. Raw qwen3.5 output remained exact Developer Trace evidence. The application-owned
+presentation layer then split complete sentences into one overview plus Unicode bullets without
+fact loss or duplication; unsafe segmentation falls back to the factual paragraph. Qwen thinking
+remains disabled through `chat_template_kwargs`.
 
 ## Electron validation
 
@@ -284,8 +285,9 @@ reasoning mode exhausting the 260-token output budget.
 | `npm run probe:microphone-permission` | `MICROPHONE_PERMISSION_PROBE_OK`; one fake audio track, zero video tracks, exact document/security origin |
 | `npm run probe:stream-owner` | `STREAM_OWNER_PROBE_OK`; reload and close cancelled leases, stale partial routable = false |
 | `npm run probe:assistant-ui` | `ASSISTANT_UI_RENDER_OK`; math safety plus immediate recorder/chat/image progress labels and ARIA busy/status states inspected |
-| `npm run probe:prepare-ui` | `PREPARE_UI_PROBE_OK`; isolated real app reached Whisper/Qwen/Nemotron READY, captured intermediate model phases, and shut down cleanly |
+| `npm run probe:prepare-ui` | `PREPARE_UI_PROBE_OK`; isolated real app reached Whisper/shared-Qwen/Nemotron READY with the 3/3 offline label, captured intermediate model phases, and shut down cleanly |
 | `npm run capture:ui` | `UI_CAPTURE_OK`; deterministic populated-summary capture inspected successfully |
+| `npm run test:offline-shared-integration` | `OFFLINE_SHARED_MODEL_OK`; post-Prepare summary/Ask/image/concurrent work made zero catalog/provider acquisition calls |
 
 The 2026-11-02 cloud run used `xvfb-run`. Because the remote process runs as root, the four harness
 launchers add Chromium `--no-sandbox` only in that root-only test environment. Production
@@ -351,7 +353,7 @@ Required success markers:
   `qwen3.5-0.8b-generic-cpu:3` / `CPUExecutionProvider`, real `ode-slide.png` bytes, structured
   visible text/relation/uncertainty note, and ODE/equation recognition.
 - `ASSISTANT_CHAT_INTEGRATION_OK`: exact local model and a substantive one-sentence answer to
-  `What is ODE? Answer in one sentence.`, using the exact CPU VLM slot.
+  `What is ODE? Answer in one sentence.`, using the prepared shared CPU slot.
 - `CONCURRENT_ASSISTANT_CHAIN_OK`: Nemotron partials continue while chat is submitted, Whisper
   remains authoritative, Qwen receives the exact Whisper final, only one manager exists, chat
   returns independently, and owned temporary WAV residue remains zero.
@@ -362,11 +364,13 @@ Measured target results:
   `qwen3.5-0.8b-generic-cpu:3`;
 - vision returned all three bounded sections from the real 1280×720 ODE fixture with
   `finishReason: stop`;
-- concurrent chat completed in 8,504 ms while 92 Nemotron partials continued, Whisper remained
-  authoritative, Qwen summarized its exact final, and temporary WAV residue stayed zero.
+- concurrent chat completed in 1,578 ms while 92 Nemotron partials continued, Whisper remained
+  authoritative, shared Qwen summarized its exact final in 2,625 ms, and temporary WAV residue
+  stayed zero.
 
-The earlier collision-induced `Device is lost` run is not evidence. The assistant target is pinned
-to the exact CPU VLM; alternate model/device/provider overrides and silent fallback are rejected.
+The earlier collision-induced `Device is lost` run is not evidence. The shared summary/assistant
+target is pinned to the exact CPU VLM; alternate model/provider overrides and silent fallback are
+rejected.
 
 ## Local inference boundary
 
@@ -387,11 +391,26 @@ It does not prove physical isolation of the PC. Model/EP preparation can downloa
 and Foundry Local logs state that nonessential telemetry is disabled while process information may
 still initialize.
 
+The process-local offline guard switched to fail-closed acquisition immediately after successful
+Prepare, then ran summary, Ask, ODE image analysis, and concurrent summary+Ask:
+
+| Offline shared-model evidence | Measured result |
+|---|---:|
+| Prepare | 11,840 ms |
+| RSS after 3/3 Prepare | 2.06 GiB |
+| Peak process RSS during full gate | 14.82 GiB |
+| Summary wall / native generation | 2,914 / 2,725 ms |
+| Text Ask | 1,396 ms |
+| ODE image analysis | 6,970 ms |
+| Concurrent summary + Ask | 3,351 ms |
+| Post-Prepare catalog/provider acquisition attempts | 0 |
+
 ## Manual release gates
 
-- [ ] Disconnect the PC from network after the three core models, CPU vision model, and summary
-      WebGPU EP are cached.
-- [ ] Launch the built app.
+- [ ] Launch the built app while online.
+- [ ] Select Prepare and wait for Whisper, Nemotron, and Shared Qwen to show READY plus the visible
+      **Enhanced offline ready · 3/3 models** label.
+- [ ] Disconnect the PC from network only after that 3/3 gate.
 - [ ] Record the ODE segment with live captions.
 - [ ] Stop and confirm Whisper final.
 - [ ] Generate the Qwen summary; inspect readable display notation and the exact raw Qwen Developer
@@ -404,6 +423,7 @@ still initialize.
 - [ ] Switch to Clinic mode and confirm the visible non-diagnostic/clinician-led safety statement.
 - [ ] Reset and repeat with `fixtures\ode-lesson.wav`.
 - [ ] Confirm recording and WAV import use the same formatted summary behavior.
+- [ ] Confirm Reset clears transcript/chat/image state while all three model cards remain READY.
 - [ ] Confirm no owned temporary WAV remains.
 
 Until that checklist is completed, describe the prototype as **local cached inference with no app
@@ -414,26 +434,25 @@ cloud endpoint**, not as a completed physically offline rehearsal.
 - 30-second bounded capture only.
 - English only.
 - PCM16LE/16 kHz/mono WAV import only.
-- The Qwen 0.6B model can format equations imperfectly. Known notation artifacts are repaired only
-  in explicit or strongly signaled math spans for display; ambiguous notation and literal commands
-  remain unchanged, raw text remains trace evidence, and the editable summary is not a citation
-  source.
+- The shared Qwen 0.8B model may ignore requested visual structure even when it preserves facts.
+  Raw text remains trace evidence; deterministic presentation changes only safe math notation and
+  structure/whitespace, falls back rather than dropping content, and the editable summary is not a
+  citation source.
 - The Qwen 0.8B CPU VLM has a known long-context repetition failure class. Image analysis mitigates
   it by retaining the complete transcript/version only in the stale-state fingerprint while sending
   a deterministic 160-character sentence-bounded topic excerpt, system safety once, early stopping,
   and a 180-token output reserve. The reproduced 13.6 KiB, 1280×720 fixture was not size-bound;
   inference resizing for genuinely large photos remains separate future hardening.
 - No transcript/summary export or persistence.
-- Optional assistant first-use latency includes exact CPU VLM catalog/provider/load time; the UI
-  now distinguishes that wait from active Thinking/Analyzing.
+- Prepare owns the exact CPU VLM catalog/download/load wait. Post-Prepare assistant actions reuse
+  the loaded shared slot and distinguish prepared-offline startup from active Thinking/Analyzing.
 
 ## Rollback
 
 - Stable `main` remains the rollback branch; this work must be deployed only from
   `feature/multimodal-classroom-chat`.
-- To disable optional behavior without changing builds, do not open the right-side image/chat
-  panel. The CPU assistant slot is lazy and separate from the summary slot; the core chain remains
-  usable.
+- To avoid assistant behavior without changing builds, do not open the right-side image/chat panel.
+  The shared CPU slot remains required for summary and is prepared with the other two models.
 - To roll back the feature build, redeploy the previously validated `main` SHA
   `41e9d365dc6b4a20a17c511b6ea7ccc5ee1f8a38` or a newer approved main SHA.
 - A failed optional cleanup is not a reason to discard a valid Whisper transcript. Close/restart

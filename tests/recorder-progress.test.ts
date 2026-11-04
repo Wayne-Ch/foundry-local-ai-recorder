@@ -20,7 +20,7 @@ describe("recorder progress presentation", () => {
     [{ kind: "saving_transcript" }, "Prepare local models", "Saving transcript"],
     [{ kind: "summary_saving_transcript" }, "Prepare local models", "Saving transcript"],
     [{ kind: "summary_generating" }, "Prepare local models", "Generating summary"],
-    [{ kind: "resetting" }, "Prepare local models", "Cancelling and unloading"],
+    [{ kind: "resetting" }, "Prepare local models", "Clearing session data"],
   ] satisfies ReadonlyArray<readonly [RecorderOperationState, string, string]>)(
     "maps %o to visible controls",
     (state, prepareLabel, indicatorLabel) => {
@@ -45,7 +45,7 @@ describe("recorder progress presentation", () => {
       finalTranscriptBusy: false,
     });
     expect(recorderProgressPresentation({ kind: "resetting" })).toMatchObject({
-      modelRailBusy: true,
+      modelRailBusy: false,
       liveDraftBusy: true,
       finalTranscriptBusy: true,
       summaryBusy: true,

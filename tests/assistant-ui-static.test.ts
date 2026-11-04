@@ -22,6 +22,10 @@ describe("assistant UI and Electron isolation", () => {
     expect(source).toContain("document.createTextNode(value)");
     expect(source).toContain("renderAssistantChatRows(state)");
     expect(source).toContain("renderImageAnalyzeButton(elements.imageAnalyze, imageProgress)");
+    expect(source).toContain("<strong>Shared Qwen</strong>");
+    expect(source).toContain("Enhanced offline ready · 3/3 models");
+    expect(source).toContain("Shared local summary and assistant model is ready.");
+    expect(source).not.toContain("qwen3-0.6b-generic-gpu:2");
     expect(source).toContain('setRecorderOperation({ kind: "transcribing" })');
     expect(source).toContain('setRecorderOperation({ kind: "summary_generating" })');
     expect(source).toContain('setRecorderOperation({ kind: "resetting" })');
@@ -32,7 +36,7 @@ describe("assistant UI and Electron isolation", () => {
     expect(recorderProgress).toContain('elements.finalTranscript.setAttribute("aria-busy"');
     expect(recorderProgress).toContain('elements.summaryOutput.setAttribute("aria-busy"');
     expect(progress).toContain('"Thinking locally…"');
-    expect(progress).toContain('"Loading the local assistant model…"');
+    expect(progress).toContain('"Loading the prepared cached shared model locally…"');
     expect(progress).toContain('"Waiting locally…"');
     expect(progress).toContain('"Analyzing…"');
     expect(controlProgress).toContain('"Queuing…"');
@@ -45,7 +49,7 @@ describe("assistant UI and Electron isolation", () => {
     expect(recorderProgress).toContain('"Recording · waiting for caption"');
     expect(recorderProgress).toContain('"Transcribing with Whisper"');
     expect(recorderProgress).toContain('"Generating summary"');
-    expect(recorderProgress).toContain('"Cancelling and unloading"');
+    expect(recorderProgress).toContain('"Clearing session data"');
     expect(styles).toContain("@media (prefers-reduced-motion: reduce)");
     expect(source).not.toContain("assistantHistory.innerHTML");
     expect(source).not.toContain("imageAnalysis.innerHTML");

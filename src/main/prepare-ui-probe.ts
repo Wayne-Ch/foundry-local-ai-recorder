@@ -95,6 +95,7 @@ export async function runPrepareUiProbe(
       !sawBusy ||
       !sawModelBusy ||
       result.finalStatusClass !== "status-message status-success" ||
+      !result.finalStatus.includes("Enhanced offline ready · 3/3 models") ||
       result.finalModelStates.some((state) => state !== "READY") ||
       result.finalModelDetails.some((detail) => !detail)
     ) {
@@ -110,6 +111,40 @@ export async function runPrepareUiProbe(
       await mkdir(path.dirname(capturePath), { recursive: true });
       await writeFile(capturePath, image.toPNG());
     }
+    const resetResult = (await webContents.executeJavaScript(
+      `(() => {
+        const reset = document.querySelector("#reset-button");
+        if (!(reset instanceof HTMLButtonElement)) {
+          throw new Error("Reset UI probe element is unavailable.");
+        }
+        reset.click();
+        return new Promise((resolve, reject) => {
+          const startedAt = performance.now();
+          let sawBusy = reset.getAttribute("aria-busy") === "true";
+          const timer = setInterval(() => {
+            sawBusy ||= reset.getAttribute("aria-busy") === "true";
+            if (sawBusy && reset.getAttribute("aria-busy") === "false") {
+              clearInterval(timer);
+              resolve({
+                sawBusy,
+                modelStates: ["whisper", "summary", "nemotron"].map(
+                  (role) => document.querySelector("#" + role + "-state")?.textContent?.trim() ?? "",
+                ),
+              });
+              return;
+            }
+            if (performance.now() - startedAt > 60000) {
+              clearInterval(timer);
+              reject(new Error("Reset UI probe timed out."));
+            }
+          }, 50);
+        });
+      })()`,
+      true,
+    )) as PrepareUiResetResult;
+    if (!resetResult.sawBusy || resetResult.modelStates.some((state) => state !== "READY")) {
+      throw new Error(`Reset did not preserve prepared model readiness: ${JSON.stringify(resetResult)}`);
+    }
     console.log(
       `PREPARE_UI_PROBE_OK ${JSON.stringify({
         elapsedMs: result.elapsedMs,
@@ -121,6 +156,7 @@ export async function runPrepareUiProbe(
         ],
         sawBusy,
         sawModelBusy,
+        resetPreservedModelStates: resetResult.modelStates,
       })}`,
     );
   } catch (error) {
@@ -158,4 +194,9 @@ interface PrepareUiProbeResult {
   readonly finalStatusClass: string;
   readonly finalModelStates: readonly string[];
   readonly finalModelDetails: readonly string[];
+}
+
+interface PrepareUiResetResult {
+  readonly sawBusy: boolean;
+  readonly modelStates: readonly string[];
 }

@@ -80,7 +80,7 @@ class ThrowingCancelRuntime implements AssistantRuntime {
   assistantStatus: AssistantRuntimeStatus = {
     active: false,
     draining: false,
-    visionModelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+    sharedModelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
     cleanupDiagnostic: null,
   };
   readonly dispose = vi.fn();
@@ -117,7 +117,7 @@ class ThrowingCancelRuntime implements AssistantRuntime {
       {} as IModel,
       {
         modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-        source: "vision_slot",
+        source: "shared_summary_assistant_slot",
         task: "vision-language-chat",
         runtime: {
           deviceType: DeviceType.CPU,

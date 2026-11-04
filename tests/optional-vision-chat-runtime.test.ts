@@ -430,7 +430,7 @@ function fakeSession(
 function visionIdentity() {
   return {
     modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-    source: "vision_slot" as const,
+    source: "shared_summary_assistant_slot" as const,
     task: "vision-language-chat",
     runtime: { deviceType: DeviceType.CPU, executionProvider: CPU_PROVIDER },
     inputModalities: ["text", "image"],

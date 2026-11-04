@@ -733,8 +733,9 @@ describe("audio recorder state and draft behavior", () => {
     const preload = await readFile(path.resolve("src/preload/preload.ts"), "utf8");
     expect(renderer).toContain("Live draft <span>Nemotron</span>");
     expect(renderer).toContain("Final transcript <span>Whisper</span>");
-    expect(renderer).toContain("Session summary <span>Qwen</span>");
-    expect(renderer).toContain("Whisper-only fallback is ready");
+    expect(renderer).toContain("Session summary <span>Shared Qwen</span>");
+    expect(renderer).toContain("/3 local models are ready");
+    expect(renderer).toContain("Enhanced offline ready · 3/3 models");
     expect(renderer).toContain("Endpoint guard pending");
     expect(renderer).toContain("locked temporary audio");
     expect(recorderProgress).toContain("Cancel / reset");

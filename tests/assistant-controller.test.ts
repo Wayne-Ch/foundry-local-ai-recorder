@@ -1224,7 +1224,7 @@ class FakeRuntime implements AssistantRuntime {
   assistantStatus: AssistantRuntimeStatus = {
     active: false,
     draining: false,
-    visionModelId: null,
+    sharedModelId: null,
     cleanupDiagnostic: null,
   };
   readonly inputs: VisionChatTurnInput[] = [];
@@ -1284,7 +1284,7 @@ class FakeRuntime implements AssistantRuntime {
         text: answer,
         model: {
           modelId: "qwen3.5-0.8b-generic-cpu:3",
-          source: "vision_slot",
+          source: "shared_summary_assistant_slot",
           task: "vision-language-chat",
           runtime: {
             deviceType: DeviceType.CPU,

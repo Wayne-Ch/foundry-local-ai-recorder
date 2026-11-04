@@ -26,6 +26,7 @@
     "test:vision-integration": "tsx scripts/run-vision-integration.ts",
     "test:assistant-chat-integration": "tsx scripts/run-assistant-chat-integration.ts",
     "test:concurrent-assistant-chain-integration": "tsx scripts/run-concurrent-assistant-chain-integration.ts",
+    "test:offline-shared-integration": "tsx scripts/run-offline-shared-model-integration.ts",
     "probe:microphone-permission": "npm run build && node scripts/probe-electron-microphone.mjs",
     "probe:stream-owner": "npm run build && node scripts/probe-electron-stream-owner.mjs",
     "probe:assistant-ui": "electron scripts/assistant-ui-probe",

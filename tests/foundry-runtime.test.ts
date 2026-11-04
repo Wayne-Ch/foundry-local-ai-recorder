@@ -130,7 +130,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("keeps model cards truthful through download, provider registration, loading, and ready", async () => {
+  it("keeps the shared model card truthful through download, provider check, loading, and ready", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const summary = models.get(SUMMARY_MODEL_ID);
@@ -139,18 +139,6 @@ describe("FoundryRecorderRuntime", () => {
     }
     summary.cached = false;
     const manager = new FakeManager(models);
-    vi.spyOn(manager, "discoverEps").mockReturnValue([
-      { name: SUMMARY_EXECUTION_PROVIDER, isRegistered: false } as never,
-    ]);
-    vi.spyOn(manager, "downloadAndRegisterEps").mockImplementation(async (_names, onProgress) => {
-      onProgress(SUMMARY_EXECUTION_PROVIDER, 50);
-      return {
-        success: true,
-        status: "registered",
-        registeredEps: [SUMMARY_EXECUTION_PROVIDER],
-        failedEps: [],
-      };
-    });
     const progress: Array<{
       readonly stage: string;
       readonly status: string;
@@ -191,12 +179,7 @@ describe("FoundryRecorderRuntime", () => {
       cached: true,
       loaded: false,
     });
-    expect(progress.find(({ stage }) => stage === "registering_provider")).toMatchObject({
-      status: "registering_provider",
-      detail: expect.stringContaining("Registering"),
-      cached: true,
-      loaded: false,
-    });
+    expect(progress.find(({ stage }) => stage === "registering_provider")).toBeUndefined();
     expect(progress.find(({ stage }) => stage === "loading_model")).toMatchObject({
       status: "loading",
       detail: expect.stringContaining("Loading"),
@@ -209,6 +192,87 @@ describe("FoundryRecorderRuntime", () => {
       cached: true,
       loaded: true,
     });
+    await runtime.shutdown();
+  });
+
+  it("prepares Whisper, Nemotron, and shared Qwen even when live captions are toggled off", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const readyRoles: string[] = [];
+    const runtime = createRuntime(root, [manager]);
+
+    const prepared = await runtime.prepare(false, (event) => {
+      if (event.stage === "model_ready" && event.role !== undefined) {
+        readyRoles.push(event.role);
+      }
+    });
+
+    expect(readyRoles).toEqual(["whisper", "nemotron", "summary"]);
+    expect(prepared.readiness).toMatchObject({
+      whisper: { status: "ready", loaded: true },
+      nemotron: { status: "ready", loaded: true },
+      summary: { status: "ready", loaded: true },
+    });
+    expect(prepared.liveCaptionsAvailable).toBe(true);
+    await runtime.shutdown();
+  });
+
+  it("keeps recorder and shared Qwen ready when optional Nemotron preparation fails", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const nemotron = models.get(NEMOTRON_AUDIO_MODEL_ID);
+    if (nemotron === undefined) {
+      throw new Error("Expected fake Nemotron model.");
+    }
+    vi.spyOn(nemotron, "load").mockRejectedValue(new Error("Nemotron load failed"));
+    const runtime = createRuntime(root, [new FakeManager(models)]);
+
+    const prepared = await runtime.prepare(false);
+
+    expect(prepared.liveCaptionsAvailable).toBe(false);
+    expect(prepared.liveCaptionsFailure).not.toBeNull();
+    expect(prepared.readiness).toMatchObject({
+      whisper: { status: "ready", loaded: true },
+      nemotron: { status: "error", loaded: false },
+      summary: { status: "ready", loaded: true },
+    });
+    await runtime.shutdown();
+  });
+
+  it("performs no catalog lookup or model download after Prepare for summary or assistant work", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const manager = new FakeManager(models);
+    const downloads = [...models.values()].map((model) => vi.spyOn(model, "download"));
+    const runtime = createRuntime(root, [manager], {
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async (request) => {
+            const text = Array.from({ length: request.itemCount }, (_value, index) => {
+              const item = request.getItem(index);
+              return item.type === "message" && typeof item.content === "string" ? item.content : "";
+            }).join("\n");
+            return textResponse(
+              text.includes("FINAL TRANSCRIPT:") ? "Exact factual summary." : "One sentence answer.",
+            );
+          },
+        }),
+    });
+    await runtime.prepare(false);
+    const catalogCalls = vi.mocked(manager.catalog.getModelVariant).mock.calls.length;
+    const downloadCalls = downloads.map(({ mock }) => mock.calls.length);
+
+    await expect(runtime.summarize("Exact transcript.")).resolves.toMatchObject({
+      text: "Exact factual summary.",
+    });
+    await expect(runtime.runAssistantTurn({ prompt: "Question." })).resolves.toMatchObject({
+      text: "One sentence answer.",
+    });
+
+    expect(vi.mocked(manager.catalog.getModelVariant)).toHaveBeenCalledTimes(catalogCalls);
+    expect(downloads.map(({ mock }) => mock.calls.length)).toEqual(downloadCalls);
+    expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
     await runtime.shutdown();
   });
 
@@ -233,30 +297,6 @@ describe("FoundryRecorderRuntime", () => {
         }
         model.cached = false;
         vi.spyOn(model, "download").mockRejectedValue(new Error("download failed"));
-      },
-    },
-    {
-      name: "provider discovery",
-      role: "summary" as const,
-      phase: "provider_discovery" as const,
-      arrange(manager: FakeManager) {
-        vi.spyOn(manager, "discoverEps").mockReturnValue([]);
-      },
-    },
-    {
-      name: "provider registration",
-      role: "summary" as const,
-      phase: "provider_registration" as const,
-      arrange(manager: FakeManager) {
-        vi.spyOn(manager, "discoverEps").mockReturnValue([
-          { name: SUMMARY_EXECUTION_PROVIDER, isRegistered: false } as never,
-        ]);
-        vi.spyOn(manager, "downloadAndRegisterEps").mockResolvedValue({
-          success: false,
-          status: "failed",
-          registeredEps: [],
-          failedEps: [SUMMARY_EXECUTION_PROVIDER],
-        });
       },
     },
     {
@@ -1082,7 +1122,7 @@ describe("FoundryRecorderRuntime", () => {
       order.indexOf("whisper-request-settled"),
     );
     expect(order.indexOf("temp-remove")).toBeGreaterThan(order.indexOf("whisper-session-dispose"));
-    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(3);
     expect(manager.shutdown).toHaveBeenCalledOnce();
     expect(manager.dispose).toHaveBeenCalledOnce();
     expect(store.activeCount).toBe(0);
@@ -1208,7 +1248,7 @@ describe("FoundryRecorderRuntime", () => {
     expect(order.findIndex((entry) => entry.startsWith("model-unload:"))).toBeGreaterThan(
       order.indexOf("qwen-session-dispose"),
     );
-    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(3);
     expect(manager.shutdown).toHaveBeenCalledOnce();
     expect(manager.dispose).toHaveBeenCalledOnce();
   });
@@ -1389,7 +1429,7 @@ describe("FoundryRecorderRuntime", () => {
 
     expect(dispose).toHaveBeenCalledOnce();
     expect(cleanupAll).toHaveBeenCalledOnce();
-    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(3);
     expect(manager.shutdown).toHaveBeenCalledOnce();
     expect(manager.dispose).toHaveBeenCalledOnce();
   });
@@ -1423,7 +1463,7 @@ describe("FoundryRecorderRuntime", () => {
     expect(upgradedShutdown).toBe(firstReset);
     await expect(firstReset).rejects.toThrow("temporary audio cleanup failed");
     expect(cleanupAll).toHaveBeenCalledOnce();
-    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(3);
     expect(manager.shutdown).toHaveBeenCalledOnce();
     expect(manager.dispose).toHaveBeenCalledOnce();
     expect(runtime.readiness.cleanup).toMatchObject({
@@ -1437,7 +1477,7 @@ describe("FoundryRecorderRuntime", () => {
     await retry;
 
     expect(cleanupAll).toHaveBeenCalledTimes(2);
-    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(2);
+    expect(order.filter((entry) => entry.startsWith("model-unload:"))).toHaveLength(3);
     expect(manager.shutdown).toHaveBeenCalledOnce();
     expect(manager.dispose).toHaveBeenCalledOnce();
     expect(runtime.readiness.cleanup).toMatchObject({ state: "none", required: false });
@@ -1532,7 +1572,7 @@ describe("FoundryRecorderRuntime", () => {
     expect(sessionModels).toEqual([QWEN_VISION_CHAT_CANDIDATE_MODEL_ID]);
     expect(result.model).toMatchObject({
       modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-      source: "vision_slot",
+      source: "shared_summary_assistant_slot",
       task: "vision-language-chat",
       runtime: {
         deviceType: DeviceType.CPU,
@@ -1544,7 +1584,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("loads the exact CPU vision model in a separate slot on the shared manager", async () => {
+  it("reuses the prepared shared Qwen slot for image work and preserves it across reset", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const manager = new FakeManager(models);
@@ -1561,6 +1601,7 @@ describe("FoundryRecorderRuntime", () => {
     });
 
     await runtime.prepare(false);
+    const catalogLookupsAfterPrepare = vi.mocked(manager.catalog.getModelVariant).mock.calls.length;
     const result = await runtime.runAssistantTurn({
       systemPrompt: "Classroom safety.",
       prompt: "Analyze this image.",
@@ -1571,7 +1612,7 @@ describe("FoundryRecorderRuntime", () => {
     expect(sessionModels).toEqual([QWEN_VISION_CHAT_CANDIDATE_MODEL_ID]);
     expect(result.model).toMatchObject({
       modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-      source: "vision_slot",
+      source: "shared_summary_assistant_slot",
       runtime: {
         deviceType: DeviceType.CPU,
         executionProvider: AUDIO_EXECUTION_PROVIDER,
@@ -1579,8 +1620,12 @@ describe("FoundryRecorderRuntime", () => {
     });
     expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
     expect(models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID)?.loaded).toBe(true);
+    expect(vi.mocked(manager.catalog.getModelVariant)).toHaveBeenCalledTimes(catalogLookupsAfterPrepare);
     await runtime.resetAssistant();
-    expect(models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID)?.loaded).toBe(false);
+    expect(models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID)?.loaded).toBe(true);
+    expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
+    await runtime.reset();
+    expect(runtime.readiness.summary).toMatchObject({ status: "ready", loaded: true });
     expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
     await runtime.shutdown();
   });
@@ -1662,7 +1707,10 @@ describe("FoundryRecorderRuntime", () => {
 
     chatResponse.resolve(textResponse("An ODE relates a function to ordinary derivatives."));
     await expect(chat).resolves.toMatchObject({
-      model: { modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID, source: "vision_slot" },
+      model: {
+        modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
+        source: "shared_summary_assistant_slot",
+      },
     });
     await expect(
       runtime.finishLiveStream({
@@ -1738,16 +1786,28 @@ describe("FoundryRecorderRuntime", () => {
     const runtime = createRuntime(root, [manager], {
       models,
       settlementTimeoutMs: 10,
-      createChatSession: (model) =>
-        model.id === QWEN_VISION_CHAT_CANDIDATE_MODEL_ID
-          ? fakeChatSession({
-              processRequest: async () => {
-                assistantStarted.resolve();
-                return assistantResponse.promise;
-              },
-              dispose: assistantDispose,
-            })
-          : fakeChatSession({ processRequest: async () => textResponse("Core summary completed.") }),
+      createChatSession: () => {
+        let assistantSession = false;
+        return fakeChatSession({
+          processRequest: async (request) => {
+            const requestText = Array.from({ length: request.itemCount }, (_value, index) => {
+              const item = request.getItem(index);
+              return item.type === "message" && typeof item.content === "string" ? item.content : "";
+            }).join("\n");
+            if (requestText.includes("FINAL TRANSCRIPT:")) {
+              return textResponse("Core summary completed.");
+            }
+            assistantSession = true;
+            assistantStarted.resolve();
+            return assistantResponse.promise;
+          },
+          dispose: () => {
+            if (assistantSession) {
+              assistantDispose();
+            }
+          },
+        });
+      },
     });
     await runtime.prepare(false);
 
@@ -1893,9 +1953,7 @@ class FakeModel implements IModel {
     } = {},
   ) {
     this.#order = order;
-    const deviceType =
-      metadata.deviceType ??
-      (executionProvider === SUMMARY_EXECUTION_PROVIDER ? DeviceType.GPU : DeviceType.CPU);
+    const deviceType = metadata.deviceType ?? DeviceType.CPU;
     this.info = {
       id,
       name: alias,
@@ -2024,10 +2082,6 @@ function createModels(order?: string[]): ReadonlyMap<string, FakeModel> {
         AUDIO_EXECUTION_PROVIDER,
         order,
       ),
-    ],
-    [
-      SUMMARY_MODEL_ID,
-      new FakeModel(SUMMARY_MODEL_ID, "qwen", "chat-completion", SUMMARY_EXECUTION_PROVIDER, order),
     ],
     [
       QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,

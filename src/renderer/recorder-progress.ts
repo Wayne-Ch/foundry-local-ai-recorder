@@ -154,8 +154,7 @@ export function recorderProgressPresentation(state: RecorderOperationState): Rec
       return {
         ...IDLE_PRESENTATION,
         resetLabel: "Cancelling / resetting…",
-        indicatorLabel: "Cancelling and unloading",
-        modelRailBusy: true,
+        indicatorLabel: "Clearing session data",
         liveDraftBusy: true,
         finalTranscriptBusy: true,
         summaryBusy: true,

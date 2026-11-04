@@ -50,7 +50,6 @@ import {
   toSafeDiagnostic,
 } from "../shared/safe-diagnostic";
 import { SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../summary/summary-prompt";
-import { type AssistantRuntimeTarget, resolveAssistantRuntimeTarget } from "./assistant-runtime-config";
 import { ModelSlot } from "./model-slot";
 import { assertFoundryNativeRuntimeReady, foundryNativeRuntimeError } from "./native-runtime";
 import {
@@ -163,7 +162,7 @@ interface ActiveAssistantOperation {
   readonly resolveSettled: () => void;
 }
 
-interface PreparedVisionSlot {
+interface PreparedSharedModel {
   readonly model: IModel;
   readonly identity: PreparedAssistantModel;
 }
@@ -192,7 +191,7 @@ export interface PrepareRuntimeResult {
 export interface AssistantRuntimeStatus {
   readonly active: boolean;
   readonly draining: boolean;
-  readonly visionModelId: string | null;
+  readonly sharedModelId: string | null;
   readonly cleanupDiagnostic: SafeDiagnostic | null;
 }
 
@@ -211,7 +210,6 @@ const DEFAULT_SETTLEMENT_TIMEOUT_MS = 10_000;
 
 export class FoundryRecorderRuntime {
   readonly #targets: RuntimeTargets;
-  readonly #assistantTarget: AssistantRuntimeTarget;
   readonly #resolvePaths: () => Promise<RecorderPaths>;
   readonly #createManager: (config: FoundryLocalConfig) => ManagerHandle;
   readonly #createChatSession: (model: IModel) => ChatSessionHandle;
@@ -222,7 +220,6 @@ export class FoundryRecorderRuntime {
     nemotron: new ModelSlot<IModel>(),
     summary: new ModelSlot<IModel>(),
   };
-  readonly #visionSlot = new ModelSlot<IModel>();
   #manager: ManagerContext | null = null;
   #quarantinedManager: QuarantinedManager | null = null;
   #managerEpoch = 0;
@@ -247,7 +244,6 @@ export class FoundryRecorderRuntime {
 
   constructor(options: FoundryRecorderRuntimeOptions = {}) {
     this.#targets = resolveRuntimeTargets(options.environment);
-    this.#assistantTarget = resolveAssistantRuntimeTarget(options.environment);
     this.#resolvePaths = options.resolvePaths ?? resolveRecorderPaths;
     this.#createManager = options.createManager ?? ((config) => FoundryLocalManager.create(config));
     this.#createChatSession = options.createChatSession ?? ((model) => new ChatSession(model));
@@ -276,7 +272,7 @@ export class FoundryRecorderRuntime {
     return {
       active: active !== null && !active.controller.signal.aborted,
       draining: this.#assistantCleanupPromise !== null || active?.controller.signal.aborted === true,
-      visionModelId: this.#visionSlot.active?.id ?? null,
+      sharedModelId: this.#slots.summary.active?.id ?? null,
       cleanupDiagnostic: this.#assistantCleanupDiagnostic,
     };
   }
@@ -309,7 +305,6 @@ export class FoundryRecorderRuntime {
       if (activeSettlement !== null) {
         await activeSettlement;
       }
-      await this.#visionSlot.clear();
     })().finally(() => {
       if (this.#assistantCleanupPromise === cleanup) {
         this.#assistantCleanupPromise = null;
@@ -338,7 +333,8 @@ export class FoundryRecorderRuntime {
     this.#assertAvailable();
     const kind = (input.images?.length ?? 0) > 0 ? "vision" : "text";
     return this.#runAssistantOperation(kind, manager, options.signal, async (operationSignal) => {
-      const prepared = await this.#prepareVisionModel(manager, operationSignal, options.onProgress);
+      throwIfSignalAborted(operationSignal);
+      const prepared = this.#requirePreparedAssistantModel(manager);
       options.onProgress?.("running_inference");
       return processAssistantTurn(prepared.model, prepared.identity, input, {
         signal: operationSignal,
@@ -878,7 +874,7 @@ export class FoundryRecorderRuntime {
   }
 
   async #prepare(
-    enableLiveCaptions: boolean,
+    _enableLiveCaptions: boolean,
     generation: number,
     onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<PrepareRuntimeResult> {
@@ -890,15 +886,13 @@ export class FoundryRecorderRuntime {
     await this.initialize(onProgress);
     this.#assertCurrent(generation);
     await this.#prepareModel("whisper", generation, onProgress);
-    await this.#prepareModel("summary", generation, onProgress);
     let liveCaptionsFailure: SafeDiagnostic | null = null;
-    if (enableLiveCaptions) {
-      try {
-        await this.#prepareModel("nemotron", generation, onProgress);
-      } catch (error) {
-        liveCaptionsFailure = toSafeDiagnostic(error, "OPTIONAL_LIVE_FAILED");
-      }
+    try {
+      await this.#prepareModel("nemotron", generation, onProgress);
+    } catch (error) {
+      liveCaptionsFailure = toSafeDiagnostic(error, "OPTIONAL_LIVE_FAILED");
     }
+    await this.#prepareModel("summary", generation, onProgress);
     this.#assertCurrent(generation);
     const manager = this.#requireManager();
     return {
@@ -1133,8 +1127,14 @@ export class FoundryRecorderRuntime {
     if ((role === "whisper" || role === "nemotron") && task !== "automatic-speech-recognition") {
       throw new Error(`${model.id} is not an automatic-speech-recognition model.`);
     }
-    if (role === "summary" && !["chat-completion", "coding"].includes(task)) {
-      throw new Error(`${model.id} does not expose a supported text generation task.`);
+    if (role === "summary") {
+      const compatibility = inspectVisionChatModel(model, target.modelId, {
+        deviceType: "CPU",
+        executionProvider: target.executionProvider,
+      });
+      if (!compatibility.compatible) {
+        throw new Error(describeVisionCompatibility(target.modelId, compatibility.issues));
+      }
     }
   }
 
@@ -1309,121 +1309,28 @@ export class FoundryRecorderRuntime {
     }
   }
 
-  async #prepareVisionModel(
-    manager: ManagerContext,
-    signal: AbortSignal,
-    onProgress?: (phase: AssistantOperationPhase) => void,
-  ): Promise<PreparedVisionSlot> {
-    const target = this.#assistantTarget;
-    const current = this.#visionSlot.activeFor(manager);
-    let candidate: IModel | null = null;
-    try {
-      if (
-        current !== null &&
-        current.id === target.modelId &&
-        executionProvider(current) === target.executionProvider &&
-        (await current.isLoaded())
-      ) {
-        const compatibility = inspectVisionChatModel(current, target.modelId, {
-          deviceType: target.deviceType,
-          executionProvider: target.executionProvider,
-        });
-        if (!compatibility.compatible) {
-          throw new Error(describeVisionCompatibility(target.modelId, compatibility.issues));
-        }
-        return {
-          model: current,
-          identity: assistantModelIdentity(
-            "vision_slot",
-            current,
-            compatibility.inputModalities,
-            compatibility.outputModalities,
-          ),
-        };
-      }
-
-      onProgress?.("checking_catalog");
-      candidate = await manager.handle.catalog.getModelVariant(target.modelId);
-      throwIfSignalAborted(signal);
-      this.#assertAssistantCurrent(manager.epoch);
-      const compatibility = inspectVisionChatModel(candidate, target.modelId, {
-        deviceType: target.deviceType,
-        executionProvider: target.executionProvider,
-      });
-      if (!compatibility.compatible) {
-        throw new Error(describeVisionCompatibility(target.modelId, compatibility.issues));
-      }
-      if (!candidate.isCached) {
-        onProgress?.("downloading_model");
-        await candidate.download(signal);
-        throwIfSignalAborted(signal);
-        if (!candidate.isCached) {
-          throw new Error(`Vision model download completed without caching ${candidate.id}.`);
-        }
-      }
-      onProgress?.("checking_provider");
-      await this.#ensureAssistantProvider(manager.handle, onProgress);
-      throwIfSignalAborted(signal);
-      this.#assertAssistantCurrent(manager.epoch);
-      onProgress?.("loading_model");
-      await this.#visionSlot.activate(candidate, manager);
-      throwIfSignalAborted(signal);
-      this.#assertAssistantCurrent(manager.epoch);
-      return {
-        model: candidate,
-        identity: assistantModelIdentity(
-          "vision_slot",
-          candidate,
-          compatibility.inputModalities,
-          compatibility.outputModalities,
-        ),
-      };
-    } catch (error) {
-      const cleanupErrors: unknown[] = [];
-      if (candidate !== null && candidate !== current) {
-        try {
-          if (this.#visionSlot.active === candidate) {
-            await this.#visionSlot.clear();
-          } else if (await candidate.isLoaded()) {
-            await candidate.unload();
-          }
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-      }
-      throw combineErrors(
-        error,
-        cleanupErrors,
-        "Vision model preparation failed and optional cleanup also failed.",
-      );
+  #requirePreparedAssistantModel(manager: ManagerContext): PreparedSharedModel {
+    const target = this.#targets.summary;
+    const model = this.#slots.summary.activeFor(manager);
+    if (model === null) {
+      throw new Error("Prepare local models before using the shared summary and assistant model.");
     }
-  }
-
-  async #ensureAssistantProvider(
-    manager: ManagerHandle,
-    onProgress?: (phase: AssistantOperationPhase) => void,
-  ): Promise<void> {
-    if (this.#assistantTarget.executionProvider === AUDIO_EXECUTION_PROVIDER) {
-      return;
+    const compatibility = inspectVisionChatModel(model, target.modelId, {
+      deviceType: "CPU",
+      executionProvider: target.executionProvider,
+    });
+    if (!compatibility.compatible) {
+      throw new Error(describeVisionCompatibility(target.modelId, compatibility.issues));
     }
-    const provider = manager
-      .discoverEps()
-      .find(
-        (candidate) => canonicalExecutionProvider(candidate.name) === this.#assistantTarget.executionProvider,
-      );
-    if (provider === undefined) {
-      throw new Error(
-        `Vision execution provider ${this.#assistantTarget.executionProvider} is not discoverable.`,
-      );
-    }
-    if (provider.isRegistered) {
-      return;
-    }
-    onProgress?.("registering_provider");
-    const result = await manager.downloadAndRegisterEps([provider.name], () => {});
-    if (!result.success || result.failedEps.length > 0) {
-      throw new Error(`Vision execution provider registration failed: ${result.status}`);
-    }
+    return {
+      model,
+      identity: assistantModelIdentity(
+        "shared_summary_assistant_slot",
+        model,
+        compatibility.inputModalities,
+        compatibility.outputModalities,
+      ),
+    };
   }
 
   async #drainAssistantResources(): Promise<void> {
@@ -1899,7 +1806,6 @@ export class FoundryRecorderRuntime {
       this.#slots.nemotron.clear(),
       this.#slots.whisper.clear(),
       this.#slots.summary.clear(),
-      this.#visionSlot.clear(),
     ]);
     for (const outcome of slotOutcomes) {
       if (outcome.status === "rejected") {
@@ -1916,8 +1822,7 @@ export class FoundryRecorderRuntime {
     return (
       this.#slots.nemotron.active === null &&
       this.#slots.whisper.active === null &&
-      this.#slots.summary.active === null &&
-      this.#visionSlot.active === null
+      this.#slots.summary.active === null
     );
   }
 

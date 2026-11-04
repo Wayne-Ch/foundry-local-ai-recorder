@@ -78,20 +78,20 @@ git diff --exit-code -- .\fixtures\ode-slide.png
 3. Confirm the button changes immediately and each card exposes its current step: runtime/endpoint
    initialization, catalog/cache lookup, download, provider registration, or model load. Do not
    accept a static screen with no visible working state.
-4. Wait until the Whisper, Nemotron, and Qwen model cards all show **READY** and the top-right pill
-   says **In-process boundary validated**.
+4. Wait until the Whisper, Nemotron, and **Shared Qwen** cards all show **READY**, the status says
+   **Enhanced offline ready · 3/3 models**, and the top-right pill says
+   **In-process boundary validated**.
+5. Only after 3/3 readiness, disconnect the demo PC from the network for the offline rehearsal.
 
-The first preparation has no fixed latency. It may take several minutes because the three core
-catalog payloads total about 1.4 GB and the WebGPU execution-provider bundle may also be
-downloaded. Leave the app open while the status message reports download and load progress.
-Subsequent launches use cached assets but still need time to load them into memory.
-
-The optional CPU vision/chat model is loaded lazily. The first **Ask** or **Analyze image** action
-can therefore take longer than later requests and may need the network if that model is not cached.
+The first preparation has no fixed latency. It may take several minutes while the three exact
+model payloads are downloaded and loaded. **Downloading** means an uncached asset still requires
+the online preflight; **Loading** means cached local bytes are being placed in memory. Subsequent
+launches use cached assets but still need local load time.
 
 Model preparation can use the network, but inference is performed by Foundry Local in-process.
-The app does not call a cloud inference endpoint or start Foundry's embedded web service. Describe
-this as local in-process inference, not as proof that the whole PC is physically offline.
+After successful 3/3 Prepare, summary, Ask, Analyze image, and Explain image reuse the loaded shared
+Qwen model and do not perform catalog, model-download, or provider-acquisition work. The app does
+not call a cloud inference endpoint or start Foundry's embedded web service.
 
 ## Copy/paste play flow
 
@@ -102,7 +102,8 @@ Speak this exact four-sentence script:
 > equation y prime equals negative two y, separate the variables. The solution is y of t equals c
 > times e to the negative two t. The initial value determines the constant c.
 
-1. Confirm all three core cards are **READY** and **In-process boundary validated** is visible.
+1. Confirm all three cards are **READY**, **Enhanced offline ready · 3/3 models** and
+   **In-process boundary validated** are visible, and the PC is disconnected.
 2. Leave **Live English captions** enabled.
 3. Check **I have consent to record this audio**, then select **Start**.
 4. Before the first caption, confirm the recorder says it is waiting for the first caption and the
@@ -117,7 +118,8 @@ Speak this exact four-sentence script:
    speech-recognition wording differences are acceptable; it must reflect the spoken ODE content.
 10. Select **Generate summary** and wait for the editable local Qwen summary.
     If the transcript is dirty, verify **Saving correction…** appears before
-    **Generating summary…**.
+    **Generating summary…**. Verify the app presents one overview plus Unicode bullets when safe;
+    Developer Trace must retain the exact raw factual model paragraph/list.
 11. Return to **Ask AI**, enter exactly
     `Render this decay equation: $y(t) = y_0 e^{-2t}$.`, and select **Ask**. Verify the submitted
     equation renders with a subscript and exponent instead of literal dollar signs, underscore, or
@@ -125,7 +127,7 @@ Speak this exact four-sentence script:
 12. Open the **Image** tab, select **Choose PNG, JPEG, or WebP**, and choose the repository-relative
     file `fixtures\ode-slide.png`.
 13. Select **Analyze image**. While it runs, verify the button/metadata distinguish queued work,
-    lazy assistant model/provider loading, and active **Analyzing…**. Then verify the result has
+    prepared-offline startup and active **Analyzing…**; no Downloading phase may appear. Then verify the result has
     **Visible text/objects**, **Relation to lesson**, and **Uncertainty** sections.
 14. Return to **Ask AI**, select **Explain image**, and verify the answer refers to the analyzed ODE
     slide rather than inventing unrelated content.
@@ -144,6 +146,7 @@ Speak this exact four-sentence script:
 18. Open **Developer Trace** and verify the matching `chat-raw` row retains the raw local-model
     response; the clinician handoff is an application-owned addition to the visible Clinic answer.
 19. Select **Delete / reset** and wait for recorder and assistant state to clear.
+    Verify all three model cards remain **READY** so another offline run can begin without Prepare.
 20. Fully close the app window. Application shutdown unloads the remaining models; confirm the
     PowerShell prompt returns before starting another run.
 
@@ -153,9 +156,9 @@ Speak this exact four-sentence script:
 
 - Keep the PC online and let the current download/load status finish; first load is expected to be
   much slower than a cached launch.
-- For the complete play flow, all three core cards must show **READY**. A visible
-  **Whisper-only fallback is ready** warning still supports recording and final transcription, but
-  it does not validate the Nemotron live-draft steps.
+- For the complete play flow, all three model cards must show **READY**. A visible
+  **2/3 local models are ready** warning may still support a reduced recorder path, but it does not
+  validate the complete enhanced offline demo.
 - If a card reaches an error, fully close the app, relaunch with `npm run start:built`, select
   **Prepare local models** once, and capture the card's model ID, execution provider, status, and
   the corresponding **Developer Trace** row if it fails again.
@@ -184,11 +187,12 @@ npm run probe:prepare-ui
 ```
 
 Do not use `npm install --ignore-scripts`. A passing Prepare probe ends with
-`PREPARE_UI_PROBE_OK` and all three core model states equal to `READY`.
+`PREPARE_UI_PROBE_OK`, the 3/3 offline-ready label, and all three model states equal to `READY`.
 
 ### `OPTIONAL_ASSISTANT_FAILED`
 
-Recording, Whisper, and summary remain usable. For actionable evidence:
+Recording and Whisper may remain usable, but summary and assistant share one prepared model. For
+actionable evidence:
 
 1. Select **Show trace**.
 2. Reproduce one failed **Ask**, **Analyze image**, or **Explain image** action.
@@ -214,7 +218,8 @@ The final command must print `True`. Then rerun `npm run build` and `npm run sta
 
 ### Rerun the vision integration
 
-Fully close the app first, keep the PC online if the optional model is not cached, and run:
+Fully close the app first. Complete one successful online 3/3 Prepare if the shared model is not
+cached, then run:
 
 ```powershell
 npm run test:vision-integration

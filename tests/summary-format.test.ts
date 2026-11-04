@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { formatSummaryForDisplay } from "../src/summary/summary-format";
+import { formatSummaryForDisplay, formatSummaryPresentation } from "../src/summary/summary-format";
 import { SUMMARY_SYSTEM_PROMPT } from "../src/summary/summary-prompt";
 
 describe("formatSummaryForDisplay", () => {
   it("instructs Qwen to return readable plain text notation", () => {
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("concise plain text only");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not add a title, heading, or label");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not use Markdown markers");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("dollar-sign math");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("y′ = −2y");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("y(t) = c · e^(−2t)");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Faithfulness is more important than style");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Copy every name, project, named concept");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Preserve every stated equation");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("resolved constant");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("explicit cause/result");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not write a title, heading, label");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Use readable Unicode/plain math");
   });
 
   it.each([
@@ -27,6 +28,111 @@ describe("formatSummaryForDisplay", () => {
       formattingApplied: true,
     });
   });
+
+  describe("formatSummaryPresentation", () => {
+    const fixtures = [
+      {
+        name: "ODE",
+        raw: "An ordinary differential equation relates a function to its derivatives. For the first order equation y prime equals negative two y, separate the variables. The solution is y of t equals c times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.",
+        expected: [
+          "An ordinary differential equation relates a function to its derivatives.",
+          "• For the first order equation y prime equals negative two y, separate the variables.",
+          "• The solution is y of t equals c times e to the negative two t for decay over time.",
+          "• If y of 0 equals 3, then c equals 3.",
+        ].join("\n"),
+      },
+      {
+        name: "Project Atlas",
+        raw: "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache. The target remains 250 milliseconds. Maya Chen owns the follow-up, and the next review is November 12.",
+        expected: [
+          "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache.",
+          "• The target remains 250 milliseconds.",
+          "• Maya Chen owns the follow-up, and the next review is November 12.",
+        ].join("\n"),
+      },
+      {
+        name: "Team Aurora",
+        raw: "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius. After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging. Priya will rerun the test at 0.5 C on December 5.",
+        expected: [
+          "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius.",
+          "• After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging.",
+          "• Priya will rerun the test at 0.5 C on December 5.",
+        ].join("\n"),
+      },
+    ] as const;
+
+    it.each(fixtures)(
+      "structures the $name fixture without losing or duplicating content",
+      ({ raw, expected }) => {
+        const formatted = formatSummaryPresentation(raw);
+
+        expect(formatted).toEqual({ text: expected, formattingApplied: true });
+        expect(contentWords(formatted.text)).toEqual(contentWords(raw));
+        expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+      },
+    );
+
+    it("normalizes math once while preserving protected code and sentence content", () => {
+      const raw =
+        "Dr. Rivera kept `v1.2.3 stays literal`. The model uses $ y' = -2y $. Save C:\\work\\summary.txt.";
+      const expected = [
+        "Dr. Rivera kept `v1.2.3 stays literal`.",
+        "• The model uses y′ = −2y.",
+        "• Save C:\\work\\summary.txt.",
+      ].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(formatSummaryPresentation(expected).text).toBe(expected);
+    });
+
+    it("keeps a factual paragraph when it cannot identify multiple complete safe units", () => {
+      const paragraph = "Project Atlas remains at 280 milliseconds without final punctuation";
+
+      expect(formatSummaryPresentation(paragraph)).toEqual({
+        text: paragraph,
+        formattingApplied: false,
+      });
+    });
+
+    it("splits complete semicolon clauses without changing their text", () => {
+      const raw =
+        "Project Atlas improved latency; Maya Chen owns the follow-up; The next review is November 12.";
+      const expected = [
+        "Project Atlas improved latency;",
+        "• Maya Chen owns the follow-up;",
+        "• The next review is November 12.",
+      ].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(contentWords(expected)).toEqual(contentWords(raw));
+    });
+
+    it("converts existing list structure without changing its content", () => {
+      const raw = ["- First exact fact.", "- Second exact fact.", "- Third exact fact."].join("\n");
+      const expected = ["First exact fact.", "• Second exact fact.", "• Third exact fact."].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(contentWords(expected)).toEqual(contentWords(raw));
+    });
+
+    it("groups long outputs into at most six bullets without sentence loss or duplication", () => {
+      const raw = Array.from({ length: 10 }, (_value, index) => `Sentence ${index + 1}.`).join(" ");
+      const formatted = formatSummaryPresentation(raw).text;
+      const lines = formatted.split("\n");
+
+      expect(lines).toHaveLength(7);
+      expect(lines.slice(1).every((line) => line.startsWith("• "))).toBe(true);
+      expect(contentWords(formatted)).toEqual(contentWords(raw));
+      expect(formatSummaryPresentation(formatted).text).toBe(formatted);
+    });
+  });
+
+  function contentWords(value: string): readonly string[] {
+    return value
+      .replaceAll(/^(?:•|-)\s+/gmu, "")
+      .split(/\s+/u)
+      .filter(Boolean);
+  }
 
   it("leaves correct plain text unchanged", () => {
     const text = "The class reviewed a first-order equation and its initial condition.";
