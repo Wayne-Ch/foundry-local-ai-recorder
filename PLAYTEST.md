@@ -121,9 +121,11 @@ Speak this exact four-sentence script:
     **Generating summary…**. Verify the app presents one overview plus Unicode bullets when safe;
     Developer Trace must retain the exact raw factual model paragraph/list.
 11. Return to **Ask AI**, enter exactly
-    `Render this decay equation: $y(t) = y_0 e^{-2t}$.`, and select **Ask**. Verify the submitted
-    equation renders with a subscript and exponent instead of literal dollar signs, underscore, or
-    braces. Supported math repeated in the Local AI reply should render the same way.
+    `What is the solution to y' = -2y with y(0) = y0?`, and select **Ask**. Verify the **Local AI**
+    answer states the decay solution `y(t) = y0 e^(-2t)` or mathematically equivalent notation.
+    Any supported math generated in the answer should render visually without exposing raw dollar
+    delimiters, underscores, or braces. The student's plain-text question does not need to be
+    transformed into LaTeX.
 12. Open the **Image** tab, select **Choose PNG, JPEG, or WebP**, and choose the repository-relative
     file `fixtures\ode-slide.png`.
 13. Select **Analyze image**. While it runs, verify the button/metadata distinguish queued work,

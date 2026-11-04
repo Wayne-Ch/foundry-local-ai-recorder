@@ -68,9 +68,11 @@ Point out that recording and live captions continue while the fresh shared-model
 The request-bound Local AI row distinguishes **Waiting locally…**, prepared-offline startup, and
 active **Thinking locally…**, and
 the chat context label must say **live draft snapshot (may change)**; the actual snapshot is not
-stored in chat history. If time permits, submit
-`Render this decay equation: $y(t) = y_0 e^{-2t}$.` and show that the chat renders the subscript and
-exponent without literal delimiters or braces.
+stored in chat history. If time permits, ask
+`What is the solution to y' = -2y with y(0) = y0?` and show that the Local AI answer states the
+decay solution `y(t) = y0 e^(-2t)` or mathematically equivalent notation. Any supported math
+generated in the answer should render visually without exposing raw dollar delimiters,
+underscores, or braces; the student's plain-text question does not need to transform into LaTeX.
 
 ### 6:00-8:00 — Image understanding while recording continues
 
