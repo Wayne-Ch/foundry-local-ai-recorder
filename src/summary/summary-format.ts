@@ -1318,6 +1318,8 @@ function normalizeWhitespace(value: string): string {
 
 const SUMMARY_MAX_BULLET_LINES = 6;
 const SUMMARY_VISUAL_LIST_MARKER = /^(?:•\s+|[-*]\s+(?=[\p{Lu}"'“‘`]))/u;
+const SUMMARY_VISUAL_LIST_WRAPPER = /^(?:•|[-*])\s+/u;
+const SUMMARY_NUMERIC_FACT_PREFIX = /^[+\-−]?\p{Nd}/u;
 const SUMMARY_ORDERED_LIST_MARKER = /^(\d+)([.)])\s+\S/u;
 const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "dr",
@@ -1385,7 +1387,8 @@ function summaryLineContent(line: string): string {
 }
 
 function hasNumericSummaryPrefix(line: string): boolean {
-  return /^\d/u.test(summaryLineContent(line));
+  const content = line.trim().replace(SUMMARY_VISUAL_LIST_WRAPPER, "");
+  return SUMMARY_NUMERIC_FACT_PREFIX.test(content);
 }
 
 function parseConfidentOrderedSummaryList(lines: readonly string[]): readonly string[] | null {

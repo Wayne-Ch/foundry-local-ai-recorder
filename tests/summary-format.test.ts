@@ -121,11 +121,35 @@ describe("formatSummaryForDisplay", () => {
       "250. The latency target remains 250 milliseconds.\nMaya Chen owns the follow-up.",
       "2.1. Equation 2.1 defines the decay model.\nSection 3. Results retain the identifier.",
       "2.0. Version 2.0 remains the approved release.\n2026-11-03 is the review date.",
+      "-5. The temperature is five degrees below baseline. Maya Chen owns the follow-up.",
+      "+5. The voltage is five units above baseline. Priya owns the follow-up.",
+      "−5. The signed measurement remains a fact. The next review is November 12.",
+      "٠٥. The specimen identifier uses Arabic digits. The label must remain attached.",
+      "+1. Signed section one remains factual.\n+2. Signed section two remains factual.",
+      "١. Arabic one remains factual.\n٢. Arabic two remains factual.",
     ])("keeps ambiguous numeric-leading factual text unchanged: %s", (raw) => {
       expect(formatSummaryPresentation(raw)).toEqual({
         text: raw,
         formattingApplied: false,
       });
+    });
+
+    it("preserves numeric-leading facts through visual-marker and whitespace wrappers", () => {
+      const raw = [
+        "  •   -5. The measurement stays attached.  ",
+        "\t*   +5. The section identifier stays attached.",
+        " -   ٠٥. The Unicode numeral stays attached. ",
+      ].join("\r\n");
+      const expected = [
+        "• -5. The measurement stays attached.",
+        "* +5. The section identifier stays attached.",
+        "- ٠٥. The Unicode numeral stays attached.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted).toEqual({ text: expected, formattingApplied: true });
+      expect(formatted.text.split("\n")).toEqual(expected.split("\n"));
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
     });
 
     it("preserves proven monotonic ordered-list markers inside presentation bullets", () => {
@@ -156,6 +180,23 @@ describe("formatSummaryForDisplay", () => {
       expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
     });
 
+    it("falls back without loss, duplication, or reordering for mixed signed and Unicode facts", () => {
+      const lines = [
+        "Project Atlas remains the baseline.",
+        "-5. Temperature fell below baseline. Maya Chen owns the follow-up.",
+        "+5. Voltage rose above baseline. Priya owns the review.",
+        "−5. The Unicode-minus measurement remains attached.",
+        "٠٥. Specimen 05 retains its Arabic-digit identifier.",
+      ];
+      const raw = lines.join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted).toEqual({ text: raw, formattingApplied: false });
+      expect(formatted.text.split("\n")).toEqual(lines);
+      expect(formatted.text.match(/-5\.|\+5\.|−5\.|٠٥\./gu)).toEqual(["-5.", "+5.", "−5.", "٠٥."]);
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+    });
+
     it("formats math once while preserving numeric prefixes and protected spans", () => {
       const raw = [
         "2026. Project Atlas keeps `v1.2.3` literal.",
@@ -171,6 +212,24 @@ describe("formatSummaryForDisplay", () => {
       expect(formatSummaryPresentation(raw).text).toBe(expected);
       expect(formatSummaryPresentation(expected).text).toBe(expected);
       expect(contentWords(expected)).toEqual(contentWords(raw.replace("$ y' = -2y $", "y′ = −2y")));
+    });
+
+    it("formats math once without detaching signed facts from protected code or paths", () => {
+      const raw = [
+        "• -5. Keep `v1.2.3` literal at C:\\work\\summary.txt.",
+        "* +5. Equation $ y' = -2y $ remains signed.",
+        "−5. Keep `/tmp/05.report` and `section ٠٥` literal.",
+      ].join("\n");
+      const expected = [
+        "• -5. Keep `v1.2.3` literal at C:\\work\\summary.txt.",
+        "* +5. Equation y′ = −2y remains signed.",
+        "−5. Keep `/tmp/05.report` and `section ٠٥` literal.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted).toEqual({ text: expected, formattingApplied: true });
+      expect(formatted.text.split("\n")).toEqual(expected.split("\n"));
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
     });
 
     it("groups long outputs into at most six bullets without sentence loss or duplication", () => {
