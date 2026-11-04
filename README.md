@@ -24,21 +24,25 @@ service or URL.
 
 ## Fresh clone, install, and launch
 
-Prerequisites:
+### Requirements
 
 - Windows 11 x64.
 - Git.
 - Node.js 22 or later with npm.
 - Internet access for `npm install` and the first model preparation.
+- Several GB of free disk space for dependencies and model assets.
+- No minimum RAM value has been established by testing.
+- A microphone is needed only for live voice-path testing; the stage fallback WAV flow remains
+  available without one.
 
-> [!WARNING]
-> Formal release validation for this app is limited to the target Windows 11 x64 demo machine with
-> AMD Radeon graphics and working WebGPU. The Recorder models still use the exact
-> `CPUExecutionProvider` identities listed above; AMD Radeon/WebGPU describes the validated machine,
-> not a different model execution provider. Other Windows hardware, Windows Arm64, Linux,
-> Apple-silicon macOS, and other GPU, NPU, or execution-provider configurations are not validated
-> to the same level and must not be presented as equivalent. Foundry Local's public platform
-> support is a separate product support statement and does not replace this app-specific evidence.
+### Validated configuration
+
+Formal app validation and current E2E evidence for this release were executed on a Windows 11 x64
+machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM. All Recorder models use the
+documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and
+is not a model requirement. This configuration is not the product's only intended target. Foundry
+Local's broader public platform and hardware support is separate, and other app environments must
+not be presented as having equivalent evidence until tested to the same depth.
 
 From the parent folder where you want the canonical `ai-recorder` clone:
 
@@ -55,13 +59,9 @@ Do not install with `--ignore-scripts`. The root `postinstall` first verifies an
 Foundry native payload, then verifies Electron. If native Foundry files are incomplete, Prepare
 returns an actionable `FOUNDRY_NATIVE_RUNTIME_MISSING` diagnostic with rebuild guidance.
 
-> [!IMPORTANT]
-> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
-> model and execution-provider assets. Remain online, keep **AI Recorder** open, and wait until
-> Nemotron, Whisper, and Qwen3.5 0.8B each show **READY** and the status says
-> **AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint. After the
-> required assets are cached and all three models load successfully, subsequent demo actions can
-> run offline.
+First preparation can take several minutes while model and execution-provider assets are
+downloaded. Stay online and keep AI Recorder open until all required model cards are ready; later
+demo actions can run offline.
 
 Select **Prepare local models** before recording. The status becomes
 **AI Recorder offline ready · 3/3 models** only when Nemotron, Whisper, and Qwen3.5 0.8B all report
@@ -159,7 +159,9 @@ Other paths:
 
 ## Current limits
 
-- Windows 11 x64 only.
+- Current app E2E evidence covers the validated Windows 11 x64 AMD Radeon/WebGPU configuration;
+  other environments require equivalent testing before making the same evidence claim.
+- That evidence boundary does not make the validated hardware the product's only intended target.
 - English speech only.
 - 30-second bounded capture.
 - Imported WAV files must already be PCM16LE, 16 kHz, mono.

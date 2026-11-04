@@ -2,12 +2,14 @@
 
 Date: 2026-11-03 (Windows 11 x64)
 
-Formal release evidence is limited to the target Windows 11 x64 demo machine with AMD Radeon
-graphics and working WebGPU. The Recorder models themselves use the exact CPU execution providers
-listed below. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU,
-NPU, or execution-provider configurations have not been validated to the same level and must not
-be presented as equivalent. Foundry Local's public platform support is a separate product support
-statement and does not expand this app-specific evidence.
+Formal app validation and current E2E evidence were executed on a Windows 11 x64 machine with AMD
+Radeon graphics and working WebGPU. This is the currently validated configuration, not a statement
+that AI Recorder is intended only for that hardware. The Recorder models themselves use the exact
+CPU execution providers listed below. Foundry Local's broader public platform and hardware support
+is separate from this app-specific evidence. Other app environments, including other Windows
+hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU, NPU, or execution-provider
+configurations, have not yet been validated to the same depth for this app and must not be
+presented as having equivalent evidence until tested.
 
 ## Exact required identities
 
@@ -189,9 +191,11 @@ endpoint**, not as a completed physically offline rehearsal.
 
 ## Known limitations
 
-- Formal validation is limited to the target Windows 11 x64 AMD Radeon/WebGPU machine.
-- Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU/NPU/EP
-  configurations are not equivalent validated targets.
+- Formal validation and current E2E evidence cover the currently validated Windows 11 x64 AMD
+  Radeon/WebGPU configuration.
+- That evidence scope does not limit the product to this hardware. Other app environments have not
+  yet been validated to the same depth and must not be presented as having equivalent evidence
+  until tested.
 - English only.
 - 30-second bounded capture.
 - PCM16LE/16 kHz/mono WAV import only.

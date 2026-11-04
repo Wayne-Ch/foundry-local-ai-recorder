@@ -2,10 +2,11 @@
 
 ## Before the room
 
-1. Use the target Windows 11 x64 demo PC with AMD Radeon graphics and working WebGPU. This
-   runbook's formal evidence does not transfer to other Windows hardware, Windows Arm64, Linux,
-   Apple-silicon macOS, or other GPU/NPU/execution-provider configurations. Foundry Local's public
-   platform support remains a separate statement.
+1. Use the validated demo configuration: a Windows 11 x64 PC with AMD Radeon graphics and working
+   WebGPU. This identifies the environment used for the documented rehearsal and E2E evidence; it
+   does not make that hardware the product's only intended target. Foundry Local's broader public
+   platform and hardware support remains separate. Do not claim equivalent app evidence for other
+   environments until they have been tested to the same depth.
 2. Run `npm install`, `npm run fixture:generate`, and every automated gate in `VALIDATION.md`.
 3. Launch with `npm run start:built`.
 4. Select **Prepare local models** while network access is available.
@@ -98,7 +99,9 @@ Show:
 
 ## 13:30-15:00 — Close with honest limits
 
-- Windows 11 x64 and English only.
+- The currently validated demo configuration is Windows 11 x64 on the recorded AMD Radeon/WebGPU
+  machine; other environments do not yet have equivalent app E2E evidence.
+- English only.
 - 30-second bounded prototype.
 - PCM16LE/16 kHz/mono WAV import only.
 - Qwen3.5 0.8B is the standard summary-only model and passed the omission-tolerant factual accuracy

@@ -1,24 +1,30 @@
 # AI Recorder colleague playtest
 
-Use a Windows 11 x64 PC with Git, Node.js 22 or later, npm, and internet access for installation
-and first preparation. Record observations without including private transcript content or local
-paths.
+Record observations without including private transcript content or local paths.
 
-> [!WARNING]
-> This formal playtest applies only to the target Windows 11 x64 demo machine with AMD Radeon
-> graphics and working WebGPU. The Recorder model cards must still show the documented
-> `CPUExecutionProvider` values. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS,
-> and other GPU, NPU, or execution-provider configurations are not validated to the same level and
-> must not be presented as equivalent. Foundry Local's public platform support is separate from
-> this app's release evidence.
+## Requirements
 
-> [!IMPORTANT]
-> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
-> model and execution-provider assets. Remain online, keep **AI Recorder** open, and wait until all
-> three required model cards show **READY** and the app says
-> **AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint. After the
-> cache is complete and all three models load successfully, subsequent demo actions can run
-> offline.
+- Windows 11 x64.
+- Git.
+- Node.js 22 or later with npm.
+- Internet access for installation and first preparation.
+- Several GB of free disk space for dependencies and model assets.
+- No minimum RAM value has been established by testing.
+- A microphone is needed only for live voice-path testing; use the stage fallback WAV flow when no
+  microphone is available.
+
+## Validated configuration
+
+This playtest's current E2E evidence was collected on a Windows 11 x64 machine with AMD Radeon
+graphics, working WebGPU, and 64 GB RAM. All Recorder models use the documented
+`CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and is not a
+model requirement. This configuration is not the product's only intended target. Foundry Local's
+broader public platform and hardware support is separate, and other app environments must not be
+presented as having equivalent evidence until tested to the same depth.
+
+First preparation can take several minutes while model and execution-provider assets are
+downloaded. Stay online and keep AI Recorder open until all required model cards are ready; later
+demo actions can run offline.
 
 ## Setup
 
