@@ -16,6 +16,11 @@ export interface OwnedProcessResult {
   readonly rootProcessId: number;
 }
 
+export interface ProcessIdentity {
+  readonly processId: number;
+  readonly creationKey: string;
+}
+
 export class ProcessTreeLeakError extends Error {
   readonly processIds: readonly number[];
   readonly output: string;
@@ -26,3 +31,8 @@ export class ProcessTreeTimeoutError extends Error {
 }
 
 export function runOwnedProcess(options: OwnedProcessOptions): Promise<OwnedProcessResult>;
+
+export function selectMatchingProcessIdentities(
+  owned: readonly ProcessIdentity[],
+  snapshot: readonly ProcessIdentity[],
+): readonly ProcessIdentity[];

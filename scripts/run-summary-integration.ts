@@ -97,7 +97,7 @@ const transcripts: readonly SummaryFixture[] = [
         label: "cache cause",
         trigger: /local model cache|enabled the cache|cache caused/iu,
         valid:
-          /(?:after|because)[\s\S]{0,80}(?:enabled|using)[\s\S]{0,50}local model cache|local model cache[\s\S]{0,100}(?:reduc|caus|enabled)/iu,
+          /(?:(?:local model cache|model cache|the cache|cache)[\s\S]{0,100}(?:reduc|fell|decreas|improv|caus|led to|resulted in)[\s\S]{0,100}(?:cold start )?latency[\s\S]{0,80}420\s*(?:milliseconds|ms)[\s\S]{0,50}(?:to|down to)[\s\S]{0,30}280\s*(?:milliseconds|ms)|(?:reduc|fell|decreas|improv)[\s\S]{0,100}(?:cold start )?latency[\s\S]{0,80}420\s*(?:milliseconds|ms)[\s\S]{0,50}(?:to|down to)[\s\S]{0,30}280\s*(?:milliseconds|ms)[\s\S]{0,100}(?:after|because|due to|caused by|resulted from|following)[\s\S]{0,60}(?:local model cache|model cache|the cache|cache))/iu,
       },
       {
         label: "latency target",
@@ -219,6 +219,15 @@ const atlasFixture = requiredFixture("atlas");
 const auroraFixture = requiredFixture("aurora");
 assert.doesNotThrow(() => validateSummaryText(odeFixture, "The initial condition is y(0) = 3."));
 assert.doesNotThrow(() => validateSummaryText(atlasFixture, "The target remains 250 milliseconds."));
+assert.doesNotThrow(() =>
+  validateSummaryText(atlasFixture, "Cold start latency fell from 420 milliseconds to 280 milliseconds."),
+);
+assert.doesNotThrow(() =>
+  validateSummaryText(
+    atlasFixture,
+    "The local model cache reduced cold start latency from 420 milliseconds to 280 milliseconds.",
+  ),
+);
 const factualGateRegressions = [
   {
     fixture: odeFixture,
@@ -249,6 +258,21 @@ const factualGateRegressions = [
     fixture: atlasFixture,
     text: "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache. The target remains 250 milliseconds. The target is also 280 milliseconds. Maya Chen owns the follow-up, and the next review is November 12.",
     expected: /latency target/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused the target to remain 250 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache enabled the target to remain 250 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused the next review to be November 12.",
+    expected: /cache cause/,
   },
   {
     fixture: auroraFixture,

@@ -1,23 +1,34 @@
 import { execFile, spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const POWERSHELL = "powershell.exe";
 const PROCESS_SNAPSHOT_TIMEOUT_MS = 5_000;
-const CHILD_DISCOVERY_GRACE_MS = PROCESS_SNAPSHOT_TIMEOUT_MS;
-const CLEANUP_ATTEMPTS = 12;
+const JOB_CLEANUP_TIMEOUT_MS = 10_000;
+const JOB_RUNNER_WATCHDOG_GRACE_MS = 30_000;
+const JOB_RUNNER_SCRIPT = fileURLToPath(new URL("./windows-job-runner.ps1", import.meta.url));
 
 const PROCESS_SNAPSHOT_SCRIPT = `
 $ErrorActionPreference = "Stop"
 $items = @(
   Get-CimInstance Win32_Process | ForEach-Object {
+    $processId = [int]$_.ProcessId
+    $creationValue = if ($null -eq $_.CreationDate) {
+      ""
+    } else {
+      $fileTime = [long]$_.CreationDate.ToUniversalTime().ToFileTimeUtc()
+      ($fileTime - ($fileTime % 10)).ToString()
+    }
     [PSCustomObject]@{
-      ProcessId = [int]$_.ProcessId
-      ParentProcessId = [int]$_.ParentProcessId
-      CreationDate = if ($null -eq $_.CreationDate) {
+      ProcessId = $processId
+      CreationKey = if ($creationValue.Length -eq 0) {
         ""
       } else {
-        $_.CreationDate.ToUniversalTime().ToString("o")
+        "$($processId):$creationValue"
       }
     }
   }
@@ -57,192 +68,169 @@ export async function runOwnedProcess({
   pollIntervalMs = 100,
 }) {
   assertWindows();
-  const child = spawn(command, args, {
-    cwd,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  if (child.pid === undefined) {
-    throw new Error(`${label} did not expose a process identifier.`);
-  }
+  const controlDirectory = await mkdtemp(path.join(os.tmpdir(), "ai-recorder-job-"));
+  const requestPath = path.join(controlDirectory, "request.json");
+  const resultPath = path.join(controlDirectory, "result.json");
+  await writeFile(
+    requestPath,
+    JSON.stringify({
+      command,
+      args,
+      cwd,
+      timeoutMs,
+      descendantExitTimeoutMs,
+      pollIntervalMs,
+      cleanupTimeoutMs: JOB_CLEANUP_TIMEOUT_MS,
+      resultPath,
+    }),
+    "utf8",
+  );
 
   const output = [];
-  child.stdout.on("data", (chunk) => output.push(chunk.toString()));
-  child.stderr.on("data", (chunk) => output.push(chunk.toString()));
-  const exitPromise = new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
-  });
-  const closePromise = new Promise((resolve) => {
-    child.once("close", () => resolve());
-  });
-  const tracker = new WindowsProcessTreeTracker(child.pid, Date.now());
-  let cleanupCompleted = false;
-
+  let helper;
   try {
-    await tracker.refresh();
-    const deadline = Date.now() + timeoutMs;
-    let exit = null;
-    while (exit === null && Date.now() < deadline) {
-      await tracker.refresh();
-      exit = await Promise.race([
-        exitPromise,
-        delay(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now()))).then(() => null),
-      ]);
-    }
-    if (exit === null) {
-      await terminateOwnedTree(tracker, child.pid, pollIntervalMs);
-      cleanupCompleted = true;
-      await settleExit(exitPromise);
-      await settleClose(closePromise);
+    helper = spawn(
+      POWERSHELL,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        JOB_RUNNER_SCRIPT,
+        "-RequestPath",
+        requestPath,
+      ],
+      {
+        cwd,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      },
+    );
+    helper.stdout.on("data", (chunk) => output.push(chunk.toString()));
+    helper.stderr.on("data", (chunk) => output.push(chunk.toString()));
+
+    const watchdogMs =
+      timeoutMs + descendantExitTimeoutMs + JOB_CLEANUP_TIMEOUT_MS + JOB_RUNNER_WATCHDOG_GRACE_MS;
+    const helperExit = await waitForHelperExit(helper, watchdogMs);
+    if (helperExit.timedOut) {
       throw new ProcessTreeTimeoutError(label, timeoutMs, output.join(""));
     }
 
-    const descendantsDeadline = Date.now() + descendantExitTimeoutMs;
-    let remaining = await tracker.refresh();
-    while (remaining.length > 0 && Date.now() < descendantsDeadline) {
-      await delay(pollIntervalMs);
-      remaining = await tracker.refresh();
+    const rawResult = await readFile(resultPath, "utf8").catch(() => "");
+    if (rawResult.length === 0) {
+      throw new Error(
+        `${label} Windows Job Object runner exited without a result (${helperExit.code}):\n${output.join(
+          "",
+        )}`,
+      );
     }
-    if (remaining.length > 0) {
-      const leakedProcessIds = remaining.map(({ processId }) => processId);
-      await terminateOwnedTree(tracker, child.pid, pollIntervalMs);
-      cleanupCompleted = true;
-      await settleClose(closePromise);
-      throw new ProcessTreeLeakError(label, leakedProcessIds, output.join(""));
+    const result = normalizeJobResult(JSON.parse(rawResult.replace(/^\uFEFF/u, "")));
+    await assertOwnedIdentitiesStopped(result.ownedIdentities);
+    if (!result.cleanupSucceeded) {
+      throw new Error(`${label} Windows Job Object cleanup did not reach zero active processes.`);
     }
 
-    await settleClose(closePromise);
+    const combinedOutput = output.join("");
+    if (result.kind === "timeout") {
+      throw new ProcessTreeTimeoutError(label, timeoutMs, combinedOutput);
+    }
+    if (result.kind === "leak") {
+      throw new ProcessTreeLeakError(label, result.processIds, combinedOutput);
+    }
+    if (result.kind === "error") {
+      throw new Error(`${label} could not run in a Windows Job Object: ${result.message}`);
+    }
+    if (result.kind !== "exit" || result.exitCode === null) {
+      throw new Error(`${label} Windows Job Object runner returned an invalid result.`);
+    }
+
     return {
-      ...exit,
-      output: output.join(""),
-      rootProcessId: child.pid,
+      code: result.exitCode,
+      signal: null,
+      output: combinedOutput,
+      rootProcessId: result.rootProcessId,
     };
-  } catch (error) {
-    if (!cleanupCompleted) {
-      await terminateOwnedTree(tracker, child.pid, pollIntervalMs).catch((cleanupError) => {
-        throw new AggregateError(
-          [error, cleanupError],
-          `${label} failed and its owned process tree could not be fully cleaned up.`,
-        );
-      });
-      await settleExit(exitPromise);
-      await settleClose(closePromise);
+  } finally {
+    if (helper !== undefined && helper.exitCode === null && helper.signalCode === null) {
+      helper.kill();
     }
-    throw error;
+    await rm(controlDirectory, { recursive: true, force: true });
   }
 }
 
-class WindowsProcessTreeTracker {
-  constructor(rootProcessId, startedAt) {
-    this.rootProcessId = rootProcessId;
-    this.startedAt = startedAt;
-    this.known = new Map([
-      [
-        rootProcessId,
-        {
-          processId: rootProcessId,
-          parentProcessId: 0,
-          creationKey: null,
-          createdAtMs: startedAt,
-          lastSeenAt: startedAt,
-        },
-      ],
-    ]);
+export function selectMatchingProcessIdentities(owned, snapshot) {
+  const liveByProcessId = new Map(snapshot.map((identity) => [identity.processId, identity.creationKey]));
+  const matching = [];
+  const seen = new Set();
+  for (const identity of owned) {
+    const key = `${identity.processId}:${identity.creationKey}`;
+    if (!seen.has(key) && liveByProcessId.get(identity.processId) === identity.creationKey) {
+      seen.add(key);
+      matching.push(identity);
+    }
   }
+  return matching;
+}
 
-  async refresh() {
-    const snapshot = await readProcessSnapshot();
-    const now = Date.now();
-    const byProcessId = new Map(snapshot.map((process) => [process.processId, process]));
-    const root = byProcessId.get(this.rootProcessId);
-    if (
-      root !== undefined &&
-      (root.createdAtMs === 0 || root.createdAtMs >= this.startedAt - PROCESS_SNAPSHOT_TIMEOUT_MS)
-    ) {
-      this.remember(root, now);
-    }
-
-    for (const [processId, known] of this.known) {
-      const current = byProcessId.get(processId);
-      if (current !== undefined && current.creationKey === known.creationKey) {
-        known.lastSeenAt = now;
-      }
-    }
-
-    let discovered = true;
-    while (discovered) {
-      discovered = false;
-      for (const process of snapshot) {
-        const parent = this.known.get(process.parentProcessId);
-        if (parent === undefined || !isPlausibleChild(process, parent)) {
-          continue;
-        }
-        discovered = this.remember(process, now) || discovered;
-      }
-    }
-
-    return [...this.known.values()]
-      .filter((known) => byProcessId.get(known.processId)?.creationKey === known.creationKey)
-      .map(({ processId, parentProcessId }) => ({ processId, parentProcessId }));
-  }
-
-  remember(process, now) {
-    const existing = this.known.get(process.processId);
-    if (existing !== undefined) {
-      if (existing.creationKey === null) {
-        this.known.set(process.processId, {
-          ...process,
-          lastSeenAt: now,
-        });
-        return true;
-      }
-      if (existing.creationKey !== process.creationKey) {
-        return false;
-      }
-      existing.lastSeenAt = now;
-      return false;
-    }
-    this.known.set(process.processId, {
-      ...process,
-      lastSeenAt: now,
-    });
-    return true;
+async function waitForHelperExit(helper, watchdogMs) {
+  let timedOut = false;
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    helper.kill();
+  }, watchdogMs);
+  const exited = new Promise((resolve, reject) => {
+    helper.once("error", reject);
+    helper.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  try {
+    return { ...(await exited), timedOut };
+  } finally {
+    clearTimeout(watchdog);
   }
 }
 
-function isPlausibleChild(process, parent) {
-  if (
-    process.createdAtMs !== 0 &&
-    parent.createdAtMs !== 0 &&
-    process.createdAtMs < parent.createdAtMs - 1_000
-  ) {
-    return false;
-  }
-  return process.createdAtMs === 0 || process.createdAtMs <= parent.lastSeenAt + CHILD_DISCOVERY_GRACE_MS;
+function normalizeJobResult(value) {
+  const kind = typeof value.Kind === "string" ? value.Kind : "";
+  const exitCode = Number.isInteger(value.ExitCode) ? value.ExitCode : null;
+  const rootProcessId = Number.isInteger(value.RootProcessId) ? value.RootProcessId : 0;
+  const processIds = Array.isArray(value.ProcessIds)
+    ? value.ProcessIds.filter((processId) => Number.isInteger(processId) && processId > 0)
+    : [];
+  const ownedIdentities = Array.isArray(value.OwnedIdentities)
+    ? value.OwnedIdentities.flatMap((identity) => {
+        const processId = Number(identity?.ProcessId);
+        const creationKey = typeof identity?.CreationKey === "string" ? identity.CreationKey : "";
+        return Number.isInteger(processId) && processId > 0 && creationKey.length > 0
+          ? [{ processId, creationKey }]
+          : [];
+      })
+    : [];
+  return {
+    kind,
+    exitCode,
+    rootProcessId,
+    processIds,
+    ownedIdentities,
+    cleanupSucceeded: value.CleanupSucceeded === true,
+    message: typeof value.Message === "string" ? value.Message : "Unknown Job Object failure.",
+  };
 }
 
-async function terminateOwnedTree(tracker, rootProcessId, pollIntervalMs) {
-  let remaining = [];
-  for (let attempt = 0; attempt < CLEANUP_ATTEMPTS; attempt += 1) {
-    const current = await tracker.refresh();
-    const processIds = [
-      rootProcessId,
-      ...current.map(({ processId }) => processId).filter((processId) => processId !== rootProcessId),
-    ];
-    await stopProcesses(processIds);
-    await delay(pollIntervalMs);
-    remaining = await tracker.refresh();
-    if (remaining.length === 0) {
-      return;
-    }
+async function assertOwnedIdentitiesStopped(ownedIdentities) {
+  if (ownedIdentities.length === 0) {
+    return;
   }
-  throw new Error(
-    `Owned process cleanup left process IDs running: ${remaining
-      .map(({ processId }) => processId)
-      .join(", ")}.`,
-  );
+  const snapshot = await readProcessSnapshot();
+  const remaining = selectMatchingProcessIdentities(ownedIdentities, snapshot);
+  if (remaining.length > 0) {
+    throw new Error(
+      `Windows Job Object cleanup left owned process identities running: ${remaining
+        .map(({ creationKey }) => creationKey)
+        .join(", ")}.`,
+    );
+  }
 }
 
 async function readProcessSnapshot() {
@@ -258,61 +246,17 @@ async function readProcessSnapshot() {
   );
   const parsed = JSON.parse(stdout.trim() || "[]");
   return (Array.isArray(parsed) ? parsed : [parsed])
-    .map((process) => {
-      const processId = Number(process.ProcessId);
-      const parentProcessId = Number(process.ParentProcessId);
-      const creationDate = typeof process.CreationDate === "string" ? process.CreationDate : "";
-      return {
-        processId,
-        parentProcessId,
-        creationKey: `${processId}:${creationDate}`,
-        createdAtMs: Number.isFinite(Date.parse(creationDate)) ? Date.parse(creationDate) : 0,
-      };
-    })
+    .map((process) => ({
+      processId: Number(process.ProcessId),
+      creationKey: typeof process.CreationKey === "string" ? process.CreationKey : "",
+    }))
     .filter(
-      ({ processId, parentProcessId }) =>
-        Number.isInteger(processId) && processId > 0 && Number.isInteger(parentProcessId),
+      ({ processId, creationKey }) => Number.isInteger(processId) && processId > 0 && creationKey.length > 0,
     );
-}
-
-async function stopProcesses(processIds) {
-  const uniqueProcessIds = [...new Set(processIds)].filter(
-    (processId) => Number.isInteger(processId) && processId > 0,
-  );
-  if (uniqueProcessIds.length === 0) {
-    return;
-  }
-  const script = `
-$processIds = @(${uniqueProcessIds.join(",")})
-foreach ($processId in $processIds) {
-  Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
-}
-`;
-  await execFileAsync(
-    POWERSHELL,
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-    {
-      encoding: "utf8",
-      timeout: PROCESS_SNAPSHOT_TIMEOUT_MS,
-      windowsHide: true,
-    },
-  );
-}
-
-async function settleExit(exitPromise) {
-  await Promise.race([exitPromise.catch(() => undefined), delay(2_000)]);
-}
-
-async function settleClose(closePromise) {
-  await Promise.race([closePromise, delay(2_000)]);
 }
 
 function assertWindows() {
   if (process.platform !== "win32") {
     throw new Error("Electron process-tree probes require Windows process ownership.");
   }
-}
-
-function delay(milliseconds) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

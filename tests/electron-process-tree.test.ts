@@ -1,8 +1,12 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   ProcessTreeLeakError,
   ProcessTreeTimeoutError,
   runOwnedProcess,
+  selectMatchingProcessIdentities,
 } from "../scripts/electron-process-tree.mjs";
 
 describe("Windows process-tree ownership", () => {
@@ -48,6 +52,115 @@ describe("Windows process-tree ownership", () => {
       await expect.poll(() => processExists(orphanPid), { timeout: 3_000 }).toBe(false);
     },
   );
+
+  it.runIf(process.platform === "win32")(
+    "owns a detached grandchild created by a transient intermediary before the first snapshot",
+    async () => {
+      const fixtureDirectory = await mkdtemp(path.join(os.tmpdir(), "ai-recorder-job-race-"));
+      const intermediaryPath = path.join(fixtureDirectory, "intermediary.mjs");
+      const grandchildPath = path.join(fixtureDirectory, "grandchild.mjs");
+      const grandchildPidPath = path.join(fixtureDirectory, "grandchild.pid");
+      const stopPath = path.join(fixtureDirectory, "stop");
+      await Promise.all([
+        writeFile(
+          intermediaryPath,
+          `
+            import { spawn } from "node:child_process";
+            import { writeFileSync } from "node:fs";
+            const [grandchildPath, grandchildPidPath, stopPath] = process.argv.slice(2);
+            const grandchild = spawn(process.execPath, [grandchildPath, stopPath], {
+              detached: true,
+              stdio: "ignore",
+              windowsHide: true,
+            });
+            writeFileSync(grandchildPidPath, String(grandchild.pid), "utf8");
+            grandchild.unref();
+          `,
+          "utf8",
+        ),
+        writeFile(
+          grandchildPath,
+          `
+            import { existsSync } from "node:fs";
+            const stopPath = process.argv[2];
+            const timer = setInterval(() => {
+              if (existsSync(stopPath)) {
+                clearInterval(timer);
+                process.exit(0);
+              }
+            }, 50);
+          `,
+          "utf8",
+        ),
+      ]);
+      const rootScript = `
+        import { spawn } from "node:child_process";
+        const intermediary = spawn(
+          process.execPath,
+          ${JSON.stringify([intermediaryPath, grandchildPath, grandchildPidPath, stopPath])},
+          {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+          },
+        );
+        intermediary.unref();
+      `;
+
+      let grandchildPid = Number.NaN;
+      try {
+        let failure: unknown;
+        try {
+          await runOwnedProcess({
+            command: process.execPath,
+            args: ["--input-type=module", "-e", rootScript],
+            cwd: process.cwd(),
+            env: process.env,
+            label: "transient intermediary self-test",
+            timeoutMs: 5_000,
+            descendantExitTimeoutMs: 250,
+            pollIntervalMs: 50,
+          });
+        } catch (error) {
+          failure = error;
+        }
+
+        await expect
+          .poll(
+            async () => {
+              const value = await readFile(grandchildPidPath, "utf8").catch(() => "");
+              return Number.parseInt(value, 10);
+            },
+            { timeout: 3_000 },
+          )
+          .toSatisfy(Number.isInteger);
+        grandchildPid = Number.parseInt(await readFile(grandchildPidPath, "utf8"), 10);
+        expect(failure).toBeInstanceOf(ProcessTreeLeakError);
+        await expect.poll(() => processExists(grandchildPid), { timeout: 3_000 }).toBe(false);
+      } finally {
+        await writeFile(stopPath, "", "utf8").catch(() => undefined);
+        if (Number.isInteger(grandchildPid)) {
+          await expect.poll(() => processExists(grandchildPid), { timeout: 3_000 }).toBe(false);
+        }
+        await rm(fixtureDirectory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("never selects an unrelated PID replacement for termination after an injected snapshot", () => {
+    const original = {
+      processId: 4242,
+      creationKey: "4242:owned-creation",
+    };
+    const replacement = {
+      processId: 4242,
+      creationKey: "4242:replacement-creation",
+    };
+    const terminated = selectMatchingProcessIdentities([original], [replacement]);
+
+    expect(terminated).toEqual([]);
+    expect(selectMatchingProcessIdentities([original], [original])).toEqual([original]);
+  });
 
   it.runIf(process.platform === "win32")("terminates the full owned tree on timeout", async () => {
     const parentScript = `
