@@ -1317,7 +1317,8 @@ function normalizeWhitespace(value: string): string {
 }
 
 const SUMMARY_MAX_BULLET_LINES = 6;
-const SUMMARY_LIST_MARKER = /^(?:•\s+|[-*]\s+(?=[\p{Lu}"'“‘`])|\d+[.)]\s+)/u;
+const SUMMARY_VISUAL_LIST_MARKER = /^(?:•\s+|[-*]\s+(?=[\p{Lu}"'“‘`]))/u;
+const SUMMARY_ORDERED_LIST_MARKER = /^(\d+)([.)])\s+\S/u;
 const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "dr",
   "e.g",
@@ -1340,20 +1341,28 @@ function structureSummaryContent(value: string): string {
     .filter(Boolean);
   const units: string[] = [];
 
-  for (const line of lines) {
-    const content = line.replace(SUMMARY_LIST_MARKER, "").trim();
-    if (!content) {
-      continue;
+  const orderedList = parseConfidentOrderedSummaryList(lines);
+  if (lines.some(hasNumericSummaryPrefix)) {
+    if (orderedList === null) {
+      return value;
     }
-    const sentences = splitCompleteSummarySentences(content);
-    if (sentences === null) {
-      if (lines.length === 1) {
-        return value;
+    units.push(...orderedList);
+  } else {
+    for (const line of lines) {
+      const content = summaryLineContent(line);
+      if (!content) {
+        continue;
       }
-      units.push(content);
-    } else {
-      const onlySentence = sentences.length === 1 ? sentences[0] : undefined;
-      units.push(...(onlySentence === undefined ? sentences : splitCompleteSummaryClauses(onlySentence)));
+      const sentences = splitCompleteSummarySentences(content);
+      if (sentences === null) {
+        if (lines.length === 1) {
+          return value;
+        }
+        units.push(content);
+      } else {
+        const onlySentence = sentences.length === 1 ? sentences[0] : undefined;
+        units.push(...(onlySentence === undefined ? sentences : splitCompleteSummaryClauses(onlySentence)));
+      }
     }
   }
 
@@ -1369,6 +1378,42 @@ function structureSummaryContent(value: string): string {
   const bullets = groupSummaryUnits(details, SUMMARY_MAX_BULLET_LINES);
   const structured = [overview, ...bullets.map((bullet) => `• ${bullet}`)].join("\n");
   return canonicalSummaryContent(structured) === canonicalSummaryContent(value) ? structured : value;
+}
+
+function summaryLineContent(line: string): string {
+  return line.replace(SUMMARY_VISUAL_LIST_MARKER, "").trim();
+}
+
+function hasNumericSummaryPrefix(line: string): boolean {
+  return /^\d/u.test(summaryLineContent(line));
+}
+
+function parseConfidentOrderedSummaryList(lines: readonly string[]): readonly string[] | null {
+  if (lines.length < 2) {
+    return null;
+  }
+  const contents: string[] = [];
+  let delimiter: string | null = null;
+  for (const [index, line] of lines.entries()) {
+    const content = summaryLineContent(line);
+    const match = content.match(SUMMARY_ORDERED_LIST_MARKER);
+    const ordinalText = match?.[1];
+    const currentDelimiter = match?.[2];
+    if (ordinalText === undefined || currentDelimiter === undefined) {
+      return null;
+    }
+    const ordinal = Number(ordinalText);
+    if (
+      !Number.isSafeInteger(ordinal) ||
+      ordinal !== index + 1 ||
+      (delimiter !== null && currentDelimiter !== delimiter)
+    ) {
+      return null;
+    }
+    delimiter = currentDelimiter;
+    contents.push(content);
+  }
+  return contents;
 }
 
 function maskSummaryStructureRegions(value: string): {
@@ -1505,7 +1550,7 @@ function groupSummaryUnits(units: readonly string[], maximumGroups: number): rea
 function canonicalSummaryContent(value: string): string {
   return value
     .split("\n")
-    .map((line) => line.trim().replace(SUMMARY_LIST_MARKER, ""))
+    .map((line) => line.trim().replace(SUMMARY_VISUAL_LIST_MARKER, ""))
     .filter(Boolean)
     .join(" ")
     .replaceAll(/\s+/gu, " ")

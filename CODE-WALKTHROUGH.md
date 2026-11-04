@@ -167,22 +167,27 @@ Show:
 - per-request live-draft snapshot with durable labels but no durable draft text;
 - memory-only chat history admitted to prompts only when its mode/image/context provenance still
   matches;
-- one fresh `ChatSession` per turn;
+- one prepared `qwen3.5-0.8b-generic-cpu:3` in the summary `ModelSlot`, shared by transcript
+  summary, text chat, and image analysis;
+- one fresh `ChatSession` for every summary or assistant generation;
 - exact `Item.userMessage` text/image parts;
 - one shared validated manager and manager generation;
-- exact `qwen3.5-0.8b-generic-cpu:3` for both text-only and image turns in a separate optional slot;
-- a core summary lane that never waits for optional assistant cancellation or native settlement;
+- independent recorder/assistant generations, queues, cancellation, histories, prompts, and safety
+  boundaries even though the prepared model allocation is shared;
+- a summary lane that never waits for optional assistant cancellation or native settlement;
 - enqueue-time operation tokens and execution-time image-byte copies with deterministic zero-fill;
-- immediate visible Reset plus internal cancellation/draining and vision-only unload;
+- immediate visible Reset that clears user/session state, cancels and drains in-flight sessions, and
+  retains the shared model as READY for the next summary or assistant request;
+- shutdown-only shared-slot unload under the manager cleanup barrier;
 - clinic prompt prohibitions.
 
 Message:
 
-> Asking during recording never enters the audio controller. Text and image turns use the same
-> scoped CPU VLM through fresh sessions, while the core Qwen summary model remains exclusive to
-> transcript summary. Requests capture immutable provenance at enqueue and copy image bytes only at
-> execution. Clear cancels queued chat and removes the only chat history. A mode switch clears all
-> prior assistant output before Clinic prompts can run.
+> Asking during recording never enters the audio controller. Summary, text, and image generations
+> borrow one prepared Qwen model but always use fresh ChatSessions and independent generations,
+> queues, histories, prompts, and safety boundaries. Requests capture immutable provenance at
+> enqueue and copy image bytes only at execution. Reset clears user/session state while keeping the
+> shared model READY; shutdown drains native work and unloads the shared slot.
 
 ## 12:15-13:15 — Model preparation preserves working slots
 
@@ -226,7 +231,8 @@ Show:
 - reset clearing derived state without processing captured audio;
 - optional assistant reset immediately clearing chat/image state and cancelling its queue without
   waiting on core cleanup;
-- optional session drain and vision-slot-only unload under the existing manager cleanup barrier;
+- optional session drain on Reset while the shared Qwen slot remains READY, with shared-slot unload
+  deferred to shutdown under the existing manager cleanup barrier;
 - Reset hiding stale assistant activity immediately while the native drain rejects only new
   optional work;
 - startup `capture-*.wav` orphan recovery and locked-file warning.

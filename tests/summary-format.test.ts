@@ -115,6 +115,64 @@ describe("formatSummaryForDisplay", () => {
       expect(contentWords(expected)).toEqual(contentWords(raw));
     });
 
+    it.each([
+      "2026. Project Atlas launches in November. The target remains 250 milliseconds.",
+      "2) Equation y′ = −2y identifies the decay law.\nThe solution remains stable.",
+      "250. The latency target remains 250 milliseconds.\nMaya Chen owns the follow-up.",
+      "2.1. Equation 2.1 defines the decay model.\nSection 3. Results retain the identifier.",
+      "2.0. Version 2.0 remains the approved release.\n2026-11-03 is the review date.",
+    ])("keeps ambiguous numeric-leading factual text unchanged: %s", (raw) => {
+      expect(formatSummaryPresentation(raw)).toEqual({
+        text: raw,
+        formattingApplied: false,
+      });
+    });
+
+    it("preserves proven monotonic ordered-list markers inside presentation bullets", () => {
+      const raw = ["1. First exact fact.", "2. Second exact fact.", "3. Third exact fact."].join("\n");
+      const expected = ["1. First exact fact.", "• 2. Second exact fact.", "• 3. Third exact fact."].join(
+        "\n",
+      );
+
+      expect(formatSummaryPresentation(raw)).toEqual({
+        text: expected,
+        formattingApplied: true,
+      });
+      expect(contentWords(expected)).toEqual(contentWords(raw));
+      expect(formatSummaryPresentation(expected).text).toBe(expected);
+    });
+
+    it("falls back without loss, duplication, or reordering for mixed numeric factual lines", () => {
+      const raw = [
+        "2026. Project Atlas launches in November.",
+        "2) Equation 2 identifies the decay law.",
+        "250. The latency target remains 250 milliseconds.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw);
+
+      expect(formatted.text).toBe(raw);
+      expect(contentWords(formatted.text)).toEqual(contentWords(raw));
+      expect(formatted.text.match(/2026\.|2\)|250\./gu)).toEqual(["2026.", "2)", "250."]);
+      expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
+    });
+
+    it("formats math once while preserving numeric prefixes and protected spans", () => {
+      const raw = [
+        "2026. Project Atlas keeps `v1.2.3` literal.",
+        String.raw`2) Equation $ y' = -2y $ uses C:\work\summary.txt.`,
+        "250. The target remains 250 milliseconds.",
+      ].join("\n");
+      const expected = [
+        "2026. Project Atlas keeps `v1.2.3` literal.",
+        String.raw`2) Equation y′ = −2y uses C:\work\summary.txt.`,
+        "250. The target remains 250 milliseconds.",
+      ].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(formatSummaryPresentation(expected).text).toBe(expected);
+      expect(contentWords(expected)).toEqual(contentWords(raw.replace("$ y' = -2y $", "y′ = −2y")));
+    });
+
     it("groups long outputs into at most six bullets without sentence loss or duplication", () => {
       const raw = Array.from({ length: 10 }, (_value, index) => `Sentence ${index + 1}.`).join(" ");
       const formatted = formatSummaryPresentation(raw).text;
