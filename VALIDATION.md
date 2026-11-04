@@ -457,7 +457,7 @@ cloud endpoint**, not as a completed physically offline rehearsal.
 ## Rollback
 
 - Stable `main` remains the rollback branch; this work must be deployed only from
-  `feature/multimodal-classroom-chat`.
+  `enhanced-ai-recorder`.
 - To avoid assistant behavior without changing builds, do not open the right-side image/chat panel.
   The shared CPU slot remains required for summary and is prepared with the other two models.
 - To roll back the feature build, redeploy the previously validated `main` SHA

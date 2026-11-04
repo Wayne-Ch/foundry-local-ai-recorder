@@ -1,8 +1,8 @@
 # Enhanced AI Recorder
 
 **Enhanced AI Recorder** extends
-[AI Recorder](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/tree/feature/ai-recorder-ux-parity)
-and its [standard colleague guide](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/blob/feature/ai-recorder-ux-parity/PLAYTEST.md).
+[AI Recorder](https://github.com/Wayne-Ch/foundry-local-ai-recorder)
+and its [standard colleague guide](https://github.com/Wayne-Ch/foundry-local-ai-recorder/blob/main/PLAYTEST.md).
 It preserves the standard recording, Whisper final transcript, and Qwen summary path, then adds
 these Enhanced-only capabilities:
 
@@ -13,7 +13,7 @@ these Enhanced-only capabilities:
   or treatment decisions.
 
 Follow the [Enhanced AI Recorder colleague playtest](PLAYTEST.md) on
-`feature/multimodal-classroom-chat`.
+`enhanced-ai-recorder`.
 
 Windows-first Electron app for a complete local recording workflow:
 
@@ -128,7 +128,7 @@ Prerequisites:
 From the parent folder where you want the canonical `enhanced-ai-recorder` clone:
 
 ```powershell
-git clone --branch feature/multimodal-classroom-chat --single-branch https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git enhanced-ai-recorder
+git clone --branch enhanced-ai-recorder --single-branch https://github.com/Wayne-Ch/foundry-local-ai-recorder.git enhanced-ai-recorder
 Set-Location .\enhanced-ai-recorder
 npm ci
 npm run build
@@ -402,13 +402,12 @@ ownership, transcript versioning, summary submission policy, rendering, trace, a
 **Foundry Local-owned:** catalog resolution, model download/cache/load, execution-provider
 registration, `AudioSession`/`ChatSession`, token preflight, and native inference.
 
-## Rollback
+## Standard app and recovery
 
-The feature is isolated on `feature/multimodal-classroom-chat`; `main` remains unchanged. To return
-to the stable recorder, launch/build `main` or the previously deployed SHA. Within this feature
-build, simply avoid the right-side panel. The shared CPU slot is prepared once for both summary and
-assistant work, and Reset retains that offline readiness. If native cleanup fails, close the app
-and restart; the recorder remains the authoritative recovery path.
+The standard **AI Recorder** is the repository's `main` branch. Keep it in a separate canonical
+`ai-recorder` clone by following the linked standard guide; do not switch this single-branch
+Enhanced validation clone. Within Enhanced AI Recorder, Reset retains shared-model offline
+readiness. If native cleanup fails, close the app and restart.
 
 See [PLAYTEST.md](PLAYTEST.md), [DEMO-RUNBOOK.md](DEMO-RUNBOOK.md),
 [CODE-WALKTHROUGH.md](CODE-WALKTHROUGH.md), and [VALIDATION.md](VALIDATION.md).

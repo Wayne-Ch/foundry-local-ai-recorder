@@ -1,9 +1,9 @@
-[Open the Enhanced branch](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/tree/feature/multimodal-classroom-chat)
+[Open the Enhanced branch](https://github.com/Wayne-Ch/foundry-local-ai-recorder/tree/enhanced-ai-recorder)
 
 # Enhanced AI Recorder colleague playtest
 
 **Enhanced AI Recorder** extends
-[AI Recorder](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/tree/feature/ai-recorder-ux-parity)
+[AI Recorder](https://github.com/Wayne-Ch/foundry-local-ai-recorder)
 with Ask AI, image analysis/Explain image, Classroom mode, and Clinic educational mode. It is not
 diagnostic software, does not provide medical decisions, and is not intended for arbitrary images,
 floor plans, or general visual inspection.
@@ -34,13 +34,13 @@ floor plans, or general visual inspection.
   downloads.
 - Several GB of free disk space for Electron, dependencies, models, and model caches.
 
-## Clone the feature branch and start
+## Clone the Enhanced branch and start
 
-The playtest is on `feature/multimodal-classroom-chat`, not the repository's default `main`
+The playtest is on `enhanced-ai-recorder`, not the repository's default `main`
 branch. In PowerShell:
 
 ```powershell
-git clone --branch feature/multimodal-classroom-chat --single-branch https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git enhanced-ai-recorder
+git clone --branch enhanced-ai-recorder --single-branch https://github.com/Wayne-Ch/foundry-local-ai-recorder.git enhanced-ai-recorder
 Set-Location .\enhanced-ai-recorder
 git branch --show-current
 ```
@@ -48,7 +48,7 @@ git branch --show-current
 The final command must print:
 
 ```text
-feature/multimodal-classroom-chat
+enhanced-ai-recorder
 ```
 
 Install the locked dependencies, build, and launch:
@@ -261,17 +261,9 @@ npm run test:vision-integration
 
 A passing target-Windows run ends with `VISION_INTEGRATION_OK`.
 
-## Stable branch and rollback
+## Standard app
 
-`main` remains the stable recorder branch; this playtest is isolated on
-`feature/multimodal-classroom-chat`. To return a clean clone to the stable branch:
-
-```powershell
-git switch main
-git pull --ff-only origin main
-npm ci
-npm run build
-npm run start:built
-```
-
-To playtest again, explicitly switch back to `feature/multimodal-classroom-chat` before building.
+The repository's `main` branch is the standard **AI Recorder**. Use a separate canonical
+`ai-recorder` clone and follow the
+[AI Recorder colleague guide](https://github.com/Wayne-Ch/foundry-local-ai-recorder/blob/main/PLAYTEST.md);
+do not switch this single-branch Enhanced validation clone.
