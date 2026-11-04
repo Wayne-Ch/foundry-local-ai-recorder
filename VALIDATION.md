@@ -25,9 +25,7 @@ tested.
 
 SDK: `foundry-local-sdk@2.2.1`
 
-Toolchain evidence: Node.js `26.13.0` with npm `11.20.0`. The root `package.json` declares neither
-an `engines` range nor a pinned `packageManager`, so these versions are validated evidence rather
-than a declared support range.
+Toolchain used for validation: Node.js 26.13.0 with npm 11.20.0.
 
 Runtime log evidence:
 
