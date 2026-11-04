@@ -9,7 +9,7 @@ summary flow with:
 - **Clinic · educational only** mode with a required clinician handoff and no diagnosis, urgency,
   or treatment decisions.
 
-Use the [Enhanced AI Recorder Test Guide](PLAYTEST.md) for the complete colleague test flow.
+Use the [Enhanced AI Recorder Test Guide](PLAYTEST.md) for the complete test flow.
 
 ## Local models
 
