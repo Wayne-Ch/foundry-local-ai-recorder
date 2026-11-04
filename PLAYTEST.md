@@ -1,4 +1,4 @@
-# AI Recorder colleague playtest
+# AI Recorder Test Guide
 
 Record observations without including private transcript content or local paths.
 
