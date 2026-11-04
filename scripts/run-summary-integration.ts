@@ -16,7 +16,7 @@ const FORBIDDEN_INSTRUCTION_ECHOES = [
 interface ConditionalFact {
   readonly label: string;
   readonly trigger: RegExp;
-  readonly valid: RegExp;
+  readonly valid: RegExp | ((claim: string) => boolean);
 }
 
 interface SummaryFixture {
@@ -95,9 +95,8 @@ const transcripts: readonly SummaryFixture[] = [
       },
       {
         label: "cache cause",
-        trigger: /local model cache|enabled the cache|cache caused/iu,
-        valid:
-          /(?:(?:local model cache|model cache|the cache|cache)[\s\S]{0,100}(?:reduc|fell|decreas|improv|caus|led to|resulted in)[\s\S]{0,100}(?:cold start )?latency[\s\S]{0,80}420\s*(?:milliseconds|ms)[\s\S]{0,50}(?:to|down to)[\s\S]{0,30}280\s*(?:milliseconds|ms)|(?:reduc|fell|decreas|improv)[\s\S]{0,100}(?:cold start )?latency[\s\S]{0,80}420\s*(?:milliseconds|ms)[\s\S]{0,50}(?:to|down to)[\s\S]{0,30}280\s*(?:milliseconds|ms)[\s\S]{0,100}(?:after|because|due to|caused by|resulted from|following)[\s\S]{0,60}(?:local model cache|model cache|the cache|cache))/iu,
+        trigger: /\b(?:local model cache|model cache|the cache|cache)\b/iu,
+        valid: hasValidAtlasCacheCause,
       },
       {
         label: "latency target",
@@ -228,6 +227,36 @@ assert.doesNotThrow(() =>
     "The local model cache reduced cold start latency from 420 milliseconds to 280 milliseconds.",
   ),
 );
+assert.doesNotThrow(() =>
+  validateSummaryText(
+    atlasFixture,
+    "Enabling the local model cache caused response latency to fall from 420 ms to 280 ms.",
+  ),
+);
+assert.doesNotThrow(() =>
+  validateSummaryText(
+    atlasFixture,
+    "Cold start latency fell from 420 milliseconds to 280 milliseconds because of the local model cache.",
+  ),
+);
+assert.doesNotThrow(() =>
+  validateSummaryText(
+    atlasFixture,
+    "After the team enabled the local model cache, cold start latency fell from 420 milliseconds to 280 milliseconds.",
+  ),
+);
+assert.doesNotThrow(() =>
+  validateSummaryText(
+    atlasFixture,
+    "The reduction in cold start latency from 420 milliseconds to 280 milliseconds was caused by the local model cache.",
+  ),
+);
+assert.doesNotThrow(() =>
+  validateSummaryText(
+    atlasFixture,
+    "Cold start latency fell from 420 milliseconds to 280 milliseconds after the local model cache was enabled.",
+  ),
+);
 const factualGateRegressions = [
   {
     fixture: odeFixture,
@@ -262,6 +291,46 @@ const factualGateRegressions = [
   {
     fixture: atlasFixture,
     text: "The local model cache caused the target to remain 250 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused the target to remain 250 milliseconds while cold start latency fell from 420 milliseconds to 280 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused the target to remain 250 milliseconds, and cold start latency fell from 420 milliseconds to 280 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache reduced cold start latency from 420 milliseconds to 280 milliseconds and caused the target to remain 250 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused the target to remain 250 milliseconds; cold start latency fell from 420 milliseconds to 280 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused the target to remain 250 milliseconds. Cold start latency fell from 420 milliseconds to 280 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "Cold start latency fell from 420 milliseconds to 280 milliseconds while the local model cache caused the target to remain 250 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused the deadline to remain November 12 while cold start latency fell from 420 milliseconds to 280 milliseconds.",
+    expected: /cache cause/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "The local model cache caused Maya Chen to own the follow-up while cold start latency fell from 420 milliseconds to 280 milliseconds.",
     expected: /cache cause/,
   },
   {
@@ -386,7 +455,11 @@ function validateSummaryText(fixture: SummaryFixture, text: string): void {
   for (const fact of fixture.facts) {
     for (const claim of claims) {
       if (matches(fact.trigger, claim)) {
-        assert.match(claim, fact.valid, `${fixture.id} summary misstated ${fact.label}`);
+        if (fact.valid instanceof RegExp) {
+          assert.match(claim, fact.valid, `${fixture.id} summary misstated ${fact.label}`);
+        } else {
+          assert.ok(fact.valid(claim), `${fixture.id} summary misstated ${fact.label}`);
+        }
       }
     }
   }
@@ -409,6 +482,68 @@ function factualClaims(value: string): string[] {
     .flatMap((line) => line.split(/(?<=[.!?;])\s+(?=(?:[-*]\s*)?[\p{L}\d])/u))
     .map((claim) => claim.replace(/^\s*(?:[-*•]|\d+[.)])\s+/u, "").trim())
     .filter(Boolean);
+}
+
+function hasValidAtlasCacheCause(claim: string): boolean {
+  const cacheReferenceSource = String.raw`(?:(?:the\s+)?(?:local\s+)?model\s+cache|the\s+cache|cache)`;
+  const latencySource = String.raw`(?:(?:cold[\s-]*start|response)\s+latency)`;
+  const rangeSource = String.raw`(?:from\s+)?420\s*(?:milliseconds|ms)\s*(?:to|down\s+to)\s*280\s*(?:milliseconds|ms)`;
+  const directReductionSource = String.raw`(?:reduced|lowered|cut|improved)\s+${latencySource}\s+${rangeSource}`;
+  const latencyReductionSource = String.raw`(?:${directReductionSource}|${latencySource}\s+(?:(?:fell|dropped|decreased|declined|was\s+(?:reduced|lowered|cut|improved))\s+${rangeSource}|(?:to\s+)?(?:fall|drop|decrease|decline)\s+${rangeSource}|(?:falling|dropping|decreasing|declining)\s+${rangeSource}|(?:reduction|decrease|improvement)\s+${rangeSource})|(?:(?:a|the)\s+)?(?:reduction|decrease|improvement)\s+(?:in|of)\s+${latencySource}\s+${rangeSource})`;
+  const cacheReference = new RegExp(`\\b${cacheReferenceSource}\\b`, "iu");
+  const cacheSubject = new RegExp(String.raw`^(?:(?:enabling|using)\s+)?${cacheReferenceSource}\b`, "iu");
+  const inheritedCacheEffect =
+    /^(?:also\s+)?(?:caus(?:ed|ing)|enabl(?:ed|ing)|improv(?:ed|ing)|led\s+to|lower(?:ed|ing)|made|reduc(?:ed|ing)|resulted\s+in|schedul(?:ed|ing)|set|setting)\b/iu;
+  const clauses = claim
+    .split(/\s*(?:;|\b(?:and|but|while|whereas|yet)\b)\s*/iu)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+  const cacheClauses: string[] = [];
+  let inheritsCacheSubject = false;
+  for (const clause of clauses) {
+    if (matches(cacheReference, clause)) {
+      cacheClauses.push(clause);
+      inheritsCacheSubject = matches(cacheSubject, clause);
+    } else if (inheritsCacheSubject && matches(inheritedCacheEffect, clause)) {
+      cacheClauses.push(`The local model cache ${clause}`);
+    } else {
+      inheritsCacheSubject = false;
+    }
+  }
+  if (cacheClauses.length === 0) {
+    return false;
+  }
+  const validPatterns = [
+    new RegExp(
+      String.raw`^(?:(?:enabling|using)\s+)?${cacheReferenceSource}\s+(?:directly\s+)?${directReductionSource}[.!?]?$`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`^(?:(?:enabling|using)\s+)?${cacheReferenceSource}\s+(?:caused|led\s+to|resulted\s+in|was\s+responsible\s+for)\s+${latencyReductionSource}[.!?]?$`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`^(?:Project\s+Atlas\s+)?${latencyReductionSource}\s+(?:after|because)\s+(?:the\s+team\s+)?(?:enabled|used)\s+${cacheReferenceSource}[.!?]?$`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`^(?:Project\s+Atlas\s+)?${latencyReductionSource}\s+(?:because\s+of|due\s+to|following|as\s+a\s+result\s+of|resulted\s+from|was\s+caused\s+by)\s+(?:(?:enabling|using)\s+|the\s+use\s+of\s+)?${cacheReferenceSource}[.!?]?$`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`^(?:Project\s+Atlas\s+)?${latencyReductionSource}\s+after\s+${cacheReferenceSource}\s+was\s+(?:enabled|used)[.!?]?$`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`^(?:after|because)\s+(?:the\s+team\s+)?(?:enabled|used)\s+${cacheReferenceSource},?\s+(?:Project\s+Atlas\s+)?${latencyReductionSource}[.!?]?$`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`^(?:because\s+of|due\s+to|following|as\s+a\s+result\s+of)\s+(?:(?:enabling|using)\s+|the\s+use\s+of\s+)?${cacheReferenceSource},?\s+(?:Project\s+Atlas\s+)?${latencyReductionSource}[.!?]?$`,
+      "iu",
+    ),
+  ] as const;
+  return cacheClauses.every((clause) => validPatterns.some((pattern) => matches(pattern, clause)));
 }
 
 function matches(pattern: RegExp, value: string): boolean {
