@@ -36,9 +36,9 @@ service or URL.
 
 ### Validated configuration
 
-Formal app validation and current E2E evidence for this release were executed with Node.js
-`26.13.0` and npm `11.20.0` on a Windows 11 x64 machine with AMD Radeon graphics, working WebGPU,
-and 64 GB RAM. Those Node/npm versions are validation evidence, not a declared support range. All
+Formal app validation and current E2E evidence for this release were executed on a Windows 11 x64
+machine with AMD Radeon graphics, working WebGPU, and 64 GB RAM.
+Validation used Node.js 26.13.0 and npm 11.20.0. All
 Recorder models use the documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the
 evidence environment and is not a model requirement. This configuration is not the product's only
 intended target. Foundry Local's broader public platform and hardware support is separate, and

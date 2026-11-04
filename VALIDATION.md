@@ -21,9 +21,7 @@ must not be presented as having equivalent evidence until tested.
 
 SDK: `foundry-local-sdk@2.2.1`
 
-Toolchain evidence: Node.js `26.13.0` with npm `11.20.0`. The root `package.json` declares neither
-an `engines` range nor a pinned `packageManager`, so these versions are validated evidence rather
-than a declared support range.
+Toolchain used for validation: Node.js 26.13.0 with npm 11.20.0.
 
 The standard app has exactly these three roles. Each summary request creates a fresh text-only
 `ChatSession`; no summary conversation state is reused.
