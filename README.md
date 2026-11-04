@@ -1,8 +1,9 @@
 # Enhanced AI Recorder
 
 **Enhanced AI Recorder** extends
-[AI Recorder](https://github.com/Wayne-Ch/foundry-local-ai-recorder)
-and its [standard colleague guide](https://github.com/Wayne-Ch/foundry-local-ai-recorder/blob/main/PLAYTEST.md).
+[AI Recorder](https://github.com/Wayne-Ch/foundry-local-ai-recorder).
+Follow the [AI Recorder Test Guide](https://github.com/Wayne-Ch/foundry-local-ai-recorder/blob/main/PLAYTEST.md)
+for the standard app.
 It preserves the standard recording, Whisper final transcript, and Qwen summary path, then adds
 these Enhanced-only capabilities:
 
@@ -12,7 +13,7 @@ these Enhanced-only capabilities:
 - **Clinic · educational only** mode with a required clinician handoff and no diagnosis, urgency,
   or treatment decisions.
 
-Follow the [Enhanced AI Recorder colleague playtest](PLAYTEST.md) on
+Follow the [Enhanced AI Recorder Test Guide](PLAYTEST.md) on
 `enhanced-ai-recorder`.
 
 Windows-first Electron app for a complete local recording workflow:

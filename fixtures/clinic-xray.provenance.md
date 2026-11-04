@@ -58,7 +58,7 @@ labels or annotations were added.
 
 ## Educational limitation
 
-This fixture is only for the public Enhanced AI Recorder Clinic playtest: local description of
+This fixture is only for the public Enhanced AI Recorder Clinic test flow: local description of
 visible structures and demonstration of non-diagnostic clinician handoff behavior. It is not a
 diagnostic reference and must not be used for diagnosis, triage, treatment, patient care, or
 clinical model validation. Any model output about it requires clinician review.

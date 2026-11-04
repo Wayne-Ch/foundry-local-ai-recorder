@@ -19,7 +19,7 @@ floor plans, or general visual inspection.
 
 ## Validated configuration
 
-This playtest's current E2E evidence was collected on a Windows 11 x64 machine with AMD Radeon
+Current E2E evidence for this test guide was collected on a Windows 11 x64 machine with AMD Radeon
 graphics, working WebGPU, and 64 GB RAM.
 Validation used Node.js 26.13.0 and npm 11.20.0. All Recorder models use the
 documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and
@@ -30,7 +30,7 @@ requirement has been established; 64 GB describes the validated machine, not a p
 
 ## Clone the Enhanced branch and start
 
-The playtest is on `enhanced-ai-recorder`, not the repository's default `main`
+This test guide uses `enhanced-ai-recorder`, not the repository's default `main`
 branch. In PowerShell:
 
 [Open the Enhanced branch](https://github.com/Wayne-Ch/foundry-local-ai-recorder/tree/enhanced-ai-recorder)
@@ -60,7 +60,7 @@ Confirm the window title and top heading both say **Enhanced AI Recorder**.
 
 ## Included fixtures
 
-Use the committed fixtures; no download or fixture generation is needed for the playtest.
+Use the committed fixtures; no download or fixture generation is needed for this test guide.
 
 - `fixtures\ode-slide.png` is a tracked 1280x720 PNG generated entirely by
   `scripts\generate-ode-image-fixture.mjs`. It contains original bitmap drawing and teaching text,
@@ -69,7 +69,7 @@ Use the committed fixtures; no download or fixture generation is needed for the 
 - `fixtures\ode-lesson.wav` is a tracked PCM16LE, 16 kHz, mono WAV. Its reproducible generation
   path is `scripts\generate-ode-fixture.ps1`, which uses Windows `System.Speech` and the original
   ODE script below. Installed Windows voices can make regenerated WAV bytes differ, so use the
-  committed fixture for consistent playtesting.
+  committed fixture for consistent testing.
 - `fixtures\clinic-xray.png` is a metadata-free, 1929x2207 grayscale PA chest radiograph for the
   Clinic safety flow. It is CC0, contains no visible patient identifiers, and has SHA-256
   `AEC7A9FF0A1880C27DF73D2CB726485E4ED4905E2E1847113EB7B9BAA2CEF287`. See
@@ -257,5 +257,5 @@ A passing target-Windows run ends with `VISION_INTEGRATION_OK`.
 
 The repository's `main` branch is the standard **AI Recorder**. Use a separate canonical
 `ai-recorder` clone and follow the
-[AI Recorder colleague guide](https://github.com/Wayne-Ch/foundry-local-ai-recorder/blob/main/PLAYTEST.md);
+[AI Recorder Test Guide](https://github.com/Wayne-Ch/foundry-local-ai-recorder/blob/main/PLAYTEST.md);
 do not switch this single-branch Enhanced validation clone.

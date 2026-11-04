@@ -193,7 +193,7 @@ Production/integration builds continue to import the real `foundry-local-sdk@2.2
 
 ## Developer fixture integrity
 
-Normal setup and colleague playtesting use the committed fixtures. Regeneration is a developer
+Normal setup and testing use the committed fixtures. Regeneration is a developer
 integrity check only and must run in a clean disposable validation checkout.
 
 The deterministic ODE image must reproduce without a diff:
