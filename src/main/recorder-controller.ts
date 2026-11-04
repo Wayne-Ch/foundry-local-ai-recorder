@@ -457,7 +457,7 @@ export class RecorderController {
     const cleanupCompletion = this.#runtime.cleanupCompletion ?? runtimeResult;
     this.#trackCleanupGeneration(cleanupCompletion);
     const durableReset = cleanupCompletion.then(() => this.#applyReset());
-    const resetResult = runtimeResult.then(() => durableReset);
+    const resetResult = Promise.all([runtimeResult, durableReset]).then(([, snapshot]) => snapshot);
     const journaledResult = resetResult.then(
       async (snapshot) => {
         this.#operationJournal.record({

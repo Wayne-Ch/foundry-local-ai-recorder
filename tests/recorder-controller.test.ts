@@ -1,5 +1,5 @@
 import type { RequestPreflightResult, Response } from "foundry-local-sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { encodePcm16Wav } from "../src/audio/audio-contract";
 import {
   AUDIO_CHANNELS,
@@ -248,6 +248,66 @@ describe("RecorderController", () => {
         .filter((event) => event.operation === "reset" || event.operation === "shutdown")
         .map((event) => `${event.operation}:${event.status}`),
     ).toEqual(["reset:start", "shutdown:start", "reset:complete", "shutdown:complete"]);
+  });
+
+  it("journals a failed Reset without emitting an unhandled cleanup rejection", async () => {
+    class RejectingResetRuntime extends FakeRuntime {
+      readonly resetGate = deferred<void>();
+
+      override get cleanupCompletion(): Promise<void> {
+        return this.resetGate.promise;
+      }
+
+      override reset(): Promise<void> {
+        return this.resetGate.promise;
+      }
+    }
+
+    const runtime = new RejectingResetRuntime();
+    const persisted: RecorderOperationJournalEvent[] = [];
+    let tail = Promise.resolve();
+    let flushCount = 0;
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      const controller = new RecorderController(runtime, {
+        record(event) {
+          tail = tail.then(() => {
+            persisted.push(event);
+          });
+        },
+        async flush() {
+          await tail;
+          flushCount += 1;
+        },
+      });
+      const failure = new Error("Reset cleanup failed.");
+
+      const reset = controller.reset();
+      expect(controller.reset()).toBe(reset);
+      runtime.resetGate.reject(failure);
+
+      await expect(reset).rejects.toBe(failure);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(
+        persisted
+          .filter((event) => event.operation === "reset")
+          .map((event) => `${event.operation}:${event.status}`),
+      ).toEqual(["reset:start", "reset:fail"]);
+      expect(persisted.find((event) => event.operation === "reset" && event.status === "fail")).toMatchObject(
+        {
+          diagnostic: {
+            code: "LOCAL_OPERATION_FAILED",
+            name: "Error",
+          },
+        },
+      );
+      expect(flushCount).toBe(1);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 
   it("rejects an imported WAV selected before Reset", async () => {
