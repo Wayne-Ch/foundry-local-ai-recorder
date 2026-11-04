@@ -55,6 +55,16 @@ export function canonicalExecutionProvider(name: string): string {
   return name.trim();
 }
 
+export function isStandardRuntimeTarget(target: RuntimeTarget): boolean {
+  const definition = targetDefinitions[target.role];
+  return (
+    target.stageValidated &&
+    target.modelId === definition.modelId &&
+    canonicalExecutionProvider(target.executionProvider) ===
+      canonicalExecutionProvider(definition.executionProvider)
+  );
+}
+
 export function resolveRuntimeTargets(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): RuntimeTargets {
@@ -83,11 +93,13 @@ function resolveTarget(
   const resolvedModelId = modelId || definition.modelId;
   const resolvedProvider = canonicalExecutionProvider(provider || definition.executionProvider);
   if (
-    role === "summary" &&
-    (resolvedModelId !== SUMMARY_MODEL_ID || resolvedProvider !== SUMMARY_EXECUTION_PROVIDER)
+    resolvedModelId !== definition.modelId ||
+    resolvedProvider !== canonicalExecutionProvider(definition.executionProvider)
   ) {
+    const expectedModelId = definition.modelId;
+    const expectedProvider = canonicalExecutionProvider(definition.executionProvider);
     throw new RuntimeConfigurationError(
-      `The standard summary model must use ${SUMMARY_MODEL_ID} with ${SUMMARY_EXECUTION_PROVIDER}.`,
+      `The standard ${role} model must use ${expectedModelId} with ${expectedProvider}.`,
     );
   }
   return {

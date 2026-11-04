@@ -1,19 +1,15 @@
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import electronPath from "electron";
+import { runOwnedProcess } from "./electron-process-tree.mjs";
 
-const child = spawn(electronPath, ["."], {
+const { code, output } = await runOwnedProcess({
+  command: electronPath,
+  args: ["."],
   cwd: process.cwd(),
   env: { ...process.env, AI_RECORDER_SMOKE_AND_EXIT: "1" },
-  stdio: ["ignore", "pipe", "pipe"],
+  label: "Electron smoke probe",
+  timeoutMs: 20_000,
 });
-const output = [];
-child.stdout.on("data", (chunk) => output.push(chunk.toString()));
-child.stderr.on("data", (chunk) => output.push(chunk.toString()));
-const timeout = setTimeout(() => child.kill(), 20_000);
-const [code] = await once(child, "exit");
-clearTimeout(timeout);
 if (code !== 0) {
-  throw new Error(`Electron smoke failed (${code}):\n${output.join("")}`);
+  throw new Error(`Electron smoke failed (${code}):\n${output}`);
 }
 console.log("ELECTRON_SMOKE_OK");

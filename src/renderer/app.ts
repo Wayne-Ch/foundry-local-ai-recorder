@@ -19,6 +19,7 @@ import {
   recordingLimitDelay,
   releaseMediaStream,
 } from "./audio-capture";
+import { coreModelsReady, modelReadinessPresentation, preparedModelCount } from "./model-readiness";
 import { applyRecorderProgress, type RecorderOperationState } from "./recorder-progress";
 
 interface RecordingOperation {
@@ -351,9 +352,9 @@ async function prepareModels(): Promise<void> {
       return;
     }
     snapshot = response.snapshot;
-    prepared = coreModelsReady(snapshot);
+    prepared = coreModelsReady(snapshot.readiness);
     liveAvailable = response.liveCaptionsAvailable;
-    const readyCount = preparedModelCount(snapshot);
+    const readyCount = preparedModelCount(snapshot.readiness);
     const recoveryWarning = startupRecoveryWarning(snapshot);
     if (recoveryWarning !== null) {
       setStatus(recoveryWarning, "warning");
@@ -908,6 +909,7 @@ function renderReadiness(next: RecorderSnapshot): void {
 }
 
 function renderModel(role: "whisper" | "nemotron" | "summary", readiness: ModelReadiness): void {
+  const presentation = modelReadinessPresentation(readiness);
   elements.model[role].id.textContent = [
     readiness.target.modelId,
     readiness.model?.deviceType,
@@ -917,8 +919,8 @@ function renderModel(role: "whisper" | "nemotron" | "summary", readiness: ModelR
     .join(" · ");
   elements.model[role].detail.textContent = readiness.detail;
   elements.model[role].detail.title = readiness.detail;
-  elements.model[role].state.textContent = stateLabel(readiness.status);
-  elements.model[role].state.className = `state-chip state-${readiness.status}`;
+  elements.model[role].state.textContent = presentation.label;
+  elements.model[role].state.className = `state-chip state-${presentation.status}`;
   elements.model[role].state.setAttribute("role", "status");
   elements.model[role].card.setAttribute(
     "aria-busy",
@@ -1047,20 +1049,6 @@ function formatElapsed(milliseconds: number): string {
 
 function formatMilliseconds(milliseconds: number | null): string {
   return milliseconds === null ? "—" : `${(milliseconds / 1000).toFixed(2)} s`;
-}
-
-function stateLabel(status: ModelReadiness["status"]): string {
-  return status.replaceAll("_", " ").toUpperCase();
-}
-
-function coreModelsReady(next: RecorderSnapshot): boolean {
-  return next.readiness.whisper.status === "ready" && next.readiness.summary.status === "ready";
-}
-
-function preparedModelCount(next: RecorderSnapshot): number {
-  return [next.readiness.whisper, next.readiness.nemotron, next.readiness.summary].filter(
-    ({ status }) => status === "ready",
-  ).length;
 }
 
 function microphoneError(error: unknown): string {

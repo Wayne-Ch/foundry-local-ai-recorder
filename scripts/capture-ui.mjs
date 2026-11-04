@@ -1,12 +1,13 @@
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import electronPath from "electron";
+import { runOwnedProcess } from "./electron-process-tree.mjs";
 
 const capturePath = path.resolve("artifacts", "ai-recorder-populated-summary.png");
 await mkdir(path.dirname(capturePath), { recursive: true });
-const child = spawn(electronPath, ["."], {
+const { code, output } = await runOwnedProcess({
+  command: electronPath,
+  args: ["."],
   cwd: process.cwd(),
   env: {
     ...process.env,
@@ -14,18 +15,9 @@ const child = spawn(electronPath, ["."], {
     AI_RECORDER_CAPTURE_AND_EXIT: "1",
     AI_RECORDER_CAPTURE_FIXTURE: "populated-summary",
   },
-  stdio: ["ignore", "pipe", "pipe"],
+  label: "UI capture probe",
+  timeoutMs: 25_000,
 });
-let output = "";
-child.stdout.on("data", (chunk) => {
-  output += chunk.toString();
-});
-child.stderr.on("data", (chunk) => {
-  output += chunk.toString();
-});
-const timeout = setTimeout(() => child.kill(), 25_000);
-const [code] = await once(child, "exit");
-clearTimeout(timeout);
 if (code !== 0) {
   throw new Error(`UI capture failed (${code}):\n${output}`);
 }

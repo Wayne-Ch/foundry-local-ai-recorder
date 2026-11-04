@@ -179,31 +179,15 @@ describe("RecorderController", () => {
     ["token", "token_fake_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"],
   ])("never persists a raw %s-shaped model override", async (_label, modelId) => {
     const events: RecorderOperationJournalEvent[] = [];
-    const targetsWithOverride = resolveRuntimeTargets({
-      AI_RECORDER_WHISPER_MODEL_ID: modelId,
-      AI_RECORDER_WHISPER_EXECUTION_PROVIDER: AUDIO_EXECUTION_PROVIDER,
-    });
-    const controller = new RecorderController(
-      new FakeRuntime(undefined, undefined, undefined, targetsWithOverride),
-      {
-        record: (event) => events.push(event),
-        flush: async () => {},
-      },
+    expect(() =>
+      resolveRuntimeTargets({
+        AI_RECORDER_WHISPER_MODEL_ID: modelId,
+        AI_RECORDER_WHISPER_EXECUTION_PROVIDER: AUDIO_EXECUTION_PROVIDER,
+      }),
+    ).toThrow(
+      `The standard whisper model must use ${WHISPER_AUDIO_MODEL_ID} with ${AUDIO_EXECUTION_PROVIDER}.`,
     );
-
-    await controller.prepare({ enableLiveCaptions: false });
-
-    const progress = events.find(
-      (event) =>
-        event.operation === "prepare" && event.status === "progress" && event.modelRole === "whisper",
-    );
-    expect(progress).toMatchObject({
-      modelRole: "whisper",
-      modelSource: "environment_override",
-      modelRef: expect.stringMatching(/^override:whisper:[a-f0-9]{12}$/),
-    });
-    expect(progress).not.toHaveProperty("modelId");
-    expect(JSON.stringify(events)).not.toContain(modelId);
+    expect(events).toEqual([]);
   });
 
   it("persists the Reset terminal event before Shutdown can complete", async () => {

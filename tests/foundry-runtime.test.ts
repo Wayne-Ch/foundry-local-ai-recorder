@@ -40,6 +40,37 @@ afterEach(async () => {
 });
 
 describe("FoundryRecorderRuntime", () => {
+  it.each([
+    {
+      role: "Whisper",
+      environment: {
+        AI_RECORDER_WHISPER_MODEL_ID: "unapproved-whisper:1",
+        AI_RECORDER_WHISPER_EXECUTION_PROVIDER: AUDIO_EXECUTION_PROVIDER,
+      },
+    },
+    {
+      role: "Nemotron",
+      environment: {
+        AI_RECORDER_NEMOTRON_MODEL_ID: NEMOTRON_AUDIO_MODEL_ID,
+        AI_RECORDER_NEMOTRON_EXECUTION_PROVIDER: "DmlExecutionProvider",
+      },
+    },
+  ])("rejects a non-standard $role pair before manager or catalog creation", ({ environment }) => {
+    const createManager = vi.fn(() => {
+      throw new Error("Manager creation must not run.");
+    });
+
+    expect(
+      () =>
+        new FoundryRecorderRuntime({
+          environment,
+          createManager,
+          assertNativeRuntime: () => {},
+        }),
+    ).toThrow("The standard");
+    expect(createManager).not.toHaveBeenCalled();
+  });
+
   it("reports runtime initialization before the first awaited setup step", async () => {
     const root = await createTempRoot();
     const paths = deferred<ReturnType<typeof pathsFor>>();

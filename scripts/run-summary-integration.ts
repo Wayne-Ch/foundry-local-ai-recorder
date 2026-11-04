@@ -52,7 +52,7 @@ const transcripts: readonly SummaryFixture[] = [
       },
       {
         label: "general solution",
-        trigger: /\bsolution\b|y\(t\)|y of t|e\^/iu,
+        trigger: /y\(t\)|y of t|e\^/iu,
         valid: /y\(t\)\s*=\s*c\s*[·*]?\s*e\^\([−-]2t\)|y of t equals c times e to the negative two t/iu,
       },
       {
@@ -68,15 +68,16 @@ const transcripts: readonly SummaryFixture[] = [
       },
       {
         label: "resolved constant",
-        trigger: /\bc\b|\bconstant\b/iu,
+        trigger: /\bc\s*=|\bc\s+equals\b|(?:integration )?constant/iu,
         valid:
-          /c\s*=\s*3|c equals 3|y\(t\)\s*=\s*c\s*[·*]?\s*e\^\([−-]2t\)|y of t equals c times e to the negative two t|c[\s\S]{0,50}(?:integration )?constant[\s\S]{0,80}(?:determined|set)[\s\S]{0,50}initial condition/iu,
+          /c\s*=\s*3|c equals 3|(?:integration )?constant[\s\S]{0,80}(?:determined|set)[\s\S]{0,50}(?:by|from)[\s\S]{0,30}(?:the )?initial condition|initial condition[\s\S]{0,80}(?:determines?|sets?)[\s\S]{0,40}\bc\s*(?:=\s*|to\s+)3\b/iu,
       },
     ],
     forbidden: [
-      /\bc\b[\s\S]{0,20}(?:is|was|represents?)\s+(?:the\s+)?initial condition/iu,
-      /initial condition[\s\S]{0,20}(?:is|was)\s+\bc\b/iu,
+      /(?:\bc\b|(?:integration )?constant)[\s\S]{0,20}(?:is|was|represents?)\s+(?:the\s+)?initial condition/iu,
+      /initial condition[\s\S]{0,20}(?:is|was)\s+(?:\bc\b|(?:the )?(?:integration )?constant)/iu,
       /\bc\s*=\s*y\(0\)/iu,
+      /(?:initial condition|y\(0\)|y of 0)[\s\S]{0,80}(?:caus(?:e|ed|es|ing)?|led to|results? in)[\s\S]{0,80}(?:decay|equation|solution)/iu,
       /\bEuler\b|\bhomework\b|\bcitation\b|\bProject Atlas\b|\bTeam Aurora\b/iu,
     ],
     allowedExtraNumbers: ["2"],
@@ -88,7 +89,7 @@ const transcripts: readonly SummaryFixture[] = [
     facts: [
       {
         label: "latency reduction",
-        trigger: /cold start latency|420|280/iu,
+        trigger: /cold start latency|420\s*(?:milliseconds|ms)|(?:reduc|fell|decreas)/iu,
         valid:
           /(?:reduc|fell|decreas)[\s\S]{0,80}420\s*(?:milliseconds|ms)[\s\S]{0,80}280\s*(?:milliseconds|ms)|420\s*(?:milliseconds|ms)[\s\S]{0,80}(?:to|down to)[\s\S]{0,30}280\s*(?:milliseconds|ms)/iu,
       },
@@ -116,6 +117,7 @@ const transcripts: readonly SummaryFixture[] = [
     ],
     forbidden: [
       /Maya Chen[\s\S]{0,50}(?:enabled|caused)[\s\S]{0,50}(?:cache|latency)/iu,
+      /(?:\btarget\b|250\s*(?:milliseconds|ms))[\s\S]{0,60}(?:caus(?:e|ed|es|ing)?|led to|resulted in)[\s\S]{0,80}(?:reduc|latency|280\s*(?:milliseconds|ms))/iu,
       /\bPriya\b|\bBattery Pack B\b|\bTeam Aurora\b|\bthermal runaway\b|\bequation\b/iu,
     ],
     allowedExtraNumbers: [],
@@ -127,7 +129,8 @@ const transcripts: readonly SummaryFixture[] = [
     facts: [
       {
         label: "initial measurement",
-        trigger: /Battery Pack B|82|25 degrees|25 °C/iu,
+        trigger:
+          /Battery Pack B|(?:measured|initial)[\s\S]{0,40}82\s*(?:watt-hours|Wh)|25\s*(?:degrees Celsius|°C|C)\b/iu,
         valid:
           /Battery Pack B[\s\S]{0,80}82\s*(?:watt-hours|Wh)[\s\S]{0,80}25\s*(?:degrees Celsius|°C|C)\b/iu,
       },
@@ -138,7 +141,7 @@ const transcripts: readonly SummaryFixture[] = [
       },
       {
         label: "decline amount",
-        trigger: /6\s*(?:watt-hours|Wh)|\bdecline\b/iu,
+        trigger: /6\s*(?:watt-hours|Wh)|\bdecline\s+(?:of|was|is|amount)/iu,
         valid: /6\s*(?:watt-hours|Wh)[\s\S]{0,60}declin|declin[\s\S]{0,60}6\s*(?:watt-hours|Wh)/iu,
       },
       {
@@ -192,6 +195,7 @@ const transcripts: readonly SummaryFixture[] = [
     ],
     forbidden: [
       /Lina[\s\S]{0,40}(?:selected|scheduled)[\s\S]{0,30}(?:samples|calibration)/iu,
+      /(?:quiet room|room[\s\S]{0,20}quiet)[\s\S]{0,60}(?:caus(?:e|ed|es|ing)?|led to|resulted in)[\s\S]{0,80}(?:Project Cedar|select|samples)/iu,
       /\bProject Atlas\b|\bTeam Aurora\b|\bPriya\b|\bMaya Chen\b/iu,
     ],
     allowedExtraNumbers: [],
@@ -210,6 +214,71 @@ assert.throws(
   () => validateSummaryText(conciseFixture, "Lina scheduled calibration."),
   /false or unrelated claim|calibration owner/,
 );
+const odeFixture = requiredFixture("ode");
+const atlasFixture = requiredFixture("atlas");
+const auroraFixture = requiredFixture("aurora");
+assert.doesNotThrow(() => validateSummaryText(odeFixture, "The initial condition is y(0) = 3."));
+assert.doesNotThrow(() => validateSummaryText(atlasFixture, "The target remains 250 milliseconds."));
+const factualGateRegressions = [
+  {
+    fixture: odeFixture,
+    text: "An ordinary differential equation relates a function to its derivatives. The first order equation y' = -2y has solution y(t) = c * e^(-2t), which decays over time. The initial condition y(0) = 3 sets c = 2.",
+    expected: /resolved constant/,
+  },
+  {
+    fixture: odeFixture,
+    text: "An ordinary differential equation relates a function to its derivatives. The source equation is y' = -2y. The equation used for the solution is y' = -3y. The solution y(t) = c * e^(-2t) decays over time. The initial condition y(0) = 3 sets c = 3.",
+    expected: /first-order equation/,
+  },
+  {
+    fixture: odeFixture,
+    text: "An ordinary differential equation relates a function to its derivatives. For y' = -2y, the solution y(t) = c * e^(-2t) decays over time. The initial condition y(0) = 3 causes the exponential decay, and c = 3.",
+    expected: /false or unrelated claim/,
+  },
+  {
+    fixture: odeFixture,
+    text: "An ordinary differential equation relates a function to its derivatives. For y' = -2y, y(t) = c * e^(-2t) decays over time. The integration constant is the initial condition, while y(0) = 3 sets c = 3.",
+    expected: /false or unrelated claim/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache. The target remains 250 milliseconds. Maya Chen owns the follow-up, and the next review is November 12. The 250 millisecond target caused the latency reduction.",
+    expected: /false or unrelated claim/,
+  },
+  {
+    fixture: atlasFixture,
+    text: "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache. The target remains 250 milliseconds. The target is also 280 milliseconds. Maya Chen owns the follow-up, and the next review is November 12.",
+    expected: /latency target/,
+  },
+  {
+    fixture: auroraFixture,
+    text: "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius. After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging. Priya will rerun the test at 0.5 C on December 5. The planned 0.5 C rerun caused the decline.",
+    expected: /charging cause/,
+  },
+  {
+    fixture: auroraFixture,
+    text: "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius. After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging. The decline was 82 watt-hours. Priya will rerun the test at 0.5 C on December 5.",
+    expected: /decline amount/,
+  },
+  {
+    fixture: conciseFixture,
+    text: "Project Cedar selected 12 samples on March 4. Lina owns calibration. The room was quiet. The quiet room caused Project Cedar to select 12 samples.",
+    expected: /false or unrelated claim/,
+  },
+  {
+    fixture: conciseFixture,
+    text: "Project Cedar selected 12 samples on March 4. Project Cedar also selected 4 samples. Lina owns calibration. The room was quiet.",
+    expected: /sample selection/,
+  },
+] as const;
+for (const candidate of factualGateRegressions) {
+  const displayText = formatSummaryPresentation(candidate.text).text;
+  assert.throws(
+    () => validateSummaryText(candidate.fixture, displayText),
+    candidate.expected,
+    `${candidate.fixture.id} factual regression candidate must fail: ${candidate.text}`,
+  );
+}
 console.log("SUMMARY_ACCEPTANCE_POLICY_OK omissions_allowed inaccuracies_rejected");
 
 const controller = new RecorderController();
@@ -272,8 +341,9 @@ try {
 function validateSummaryText(fixture: SummaryFixture, text: string): void {
   assertSummaryDisplayText(text);
   assert.equal(formatSummaryPresentation(text).text, text);
+  const claims = factualClaims(text);
   assert.ok(
-    fixture.anchors.some((anchor) => anchor.test(text)),
+    fixture.anchors.some((anchor) => matches(anchor, text)),
     `${fixture.id} summary contained no recognizable source fact`,
   );
   for (const echo of FORBIDDEN_INSTRUCTION_ECHOES) {
@@ -290,8 +360,10 @@ function validateSummaryText(fixture: SummaryFixture, text: string): void {
   const unexpectedNumbers = [...new Set(numericTokens(text).filter((number) => !allowedNumbers.has(number)))];
   assert.deepEqual(unexpectedNumbers, [], `${fixture.id} summary invented numbers`);
   for (const fact of fixture.facts) {
-    if (fact.trigger.test(text)) {
-      assert.match(text, fact.valid, `${fixture.id} summary misstated ${fact.label}`);
+    for (const claim of claims) {
+      if (matches(fact.trigger, claim)) {
+        assert.match(claim, fact.valid, `${fixture.id} summary misstated ${fact.label}`);
+      }
     }
   }
   if (fixture.maxWords !== undefined) {
@@ -305,4 +377,23 @@ function validateSummaryText(fixture: SummaryFixture, text: string): void {
 
 function numericTokens(value: string): string[] {
   return [...value.matchAll(/\d+(?:\.\d+)?/gu)].map(([token]) => token);
+}
+
+function factualClaims(value: string): string[] {
+  return value
+    .split(/\r?\n+/u)
+    .flatMap((line) => line.split(/(?<=[.!?;])\s+(?=(?:[-*]\s*)?[\p{L}\d])/u))
+    .map((claim) => claim.replace(/^\s*(?:[-*•]|\d+[.)])\s+/u, "").trim())
+    .filter(Boolean);
+}
+
+function matches(pattern: RegExp, value: string): boolean {
+  pattern.lastIndex = 0;
+  return pattern.test(value);
+}
+
+function requiredFixture(id: string): SummaryFixture {
+  const fixture = transcripts.find((candidate) => candidate.id === id);
+  assert.ok(fixture !== undefined, `Missing summary fixture ${id}.`);
+  return fixture;
 }
