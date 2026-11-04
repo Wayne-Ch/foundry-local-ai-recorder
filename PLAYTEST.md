@@ -25,7 +25,7 @@ paths.
 1. From the parent folder where you want the canonical clone, run:
 
    ```powershell
-   git clone --branch feature/ai-recorder-ux-parity --single-branch https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git ai-recorder
+   git clone https://github.com/Wayne-Ch/foundry-local-ai-recorder.git ai-recorder
    Set-Location .\ai-recorder
    ```
 
