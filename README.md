@@ -59,7 +59,7 @@ AI Recorder open until all three model cards report **READY** and the status say
 Close the **AI Recorder** window normally when testing is complete and wait for
 `npm run start:built` to return to the PowerShell prompt.
 
-Follow [PLAYTEST.md](PLAYTEST.md) for the complete test flow.
+Follow [AI Recorder Test Guide](PLAYTEST.md) for the complete test flow.
 
 ## Current limitations
 
