@@ -95,13 +95,13 @@ export async function runPrepareUiProbe(
       !sawBusy ||
       !sawModelBusy ||
       result.finalStatusClass !== "status-message status-success" ||
-      !result.finalStatus.includes("Enhanced offline ready · 3/3 models") ||
+      !result.finalStatus.includes("Enhanced AI Recorder offline ready · 3/3 models") ||
       result.finalModelStates.some((state) => state !== "READY") ||
       result.finalModelDetails.some((detail) => !detail)
     ) {
       throw new Error(`Prepare UI did not reach complete visible readiness: ${JSON.stringify(result)}`);
     }
-    const capturePath = process.env.SMART_RECORDER_PREPARE_UI_CAPTURE_PATH?.trim();
+    const capturePath = process.env.ENHANCED_AI_RECORDER_PREPARE_UI_CAPTURE_PATH?.trim();
     if (capturePath) {
       await webContents.executeJavaScript(
         "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))",

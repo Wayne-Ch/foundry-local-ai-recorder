@@ -46,7 +46,7 @@ describe("Foundry native materialization", () => {
     await expect(
       (await import("node:fs/promises"))
         .readdir(fixture.prebuildDirectory)
-        .then((files) => files.some((file) => file.startsWith(".smart-recorder-ort-repair-"))),
+        .then((files) => files.some((file) => file.startsWith(".enhanced-ai-recorder-ort-repair-"))),
     ).resolves.toBe(false);
   });
 
@@ -108,7 +108,7 @@ describe("Foundry native materialization", () => {
 });
 
 async function createFixture(missing: readonly string[]) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "smart-recorder-native-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "enhanced-ai-recorder-native-"));
   tempRoots.push(root);
   const sdkRoot = path.join(root, "node_modules", "foundry-local-sdk");
   const installer = path.join(sdkRoot, "script", "install-native.cjs");

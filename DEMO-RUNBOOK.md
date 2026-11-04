@@ -1,8 +1,11 @@
-# 15-minute classroom demo runbook
+# Enhanced AI Recorder 15-minute demo runbook
 
 ## Before the room
 
-1. Use the validated Windows 11 x64 demo PC.
+1. Use the target Windows 11 x64 demo PC with AMD Radeon graphics and working WebGPU. This
+   runbook's formal evidence does not transfer to other Windows hardware, Windows Arm64, Linux,
+   Apple-silicon macOS, or other GPU/NPU/execution-provider configurations. Foundry Local's public
+   platform support remains a separate statement.
 2. Run `npm ci`, confirm the tracked fixtures are present, and run the validation commands in
    `VALIDATION.md`.
 3. Start with `npm run start:built`.
@@ -11,7 +14,7 @@
    validation, catalog/cache lookup, provider registration, and exact model load. A static wait is
    a failed rehearsal.
 6. Confirm all three model cards show **READY**, the status says
-   **Enhanced offline ready · 3/3 models**, the top-right pill says **In-process boundary
+   **Enhanced AI Recorder offline ready · 3/3 models**, the top-right pill says **In-process boundary
    validated**, and the Developer Trace reports no embedded web service URL.
 7. Disconnect the demo PC from the network. Do not disconnect before 3/3 readiness.
 8. Confirm `fixtures/ode-lesson.wav`, `fixtures/ode-slide.png`, and

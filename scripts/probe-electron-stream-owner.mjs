@@ -7,7 +7,7 @@ const child = spawn(electronPath, electronArgs, {
   cwd: process.cwd(),
   env: {
     ...process.env,
-    SMART_RECORDER_STREAM_OWNER_PROBE: "1",
+    ENHANCED_AI_RECORDER_STREAM_OWNER_PROBE: "1",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

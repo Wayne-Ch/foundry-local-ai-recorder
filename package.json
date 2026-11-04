@@ -1,8 +1,9 @@
 {
-  "name": "foundry-local-smart-ai-recorder",
+  "name": "foundry-local-enhanced-ai-recorder",
+  "productName": "Enhanced AI Recorder",
   "version": "0.1.0",
   "private": true,
-  "description": "Windows-first local Smart AI Recorder prototype powered by Foundry Local.",
+  "description": "Windows-first local Enhanced AI Recorder powered by Foundry Local.",
   "main": "dist/main/main.mjs",
   "type": "module",
   "scripts": {

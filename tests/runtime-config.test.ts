@@ -20,7 +20,7 @@ describe("runtime configuration", () => {
   });
 
   it("requires model and provider overrides together", () => {
-    expect(() => resolveRuntimeTargets({ SMART_RECORDER_SUMMARY_MODEL_ID: "another-model:1" })).toThrow(
+    expect(() => resolveRuntimeTargets({ ENHANCED_AI_RECORDER_SUMMARY_MODEL_ID: "another-model:1" })).toThrow(
       RuntimeConfigurationError,
     );
   });
@@ -28,16 +28,16 @@ describe("runtime configuration", () => {
   it("rejects a different shared summary and assistant model", () => {
     expect(() =>
       resolveRuntimeTargets({
-        SMART_RECORDER_SUMMARY_MODEL_ID: "another-model:1",
-        SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: "CPUExecutionProvider",
+        ENHANCED_AI_RECORDER_SUMMARY_MODEL_ID: "another-model:1",
+        ENHANCED_AI_RECORDER_SUMMARY_EXECUTION_PROVIDER: "CPUExecutionProvider",
       }),
     ).toThrow("shared summary and assistant model");
   });
 
   it("accepts an explicit exact shared-model override", () => {
     const targets = resolveRuntimeTargets({
-      SMART_RECORDER_SUMMARY_MODEL_ID: SUMMARY_MODEL_ID,
-      SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: SUMMARY_EXECUTION_PROVIDER,
+      ENHANCED_AI_RECORDER_SUMMARY_MODEL_ID: SUMMARY_MODEL_ID,
+      ENHANCED_AI_RECORDER_SUMMARY_EXECUTION_PROVIDER: SUMMARY_EXECUTION_PROVIDER,
     });
     expect(targets.summary).toMatchObject({
       modelId: SUMMARY_MODEL_ID,

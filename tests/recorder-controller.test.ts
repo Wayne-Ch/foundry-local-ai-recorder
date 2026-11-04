@@ -180,8 +180,8 @@ describe("RecorderController", () => {
   ])("never persists a raw %s-shaped model override", async (_label, modelId) => {
     const events: RecorderOperationJournalEvent[] = [];
     const targetsWithOverride = resolveRuntimeTargets({
-      SMART_RECORDER_WHISPER_MODEL_ID: modelId,
-      SMART_RECORDER_WHISPER_EXECUTION_PROVIDER: AUDIO_EXECUTION_PROVIDER,
+      ENHANCED_AI_RECORDER_WHISPER_MODEL_ID: modelId,
+      ENHANCED_AI_RECORDER_WHISPER_EXECUTION_PROVIDER: AUDIO_EXECUTION_PROVIDER,
     });
     const controller = new RecorderController(
       new FakeRuntime(undefined, undefined, undefined, targetsWithOverride),

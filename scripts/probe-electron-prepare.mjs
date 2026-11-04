@@ -5,9 +5,9 @@ import path from "node:path";
 import electronPath from "electron";
 
 const artifacts = path.resolve("artifacts");
-const userData = path.join(artifacts, "prepare-ui-profile");
-const appData = path.join(artifacts, "prepare-ui-app-data");
-const capturePath = path.join(artifacts, "prepare-models-ui.png");
+const userData = path.join(artifacts, "enhanced-ai-recorder-prepare-ui-profile");
+const appData = path.join(artifacts, "enhanced-ai-recorder-prepare-ui-app-data");
+const capturePath = path.join(artifacts, "enhanced-ai-recorder-prepare-models-ui.png");
 await Promise.all([
   rm(userData, { recursive: true, force: true }),
   rm(appData, { recursive: true, force: true }),
@@ -22,9 +22,9 @@ const child = spawn(electronPath, args, {
   cwd: process.cwd(),
   env: {
     ...process.env,
-    SMART_RECORDER_APP_DATA_DIR: appData,
-    SMART_RECORDER_PREPARE_UI_PROBE: "1",
-    SMART_RECORDER_PREPARE_UI_CAPTURE_PATH: capturePath,
+    ENHANCED_AI_RECORDER_APP_DATA_DIR: appData,
+    ENHANCED_AI_RECORDER_PREPARE_UI_PROBE: "1",
+    ENHANCED_AI_RECORDER_PREPARE_UI_CAPTURE_PATH: capturePath,
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

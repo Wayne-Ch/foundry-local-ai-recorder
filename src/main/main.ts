@@ -35,6 +35,7 @@ import {
   type MicrophoneAuthorizationRequest,
   type PrepareRecorderRequest,
 } from "../shared/contracts";
+import { PRODUCT_NAME, PRODUCT_USER_DATA_NAMESPACE } from "../shared/product";
 import {
   formatSafeDiagnostic,
   type SafeDiagnosticCode,
@@ -71,9 +72,9 @@ const assistantSessionOwnership = new AssistantSessionOwnership((sessionId) => {
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const rendererFilePath = path.join(currentDirectory, "..", "renderer", "index.html");
 const populatedSummaryCaptureEnabled =
-  process.env.SMART_RECORDER_CAPTURE_FIXTURE === "populated-summary" &&
-  process.env.SMART_RECORDER_CAPTURE_AND_EXIT === "1" &&
-  Boolean(process.env.SMART_RECORDER_CAPTURE_PATH?.trim());
+  process.env.ENHANCED_AI_RECORDER_CAPTURE_FIXTURE === "populated-summary" &&
+  process.env.ENHANCED_AI_RECORDER_CAPTURE_AND_EXIT === "1" &&
+  Boolean(process.env.ENHANCED_AI_RECORDER_CAPTURE_PATH?.trim());
 const rendererDocumentUrl = (() => {
   const url = pathToFileURL(rendererFilePath);
   if (populatedSummaryCaptureEnabled) {
@@ -82,9 +83,9 @@ const rendererDocumentUrl = (() => {
   return url.href;
 })();
 const rendererPermissionOrigin = permissionOriginForDocument(rendererDocumentUrl);
-const microphonePermissionProbeEnabled = process.env.SMART_RECORDER_MIC_PERMISSION_PROBE === "1";
-const streamOwnerProbeEnabled = process.env.SMART_RECORDER_STREAM_OWNER_PROBE === "1";
-const prepareUiProbeEnabled = process.env.SMART_RECORDER_PREPARE_UI_PROBE === "1";
+const microphonePermissionProbeEnabled = process.env.ENHANCED_AI_RECORDER_MIC_PERMISSION_PROBE === "1";
+const streamOwnerProbeEnabled = process.env.ENHANCED_AI_RECORDER_STREAM_OWNER_PROBE === "1";
+const prepareUiProbeEnabled = process.env.ENHANCED_AI_RECORDER_PREPARE_UI_PROBE === "1";
 const streamOwnerReloadProbeId = "00000000-0000-4000-8000-000000000001";
 const streamOwnerCloseProbeId = "00000000-0000-4000-8000-000000000002";
 const streamOwnerProbeIds = new Set([streamOwnerReloadProbeId, streamOwnerCloseProbeId]);
@@ -116,7 +117,10 @@ const audioStreamOwnership = new AudioStreamOwnership(async (streamId) => {
   await controller.cancelLiveStream(streamId);
 });
 
-if (process.env.SMART_RECORDER_CAPTURE_PATH?.trim()) {
+app.setName(PRODUCT_NAME);
+app.setPath("userData", path.join(app.getPath("appData"), PRODUCT_USER_DATA_NAMESPACE));
+
+if (process.env.ENHANCED_AI_RECORDER_CAPTURE_PATH?.trim()) {
   app.disableHardwareAcceleration();
 }
 if (microphonePermissionProbeEnabled) {
@@ -135,7 +139,7 @@ function createWindow(): BrowserWindow {
     minHeight: 720,
     show: false,
     backgroundColor: "#071018",
-    title: "Smart AI Recorder",
+    title: PRODUCT_NAME,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(currentDirectory, "..", "preload", "preload.cjs"),
@@ -214,7 +218,7 @@ function createWindow(): BrowserWindow {
       window.show();
     }
   });
-  if (process.env.SMART_RECORDER_SMOKE_AND_EXIT === "1") {
+  if (process.env.ENHANCED_AI_RECORDER_SMOKE_AND_EXIT === "1") {
     webContents.once("did-finish-load", () => setTimeout(() => app.quit(), 3_000));
   }
   if (microphonePermissionProbeEnabled) {
@@ -237,11 +241,11 @@ function createWindow(): BrowserWindow {
         }),
     );
   }
-  if (process.env.SMART_RECORDER_OPEN_DEVTOOLS === "1") {
+  if (process.env.ENHANCED_AI_RECORDER_OPEN_DEVTOOLS === "1") {
     webContents.openDevTools({ mode: "detach" });
   }
 
-  const capturePath = process.env.SMART_RECORDER_CAPTURE_PATH?.trim();
+  const capturePath = process.env.ENHANCED_AI_RECORDER_CAPTURE_PATH?.trim();
   if (capturePath) {
     webContents.once("did-finish-load", async () => {
       try {
@@ -252,11 +256,11 @@ function createWindow(): BrowserWindow {
         const image = await webContents.capturePage();
         await mkdir(path.dirname(capturePath), { recursive: true });
         await writeFile(capturePath, image.toPNG());
-        if (process.env.SMART_RECORDER_CAPTURE_AND_EXIT === "1") {
+        if (process.env.ENHANCED_AI_RECORDER_CAPTURE_AND_EXIT === "1") {
           app.quit();
         }
       } catch (error) {
-        console.error("Failed to capture Smart AI Recorder UI:", error);
+        console.error(`Failed to capture ${PRODUCT_NAME} UI:`, error);
         app.exit(1);
       }
     });

@@ -17,7 +17,7 @@ export const AUDIO_MAX_PCM_BYTES =
 export const AUDIO_STREAM_CHUNK_MS = 100;
 export const AUDIO_STREAM_CHUNK_BYTES =
   (AUDIO_SAMPLE_RATE * AUDIO_CHANNELS * AUDIO_BYTES_PER_SAMPLE * AUDIO_STREAM_CHUNK_MS) / 1000;
-export const AUDIO_STREAM_MAX_QUEUED_CHUNKS = 8;
+export const AUDIO_STREAM_MAX_QUEUED_CHUNKS = 32;
 export const AUDIO_STREAM_MAX_CHUNKS = Math.ceil(AUDIO_MAX_PCM_BYTES / AUDIO_STREAM_CHUNK_BYTES);
 
 export type AudioMode = "nemotron_streaming" | "whisper_file";

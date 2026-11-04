@@ -23,7 +23,7 @@ describe("assistant UI and Electron isolation", () => {
     expect(source).toContain("renderAssistantChatRows(state)");
     expect(source).toContain("renderImageAnalyzeButton(elements.imageAnalyze, imageProgress)");
     expect(source).toContain("<strong>Shared Qwen</strong>");
-    expect(source).toContain("Enhanced offline ready · 3/3 models");
+    expect(source).toContain("PRODUCT_NAME} offline ready · 3/3 models");
     expect(source).toContain("Shared local summary and assistant model is ready.");
     expect(source).not.toContain("qwen3-0.6b-generic-gpu:2");
     expect(source).toContain('setRecorderOperation({ kind: "transcribing" })');

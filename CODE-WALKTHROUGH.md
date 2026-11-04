@@ -50,7 +50,7 @@ Show:
 - `LivePcmCapture` and its `AudioWorklet`;
 - `StreamingPcm16Resampler`;
 - `BoundedPcmCapture`;
-- the eight-chunk `BoundedAudioChunkPump`;
+- the 32-chunk `BoundedAudioChunkPump`;
 - `finalizeCapturedAudio` and `cancelRecordingAndReset`.
 
 Message:

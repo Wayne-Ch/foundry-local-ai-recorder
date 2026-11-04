@@ -1,4 +1,4 @@
-# Validation record
+# Enhanced AI Recorder validation
 
 Core model evidence: 2026-10-30 (Windows 11 x64)
 
@@ -7,6 +7,13 @@ Multimodal branch static/cloud evidence: 2026-11-02 (Linux cloud session)
 Target-Windows Prepare/progress/native recovery evidence: 2026-11-03
 
 Shared three-model offline-readiness evidence: 2026-11-03
+
+Formal release evidence is limited to the target Windows 11 x64 demo machine with AMD Radeon
+graphics and working WebGPU. The three models themselves use the exact CPU execution providers
+listed below. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU,
+NPU, or execution-provider configurations have not been validated to the same level and must not
+be presented as equivalent. Foundry Local's public platform support is a separate product support
+statement and does not expand this app-specific evidence.
 
 ## Validated identities
 
@@ -60,7 +67,7 @@ Real isolated Electron Prepare result:
 PREPARE_UI_PROBE_OK
 elapsedMs=10805
 finalModelStates=["READY","READY","READY"]
-finalStatus="Enhanced offline ready · 3/3 models. Recording, summary, chat, and image analysis stay on this PC."
+finalStatus="Enhanced AI Recorder offline ready · 3/3 models. Recording, summary, chat, and image analysis stay on this PC."
 resetPreservedModelStates=["READY","READY","READY"]
 ```
 
@@ -301,12 +308,12 @@ this validation run.
 
 Populated-summary screenshot:
 
-`artifacts\smart-ai-recorder-populated-summary.png`
+`artifacts\enhanced-ai-recorder-populated-summary.png`
 
 Prepare/progress screenshots:
 
-- `artifacts\prepare-models-ui.png`
-- `artifacts\assistant-ui-rendering.png`
+- `artifacts\enhanced-ai-recorder-prepare-models-ui.png`
+- `artifacts\enhanced-ai-recorder-assistant-ui.png`
 
 The capture-only bootstrap fixture renders a final transcript, the formatted summary text
 `y′ = −2y` and `e^(−2t)`, and an expanded `summary-raw` trace row containing the exact Qwen-like
@@ -409,7 +416,7 @@ Prepare, then ran summary, Ask, ODE image analysis, and concurrent summary+Ask:
 
 - [ ] Launch the built app while online.
 - [ ] Select Prepare and wait for Whisper, Nemotron, and Shared Qwen to show READY plus the visible
-      **Enhanced offline ready · 3/3 models** label.
+      **Enhanced AI Recorder offline ready · 3/3 models** label.
 - [ ] Disconnect the PC from network only after that 3/3 gate.
 - [ ] Record the ODE segment with live captions.
 - [ ] Stop and confirm Whisper final.

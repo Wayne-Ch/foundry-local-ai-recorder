@@ -9,6 +9,7 @@ import {
 import { RecorderController } from "../src/main/recorder-controller";
 import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import {
+  appendLiveChunkWithBackpressure,
   assertSummaryDisplayText,
   chunks,
   keywordRecall,
@@ -47,11 +48,13 @@ try {
   const pcm = await loadFixturePcm();
   let sequence = 0;
   for (const chunk of chunks(pcm)) {
-    controller.appendLiveChunk({
-      streamId: started.streamId,
-      sequence,
-      data: chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer,
-    });
+    await appendLiveChunkWithBackpressure(() =>
+      controller.appendLiveChunk({
+        streamId: started.streamId,
+        sequence,
+        data: chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer,
+      }),
+    );
     sequence += 1;
     await sleep(100);
   }

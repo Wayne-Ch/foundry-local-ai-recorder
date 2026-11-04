@@ -60,7 +60,10 @@ export function createRecorderOperationJournal(): RecorderOperationJournal {
   let tail = Promise.resolve();
   const filePath = resolveRecorderPaths().then(async ({ logsDir }) => {
     await mkdir(logsDir, { recursive: true });
-    return path.join(logsDir, `recorder-operations-${new Date().toISOString().slice(0, 10)}.jsonl`);
+    return path.join(
+      logsDir,
+      `enhanced-ai-recorder-operations-${new Date().toISOString().slice(0, 10)}.jsonl`,
+    );
   });
   return {
     record(event) {

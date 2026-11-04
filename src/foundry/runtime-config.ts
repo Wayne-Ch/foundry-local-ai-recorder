@@ -29,20 +29,20 @@ const targetDefinitions = {
   whisper: {
     modelId: WHISPER_AUDIO_MODEL_ID,
     executionProvider: AUDIO_EXECUTION_PROVIDER,
-    modelVariable: "SMART_RECORDER_WHISPER_MODEL_ID",
-    providerVariable: "SMART_RECORDER_WHISPER_EXECUTION_PROVIDER",
+    modelVariable: "ENHANCED_AI_RECORDER_WHISPER_MODEL_ID",
+    providerVariable: "ENHANCED_AI_RECORDER_WHISPER_EXECUTION_PROVIDER",
   },
   nemotron: {
     modelId: NEMOTRON_AUDIO_MODEL_ID,
     executionProvider: AUDIO_EXECUTION_PROVIDER,
-    modelVariable: "SMART_RECORDER_NEMOTRON_MODEL_ID",
-    providerVariable: "SMART_RECORDER_NEMOTRON_EXECUTION_PROVIDER",
+    modelVariable: "ENHANCED_AI_RECORDER_NEMOTRON_MODEL_ID",
+    providerVariable: "ENHANCED_AI_RECORDER_NEMOTRON_EXECUTION_PROVIDER",
   },
   summary: {
     modelId: SUMMARY_MODEL_ID,
     executionProvider: SUMMARY_EXECUTION_PROVIDER,
-    modelVariable: "SMART_RECORDER_SUMMARY_MODEL_ID",
-    providerVariable: "SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER",
+    modelVariable: "ENHANCED_AI_RECORDER_SUMMARY_MODEL_ID",
+    providerVariable: "ENHANCED_AI_RECORDER_SUMMARY_EXECUTION_PROVIDER",
   },
 } as const;
 

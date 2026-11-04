@@ -7,7 +7,13 @@ import {
 } from "../src/audio/audio-types";
 import { FoundryRecorderRuntime } from "../src/foundry/foundry-runtime";
 import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
-import { chunks, keywordRecall, loadFixturePcm, sleep } from "./integration-utils";
+import {
+  appendLiveChunkWithBackpressure,
+  chunks,
+  keywordRecall,
+  loadFixturePcm,
+  sleep,
+} from "./integration-utils";
 
 const runtime = new FoundryRecorderRuntime();
 try {
@@ -26,7 +32,9 @@ try {
   const pcm = await loadFixturePcm();
   let sequence = 0;
   for (const chunk of chunks(pcm)) {
-    const acknowledgement = runtime.appendLiveChunk(started.streamId, sequence, chunk);
+    const acknowledgement = await appendLiveChunkWithBackpressure(() =>
+      runtime.appendLiveChunk(started.streamId, sequence, chunk),
+    );
     assert.equal(acknowledgement.acceptedSequence, sequence);
     sequence += 1;
     await sleep(100);

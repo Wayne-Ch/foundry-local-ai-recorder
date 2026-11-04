@@ -115,7 +115,7 @@ const SAFE_NAME_SET = new Set<string>(SAFE_DIAGNOSTIC_NAMES);
 const SAFE_OPERATION_SET = new Set<string>(SAFE_DIAGNOSTIC_OPERATIONS);
 const SAFE_PHASE_SET = new Set<string>(SAFE_DIAGNOSTIC_PHASES);
 const SAFE_MODEL_ROLE_SET = new Set<string>(["whisper", "nemotron", "summary", "assistant"]);
-const SERIALIZED_SAFE_DIAGNOSTIC_PREFIX = "__SMART_RECORDER_SAFE_DIAGNOSTIC__:";
+const SERIALIZED_SAFE_DIAGNOSTIC_PREFIX = "__ENHANCED_AI_RECORDER_SAFE_DIAGNOSTIC__:";
 
 export function toSafeDiagnostic(
   value: unknown,

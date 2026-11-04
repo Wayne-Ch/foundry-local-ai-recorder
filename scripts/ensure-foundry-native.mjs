@@ -53,7 +53,7 @@ export function ensureFoundryNative({
   ) {
     primaryBackup = path.join(
       prebuildDirectory,
-      `.smart-recorder-ort-repair-${process.pid}-${randomUUID()}.dll`,
+      `.enhanced-ai-recorder-ort-repair-${process.pid}-${randomUUID()}.dll`,
     );
     renameSync(primaryPath, primaryBackup);
   }
@@ -128,7 +128,7 @@ if (invokedPath !== undefined && import.meta.url === pathToFileURL(path.resolve(
   try {
     ensureFoundryNative();
   } catch (error) {
-    console.error(`[smart-recorder] ${safeInstallError(error)}`);
+    console.error(`[enhanced-ai-recorder] ${safeInstallError(error)}`);
     process.exitCode = 1;
   }
 }

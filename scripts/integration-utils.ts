@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { extractPcm16FromWav } from "../src/audio/audio-contract";
-import { AUDIO_STREAM_CHUNK_BYTES } from "../src/audio/audio-types";
+import {
+  AUDIO_STREAM_CHUNK_BYTES,
+  AUDIO_STREAM_CHUNK_MS,
+  AUDIO_STREAM_MAX_QUEUED_CHUNKS,
+  type AudioStreamChunkResponse,
+} from "../src/audio/audio-types";
 import { resolveRecorderPaths } from "../src/foundry/paths";
 import { formatSummaryForDisplay } from "../src/summary/summary-format";
 
@@ -62,6 +67,32 @@ export async function listOwnedTempFiles(): Promise<readonly string[]> {
 
 export function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export async function appendLiveChunkWithBackpressure(
+  append: () => AudioStreamChunkResponse | Promise<AudioStreamChunkResponse>,
+  options: {
+    readonly maxWaitMs?: number;
+    readonly retryDelayMs?: number;
+  } = {},
+): Promise<AudioStreamChunkResponse> {
+  const maxWaitMs = options.maxWaitMs ?? AUDIO_STREAM_CHUNK_MS * AUDIO_STREAM_MAX_QUEUED_CHUNKS;
+  const retryDelayMs = options.retryDelayMs ?? 10;
+  const deadline = Date.now() + maxWaitMs;
+  while (true) {
+    try {
+      return await append();
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !== "Audio stream backpressure capacity was exceeded." ||
+        Date.now() >= deadline
+      ) {
+        throw error;
+      }
+      await sleep(retryDelayMs);
+    }
+  }
 }
 
 function hasRawMathDollarDelimiter(value: string): boolean {

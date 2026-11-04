@@ -9,6 +9,7 @@ import {
   type AudioCapturePayload,
 } from "../audio/audio-types";
 import type { ModelReadiness, RecorderSnapshot, TraceEntry } from "../shared/contracts";
+import { PRODUCT_NAME } from "../shared/product";
 import { formatSafeDiagnostic, type SafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import { type AssistantUiAction, applyAssistantControlProgress } from "./assistant-control-progress";
 import {
@@ -57,7 +58,7 @@ root.innerHTML = `
     <header class="topbar">
       <div>
         <p class="eyebrow">WINDOWS 11 · LOCAL CACHED INFERENCE</p>
-        <h1>Smart AI Recorder</h1>
+        <h1>${PRODUCT_NAME}</h1>
       </div>
       <div class="topbar-status">
         <span class="privacy-pill"><span class="pulse-dot"></span><span id="privacy-state">Endpoint guard pending</span></span>
@@ -614,7 +615,7 @@ async function prepareModels(): Promise<void> {
       );
     } else {
       setStatus(
-        "Enhanced offline ready · 3/3 models. Recording, summary, chat, and image analysis stay on this PC.",
+        `${PRODUCT_NAME} offline ready · 3/3 models. Recording, summary, chat, and image analysis stay on this PC.`,
         "success",
       );
     }

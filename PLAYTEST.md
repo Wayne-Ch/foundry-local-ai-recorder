@@ -1,15 +1,32 @@
-[Open the repository at `feature/multimodal-classroom-chat`](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/tree/feature/multimodal-classroom-chat)
+[Open the Enhanced branch](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/tree/feature/multimodal-classroom-chat)
 
-# AI Recorder colleague playtest
+# Enhanced AI Recorder colleague playtest
 
-This is a Windows-first Ignite prototype for local classroom recording, transcription, summary,
-chat, and bounded lesson-image explanation. It is not diagnostic software, does not provide
-medical decisions, and is not intended for arbitrary images, floor plans, or general visual
-inspection.
+**Enhanced AI Recorder** extends
+[AI Recorder](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/tree/feature/ai-recorder-ux-parity)
+with Ask AI, image analysis/Explain image, Classroom mode, and Clinic educational mode. It is not
+diagnostic software, does not provide medical decisions, and is not intended for arbitrary images,
+floor plans, or general visual inspection.
+
+> [!WARNING]
+> This formal playtest applies only to the target Windows 11 x64 demo machine with AMD Radeon
+> graphics and working WebGPU. The Recorder model cards must still show the documented
+> `CPUExecutionProvider` values. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS,
+> and other GPU, NPU, or execution-provider configurations are not validated to the same level and
+> must not be presented as equivalent. Foundry Local's public platform support is separate from
+> this app's release evidence.
+
+> [!IMPORTANT]
+> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
+> model and execution-provider assets. Remain online, keep **Enhanced AI Recorder** open, and wait
+> for all three model cards to show **READY** and the status
+> **Enhanced AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint.
+> After the cache is complete and all three models load successfully, subsequent demo actions can
+> run offline.
 
 ## Prerequisites
 
-- Windows 11 x64 with current graphics drivers.
+- The target Windows 11 x64 AMD Radeon/WebGPU machine with current graphics drivers.
 - Git for Windows.
 - Node.js 26.x; the validated Windows version is `26.13.0`.
 - A working microphone and permission to record the test speaker.
@@ -23,10 +40,8 @@ The playtest is on `feature/multimodal-classroom-chat`, not the repository's def
 branch. In PowerShell:
 
 ```powershell
-git clone https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git
-Set-Location .\foundry-local-smart-ai-recorder
-git fetch origin
-git switch --track origin/feature/multimodal-classroom-chat
+git clone --branch feature/multimodal-classroom-chat --single-branch https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git enhanced-ai-recorder
+Set-Location .\enhanced-ai-recorder
 git branch --show-current
 ```
 
@@ -45,6 +60,7 @@ npm run start:built
 ```
 
 `npm run start` is the build-and-launch shortcut for later runs.
+Confirm the window title and top heading both say **Enhanced AI Recorder**.
 
 ## Included fixtures
 
@@ -79,7 +95,7 @@ git diff --exit-code -- .\fixtures\ode-slide.png
    initialization, catalog/cache lookup, download, provider registration, or model load. Do not
    accept a static screen with no visible working state.
 4. Wait until the Whisper, Nemotron, and **Shared Qwen** cards all show **READY**, the status says
-   **Enhanced offline ready · 3/3 models**, and the top-right pill says
+   **Enhanced AI Recorder offline ready · 3/3 models**, and the top-right pill says
    **In-process boundary validated**.
 5. Only after 3/3 readiness, disconnect the demo PC from the network for the offline rehearsal.
 
@@ -102,7 +118,7 @@ Speak this exact four-sentence script:
 > equation y prime equals negative two y, separate the variables. The solution is y of t equals c
 > times e to the negative two t. The initial value determines the constant c.
 
-1. Confirm all three cards are **READY**, **Enhanced offline ready · 3/3 models** and
+1. Confirm all three cards are **READY**, **Enhanced AI Recorder offline ready · 3/3 models** and
    **In-process boundary validated** are visible, and the PC is disconnected.
 2. Leave **Live English captions** enabled.
 3. Check **I have consent to record this audio**, then select **Start**.
@@ -151,6 +167,22 @@ Speak this exact four-sentence script:
     Verify all three model cards remain **READY** so another offline run can begin without Prepare.
 20. Fully close the app window. Application shutdown unloads the remaining models; confirm the
     PowerShell prompt returns before starting another run.
+
+Run these checks from the clone root after the prompt returns. Both commands must produce no
+output:
+
+```powershell
+$repo = (Resolve-Path .).Path
+Get-CimInstance Win32_Process |
+  Where-Object {
+    $_.Name -in @("electron.exe", "node.exe") -and
+    $_.CommandLine -and
+    $_.CommandLine.Contains($repo, [System.StringComparison]::OrdinalIgnoreCase)
+  }
+
+Get-ChildItem -LiteralPath "$env:TEMP\FoundryLocalEnhancedAIRecorder\audio" `
+  -Filter "capture-*.wav" -File -ErrorAction SilentlyContinue
+```
 
 ## Troubleshooting
 

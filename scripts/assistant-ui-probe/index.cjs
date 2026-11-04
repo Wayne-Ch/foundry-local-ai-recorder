@@ -6,7 +6,7 @@ const { build } = require("esbuild");
 const repoRoot = path.resolve(__dirname, "..", "..");
 const artifactsDirectory = path.join(repoRoot, "artifacts");
 const runtimeDirectory = path.join(artifactsDirectory, "assistant-ui-probe-runtime");
-const screenshotPath = path.join(artifactsDirectory, "assistant-ui-rendering.png");
+const screenshotPath = path.join(artifactsDirectory, "enhanced-ai-recorder-assistant-ui.png");
 const contextLabels = [
   {
     kind: "final_transcript",

@@ -4,16 +4,16 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import electronPath from "electron";
 
-const capturePath = path.resolve("artifacts", "smart-ai-recorder-populated-summary.png");
+const capturePath = path.resolve("artifacts", "enhanced-ai-recorder-populated-summary.png");
 await mkdir(path.dirname(capturePath), { recursive: true });
 const electronArgs = process.getuid?.() === 0 ? ["--no-sandbox", "."] : ["."];
 const child = spawn(electronPath, electronArgs, {
   cwd: process.cwd(),
   env: {
     ...process.env,
-    SMART_RECORDER_CAPTURE_PATH: capturePath,
-    SMART_RECORDER_CAPTURE_AND_EXIT: "1",
-    SMART_RECORDER_CAPTURE_FIXTURE: "populated-summary",
+    ENHANCED_AI_RECORDER_CAPTURE_PATH: capturePath,
+    ENHANCED_AI_RECORDER_CAPTURE_AND_EXIT: "1",
+    ENHANCED_AI_RECORDER_CAPTURE_FIXTURE: "populated-summary",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });

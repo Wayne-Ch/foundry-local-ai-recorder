@@ -404,8 +404,8 @@ describe("live transcript and backpressure", () => {
     expect(() => pump.enqueue(new Uint8Array(AUDIO_STREAM_CHUNK_BYTES))).toThrow("backpressure");
     releaseFirst?.();
     await pump.flush();
-    expect(sent).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(pump.lastSequence).toBe(8);
+    expect(sent).toEqual(Array.from({ length: AUDIO_STREAM_MAX_QUEUED_CHUNKS + 1 }, (_, index) => index));
+    expect(pump.lastSequence).toBe(AUDIO_STREAM_MAX_QUEUED_CHUNKS);
   });
 
   it("surfaces an asynchronous IPC failure immediately and stops pumping later chunks", async () => {
@@ -735,7 +735,7 @@ describe("audio recorder state and draft behavior", () => {
     expect(renderer).toContain("Final transcript <span>Whisper</span>");
     expect(renderer).toContain("Session summary <span>Shared Qwen</span>");
     expect(renderer).toContain("/3 local models are ready");
-    expect(renderer).toContain("Enhanced offline ready · 3/3 models");
+    expect(renderer).toContain("PRODUCT_NAME} offline ready · 3/3 models");
     expect(renderer).toContain("Endpoint guard pending");
     expect(renderer).toContain("locked temporary audio");
     expect(recorderProgress).toContain("Cancel / reset");

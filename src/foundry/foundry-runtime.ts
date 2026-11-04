@@ -42,6 +42,7 @@ import type {
   PrepareProgressStage,
   RuntimeReadiness,
 } from "../shared/contracts";
+import { PRODUCT_STORAGE_NAMESPACE } from "../shared/product";
 import {
   createSafeDiagnosticError,
   formatSafeDiagnostic,
@@ -744,7 +745,7 @@ export class FoundryRecorderRuntime {
     try {
       this.#assertNativeRuntime();
       handle = this.#createManager({
-        appName: "FoundryLocalSmartAIRecorder",
+        appName: PRODUCT_STORAGE_NAMESPACE,
         appDataDir: paths.appDataDir,
         modelCacheDir: paths.modelCacheDir,
         logsDir: paths.logsDir,

@@ -5,7 +5,7 @@ import electronPath from "electron";
 const electronArgs = process.getuid?.() === 0 ? ["--no-sandbox", "."] : ["."];
 const child = spawn(electronPath, electronArgs, {
   cwd: process.cwd(),
-  env: { ...process.env, SMART_RECORDER_SMOKE_AND_EXIT: "1" },
+  env: { ...process.env, ENHANCED_AI_RECORDER_SMOKE_AND_EXIT: "1" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 const output = [];

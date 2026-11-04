@@ -1,10 +1,21 @@
-# Foundry Local Smart AI Recorder
+# Enhanced AI Recorder
 
-> **Colleague playtest:** follow the
-> [Windows 11 setup and hands-on guide](PLAYTEST.md) on
-> `feature/multimodal-classroom-chat`.
+**Enhanced AI Recorder** extends
+[AI Recorder](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/tree/feature/ai-recorder-ux-parity)
+and its [standard colleague guide](https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder/blob/feature/ai-recorder-ux-parity/PLAYTEST.md).
+It preserves the standard recording, Whisper final transcript, and Qwen summary path, then adds
+these Enhanced-only capabilities:
 
-Windows-first Electron prototype for a complete local recording workflow:
+- **Ask AI** text assistance during and after recording.
+- **Image analysis** plus **Explain image** for the selected lesson or Clinic fixture.
+- **Classroom** mode for bounded lesson help.
+- **Clinic · educational only** mode with a required clinician handoff and no diagnosis, urgency,
+  or treatment decisions.
+
+Follow the [Enhanced AI Recorder colleague playtest](PLAYTEST.md) on
+`feature/multimodal-classroom-chat`.
+
+Windows-first Electron app for a complete local recording workflow:
 
 1. **Nemotron live draft** while the microphone is active.
 2. **Whisper authoritative final transcript** after Stop, using the same owned capture.
@@ -27,7 +38,7 @@ There are no canned transcript, summary, image-analysis, or chat fallbacks.
 | Final ASR | `openai-whisper-tiny-generic-cpu:4` / `CPUExecutionProvider` |
 | Shared summary + text/image assistant | exact `qwen3.5-0.8b-generic-cpu:3` / CPU / `CPUExecutionProvider`, accepted only after runtime task/modality/EP validation; fresh per-request `ChatSession` |
 | Assistant math display | `katex@0.19.1`; supported inline/display delimiters only, trust disabled, prose and markup kept as text nodes |
-| Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded eight-chunk renderer/native queues |
+| Live audio | PCM16LE, 16 kHz, mono, 100 ms chunks, bounded 32-chunk renderer/native queues |
 | Whisper input | Application-owned validated temporary WAV passed through `Item.audioFromUri(...)` |
 | Summary input | Exact, untrimmed Whisper string/version captured by `TranscriptStore.submitForSummary()` |
 
@@ -96,11 +107,29 @@ The renderer's existing PNG thumbnail is a UI-only safety boundary. The reproduc
 the 13.6 KiB, 1280×720 `ode-slide.png`, so this mitigation intentionally does not add image
 transcoding. Bounded inference resizing for genuinely large photos is separate future hardening.
 
-## Windows setup
+## Fresh clone, install, and launch
 
-Validated on Windows 11 x64 with Node.js `26.13.0`.
+Prerequisites:
+
+- The target Windows 11 x64 demo machine with AMD Radeon graphics and working WebGPU.
+- Git for Windows.
+- Node.js `26.13.0` with npm.
+- Internet access for the clone, `npm ci`, and first model preparation.
+- Several GB of free disk space for Electron, dependencies, and model/execution-provider assets.
+
+> [!WARNING]
+> Formal release validation is limited to that target Windows 11 x64 AMD Radeon/WebGPU machine.
+> The three Foundry Local models still use the exact `CPUExecutionProvider` identities documented
+> below. Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU, NPU, or
+> execution-provider configurations are not validated to the same level and must not be presented
+> as equivalent. Foundry Local's public platform support is a separate product support statement
+> and does not replace this app-specific evidence.
+
+From the parent folder where you want the canonical `enhanced-ai-recorder` clone:
 
 ```powershell
+git clone --branch feature/multimodal-classroom-chat --single-branch https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git enhanced-ai-recorder
+Set-Location .\enhanced-ai-recorder
 npm ci
 npm run build
 npm run start:built
@@ -136,11 +165,30 @@ git reset --hard HEAD
 
 Then run lint and the model gates. Never use that reset recipe in a worktree containing changes.
 
-Select **Prepare local models** before recording and remain online until all three cards show
-**READY** and the banner says **Enhanced offline ready · 3/3 models**. Preparation may download an
-uncached model. After that successful Prepare, summary, Ask, Analyze, and Explain reuse the loaded
-shared CPU model without catalog lookup, model download, or provider acquisition. The application
-does not start the Foundry embedded web service and has no cloud inference endpoint.
+> [!IMPORTANT]
+> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
+> model and execution-provider assets. Remain online, keep **Enhanced AI Recorder** open, and wait
+> until Whisper, Nemotron, and Shared Qwen each show **READY** and the banner says
+> **Enhanced AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint.
+> After the cache is complete and all three models load successfully, subsequent summary, Ask,
+> Analyze image, Explain image, Classroom, and Clinic demo steps can run offline.
+
+After successful Prepare, summary, Ask, Analyze, and Explain reuse the loaded shared CPU model
+without catalog lookup, model download, or provider acquisition. The application does not start
+the Foundry embedded web service and has no cloud inference endpoint.
+
+## Product and storage isolation
+
+| Surface | Enhanced namespace |
+|---|---|
+| npm package | `foundry-local-enhanced-ai-recorder` |
+| Electron product/profile | `Enhanced AI Recorder` |
+| Foundry app data and logs | `%LOCALAPPDATA%\FoundryLocalEnhancedAIRecorder` |
+| Temporary audio | `%TEMP%\FoundryLocalEnhancedAIRecorder\audio` |
+| Operation journal | `logs\enhanced-ai-recorder-operations-YYYY-MM-DD.jsonl` |
+
+These paths are distinct from AI Recorder. The only intentionally shared path is the immutable
+Foundry model cache, normally `%USERPROFILE%\.foundry\cache\models`.
 
 ## Run and validate
 
@@ -168,18 +216,19 @@ npm audit --audit-level=low
 
 `npm run capture:ui` uses a capture-only populated snapshot so the 1600×900 screenshot includes a
 final transcript, formatted summary, and exact raw-summary trace evidence. It writes the ignored,
-reproducible artifact to `artifacts\smart-ai-recorder-populated-summary.png`.
+reproducible artifact to `artifacts\enhanced-ai-recorder-populated-summary.png`.
 
 `npm run probe:assistant-ui` runs a hidden sandboxed Electron renderer and inspects the resulting
 DOM for rendered inline/display math, inert markup, ordinary dollar text, request-bound chat/image
 progress, recorder operation labels, context labels, and accessible busy/status attributes. It
-writes the ignored screenshot `artifacts\assistant-ui-rendering.png`.
+writes the ignored screenshot `artifacts\enhanced-ai-recorder-assistant-ui.png`.
 
 `npm run probe:prepare-ui` launches the real built app with isolated Electron/app-data profiles,
 clicks **Prepare local models**, waits for Whisper, shared Qwen, and Nemotron to all reach
 **READY** with the visible **3/3** offline label, and
 asserts visible runtime/catalog/provider/load subphases before clean model/manager shutdown. It
-writes `artifacts\prepare-models-ui.png` plus a secret-safe correlated JSONL operation journal under
+writes `artifacts\enhanced-ai-recorder-prepare-models-ui.png` plus a secret-safe correlated JSONL
+operation journal under
 the ignored probe app-data directory.
 
 The integration scripts use `fixtures/ode-lesson.wav`, generated locally by Windows Speech
@@ -310,21 +359,23 @@ overrides fail; they never silently fall back.
 
 | Role | Model variable | Provider variable |
 |---|---|---|
-| Whisper | `SMART_RECORDER_WHISPER_MODEL_ID` | `SMART_RECORDER_WHISPER_EXECUTION_PROVIDER` |
-| Nemotron | `SMART_RECORDER_NEMOTRON_MODEL_ID` | `SMART_RECORDER_NEMOTRON_EXECUTION_PROVIDER` |
-| Summary | `SMART_RECORDER_SUMMARY_MODEL_ID` | `SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER` |
+| Whisper | `ENHANCED_AI_RECORDER_WHISPER_MODEL_ID` | `ENHANCED_AI_RECORDER_WHISPER_EXECUTION_PROVIDER` |
+| Nemotron | `ENHANCED_AI_RECORDER_NEMOTRON_MODEL_ID` | `ENHANCED_AI_RECORDER_NEMOTRON_EXECUTION_PROVIDER` |
+| Summary | `ENHANCED_AI_RECORDER_SUMMARY_MODEL_ID` | `ENHANCED_AI_RECORDER_SUMMARY_EXECUTION_PROVIDER` |
 The shared Summary override must preserve the exact
 `qwen3.5-0.8b-generic-cpu:3` / `CPUExecutionProvider` target; alternate shared
 summary/assistant models fail closed.
 
 Other paths:
 
-- `SMART_RECORDER_APP_DATA_DIR`
+- `ENHANCED_AI_RECORDER_APP_DATA_DIR`
 - `FOUNDRY_MODEL_CACHE_DIR`
 
 ## Current limits
 
-- Windows 11 x64 only.
+- Formal validation is limited to the target Windows 11 x64 AMD Radeon/WebGPU machine.
+- Other Windows hardware, Windows Arm64, Linux, Apple-silicon macOS, and other GPU/NPU/EP
+  configurations are not equivalent validated targets.
 - English speech only.
 - 30-second bounded capture; this is a classroom demo bound, not a lecture-length stability claim.
 - Imported WAV files must already be PCM16LE, 16 kHz, mono.
