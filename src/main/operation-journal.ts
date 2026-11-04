@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { resolveRecorderPaths } from "../foundry/paths";
-import type { ModelRole } from "../foundry/runtime-config";
+import type { ModelRole, RuntimeTarget } from "../foundry/runtime-config";
 import type { SafeDiagnostic } from "../shared/safe-diagnostic";
 
 export type RecorderOperationJournalEvent =
@@ -21,7 +21,9 @@ export type RecorderOperationJournalEvent =
       readonly status: "progress";
       readonly phase: string;
       readonly modelRole?: ModelRole;
+      readonly modelSource?: RuntimeTarget["source"];
       readonly modelId?: string;
+      readonly modelRef?: string;
       readonly cached?: boolean;
       readonly loaded?: boolean;
     }

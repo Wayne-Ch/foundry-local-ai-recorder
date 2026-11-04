@@ -827,6 +827,7 @@ async function stopRecording(reason: "manual" | "limit" = "manual"): Promise<voi
         pump: active.pump,
         streamId: active.streamId,
         failure: active.liveCaptionFailure.error,
+        isCurrent: () => active.generation === operationGeneration,
         finish: async (lastSequence, audioDurationMs) => {
           if (active.streamId === null) {
             return;

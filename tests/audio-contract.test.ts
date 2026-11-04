@@ -489,6 +489,55 @@ describe("live transcript and backpressure", () => {
     expect(cancel).toHaveBeenCalledWith(STREAM_ID);
   });
 
+  it("does not finish a stale live stream after Reset completes while the final chunk is in flight", async () => {
+    const order: string[] = [];
+    const sendCompletion = deferred<void>();
+    const pump = new BoundedAudioChunkPump(
+      async (sequence) => {
+        order.push("send-start");
+        await sendCompletion.promise;
+        order.push("send-complete");
+        return {
+          acceptedSequence: sequence,
+          totalBytes: AUDIO_STREAM_CHUNK_BYTES,
+        };
+      },
+      () => {},
+    );
+    const chunk = new Uint8Array(AUDIO_STREAM_CHUNK_BYTES);
+    const pcm = new BoundedPcmCapture();
+    pcm.append(chunk);
+    pump.enqueue(chunk);
+    let current = true;
+    const finish = vi.fn(async () => {
+      order.push("finish");
+    });
+
+    const finalizing = finalizeCapturedAudio({
+      capture: { stop: async () => [] },
+      mediaStream: { getTracks: () => [] } as unknown as MediaStream,
+      pcm,
+      live: {
+        pump,
+        streamId: STREAM_ID,
+        isCurrent: () => current,
+        finish,
+        cancel: async () => {},
+      },
+    });
+
+    await vi.waitFor(() => expect(order).toEqual(["send-start"]));
+    pump.cancel();
+    order.push("cancel");
+    current = false;
+    order.push("reset-complete");
+    sendCompletion.resolve();
+    await finalizing;
+
+    expect(order).toEqual(["send-start", "cancel", "reset-complete", "send-complete"]);
+    expect(finish).not.toHaveBeenCalled();
+  });
+
   it("preserves a callback failure after the pump is detached and cancellation succeeds", async () => {
     const failureState = new LiveCaptionFailureState();
     const callbackFailure = new Error("async live callback failed");
@@ -610,6 +659,20 @@ describe("live transcript and backpressure", () => {
     }
   });
 });
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (error?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("audio recorder state and draft behavior", () => {
   it("moves through permission, recording, transcription, and completion", () => {

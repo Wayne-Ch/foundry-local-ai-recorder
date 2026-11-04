@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildAssistantContext } from "../src/assistant/assistant-context";
 import { AssistantMemoryState } from "../src/assistant/assistant-state";
+import { assistantOperationStatusMessage } from "../src/renderer/assistant-progress";
 import type { TranscriptSnapshot } from "../src/transcript/transcript-store";
 
 describe("assistant context and memory", () => {
@@ -49,6 +50,37 @@ describe("assistant context and memory", () => {
 
     expect(serialized).toContain("live draft snapshot (may change)");
     expect(serialized).not.toContain("private live snapshot");
+  });
+
+  it("keeps an active inference phase across queue-less state reads", () => {
+    const state = new AssistantMemoryState();
+    const context = buildAssistantContext(transcript({ finalText: "lesson", version: 1 }), null);
+    const token = state.createOperationToken("request-running", "chat", context, {
+      dependsOnImage: false,
+      requiresImageBytes: false,
+    });
+    state.setOperationPhase(token, "running_inference");
+    const queue = {
+      activeRequestId: token.requestId,
+      activeOperation: token.kind,
+      pendingOperations: [
+        {
+          requestId: token.requestId,
+          kind: token.kind,
+          status: "active",
+          phase: "initializing_runtime",
+        },
+      ],
+      queuedRequests: 0,
+      maxQueuedRequests: 3,
+    } as const;
+
+    expect(state.snapshot(queue).pendingOperations[0]?.phase).toBe("running_inference");
+    state.snapshot();
+    const afterRead = state.snapshot(queue);
+
+    expect(afterRead.pendingOperations[0]?.phase).toBe("running_inference");
+    expect(assistantOperationStatusMessage(afterRead)).toBe("Thinking locally…");
   });
 
   it("captures immutable chat context, labels both roles, and filters history by snapshot", () => {

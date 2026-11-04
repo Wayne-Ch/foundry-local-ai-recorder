@@ -187,6 +187,7 @@ interface LiveCaptionFinalizer {
   readonly pump: BoundedAudioChunkPump | null;
   readonly streamId: string | null;
   readonly failure?: unknown | null;
+  readonly isCurrent?: () => boolean;
   finish(lastSequence: number, audioDurationMs: number): Promise<void>;
   cancel(streamId: string): Promise<void>;
 }
@@ -249,7 +250,9 @@ export async function finalizeCapturedAudio(
     if (options.live.pump !== null && liveCaptionError === null) {
       try {
         await options.live.pump.flush();
-        await options.live.finish(options.live.pump.lastSequence, durationMs);
+        if (options.live.isCurrent?.() !== false) {
+          await options.live.finish(options.live.pump.lastSequence, durationMs);
+        }
       } catch (error) {
         liveCaptionError = sanitizeLiveCaptionFailure(error);
         options.live.pump.cancel();

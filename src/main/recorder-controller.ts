@@ -28,6 +28,7 @@ import {
   type PrepareRuntimeResult,
   type SummaryGenerationResult,
 } from "../foundry/foundry-runtime";
+import { type ModelRole, type RuntimeTarget, resolveRuntimeTargets } from "../foundry/runtime-config";
 import type {
   ImportProgressStage,
   ImportWavResponse,
@@ -49,6 +50,9 @@ import { TranscriptStore } from "../transcript/transcript-store";
 import { noopRecorderOperationJournal, type RecorderOperationJournal } from "./operation-journal";
 
 const TRACE_LIMIT = 250;
+const SAFE_BUILT_IN_MODEL_IDS = new Set(
+  Object.values(resolveRuntimeTargets({})).map(({ modelId }) => modelId),
+);
 
 export interface RecorderRuntime {
   readonly readiness: RuntimeReadiness;
@@ -93,6 +97,7 @@ export class RecorderController {
   #shutdownPromise: Promise<void> | null = null;
 
   readonly #operationJournal: RecorderOperationJournal;
+  readonly #journalModelReferences = new Map<ModelRole, string>();
 
   constructor(
     runtime: RecorderRuntime = new FoundryRecorderRuntime(),
@@ -153,7 +158,7 @@ export class RecorderController {
           status: "progress",
           phase: event.phase,
           ...(event.role === undefined ? {} : { modelRole: event.role }),
-          ...(model === undefined ? {} : { modelId: model.target.modelId }),
+          ...(model === undefined ? {} : journalModelReference(model.target, this.#journalModelReferences)),
           ...(model === undefined ? {} : { cached: model.cached, loaded: model.loaded }),
         });
         onProgress?.(event);
@@ -452,9 +457,9 @@ export class RecorderController {
     const cleanupCompletion = this.#runtime.cleanupCompletion ?? runtimeResult;
     this.#trackCleanupGeneration(cleanupCompletion);
     const durableReset = cleanupCompletion.then(() => this.#applyReset());
-    const result = runtimeResult.then(async () => durableReset);
-    void result.then(
-      async () => {
+    const resetResult = runtimeResult.then(() => durableReset);
+    const journaledResult = resetResult.then(
+      async (snapshot) => {
         this.#operationJournal.record({
           at: new Date().toISOString(),
           correlationId,
@@ -464,6 +469,7 @@ export class RecorderController {
           elapsedMs: Math.round(performance.now() - startedAt),
         });
         await this.#operationJournal.flush();
+        return snapshot;
       },
       async (error: unknown) => {
         const diagnostic = toSafeDiagnostic(error, "LOCAL_OPERATION_FAILED");
@@ -481,23 +487,24 @@ export class RecorderController {
           },
         });
         await this.#operationJournal.flush();
+        throw error;
       },
     );
-    this.#resetPromise = result;
-    void result.catch(() => undefined);
-    void durableReset.then(
+    this.#resetPromise = journaledResult;
+    void journaledResult.catch(() => undefined);
+    void journaledResult.then(
       () => {
-        if (this.#resetPromise === result) {
+        if (this.#resetPromise === journaledResult) {
           this.#resetPromise = null;
         }
       },
       () => {
-        if (this.#resetPromise === result) {
+        if (this.#resetPromise === journaledResult) {
           this.#resetPromise = null;
         }
       },
     );
-    return result;
+    return journaledResult;
   }
 
   shutdown(): Promise<void> {
@@ -514,9 +521,17 @@ export class RecorderController {
       operation: "shutdown",
       status: "start",
     });
-    const result = this.#runtime.shutdown();
-    const cleanupCompletion = this.#runtime.cleanupCompletion ?? result;
+    const pendingResetJournal = this.#resetPromise?.then(
+      () => undefined,
+      () => undefined,
+    );
+    const runtimeResult = this.#runtime.shutdown();
+    const cleanupCompletion = this.#runtime.cleanupCompletion ?? runtimeResult;
     this.#trackCleanupGeneration(cleanupCompletion);
+    const result =
+      pendingResetJournal === undefined
+        ? runtimeResult
+        : Promise.all([runtimeResult, pendingResetJournal]).then(() => undefined);
     const journalResult = result.then(
       async () => {
         this.#operationJournal.record({
@@ -683,4 +698,27 @@ export class RecorderController {
       throw new Error("The recorder operation was cancelled.");
     }
   }
+}
+
+function journalModelReference(
+  target: RuntimeTarget,
+  references: Map<ModelRole, string>,
+): {
+  readonly modelSource: RuntimeTarget["source"];
+  readonly modelId?: string;
+  readonly modelRef?: string;
+} {
+  if (target.source === "built_in_default" && SAFE_BUILT_IN_MODEL_IDS.has(target.modelId)) {
+    return {
+      modelSource: target.source,
+      modelId: target.modelId,
+    };
+  }
+  const modelRef =
+    references.get(target.role) ?? `override:${target.role}:${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  references.set(target.role, modelRef);
+  return {
+    modelSource: target.source,
+    modelRef,
+  };
 }

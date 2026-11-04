@@ -53,10 +53,12 @@ export class AssistantMemoryState {
       ...operation,
       phase: this.#operationPhases.get(operation.requestId) ?? operation.phase,
     }));
-    const pendingRequestIds = new Set(pendingOperations.map(({ requestId }) => requestId));
-    for (const requestId of this.#operationPhases.keys()) {
-      if (!pendingRequestIds.has(requestId)) {
-        this.#operationPhases.delete(requestId);
+    if (queue !== undefined) {
+      const pendingRequestIds = new Set(pendingOperations.map(({ requestId }) => requestId));
+      for (const requestId of this.#operationPhases.keys()) {
+        if (!pendingRequestIds.has(requestId)) {
+          this.#operationPhases.delete(requestId);
+        }
       }
     }
     return {

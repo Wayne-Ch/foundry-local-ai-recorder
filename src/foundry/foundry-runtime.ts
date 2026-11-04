@@ -949,27 +949,17 @@ export class FoundryRecorderRuntime {
       candidate = await this.#resolveModel(target, manager, onProgress);
       this.#assertCurrent(generation);
       this.#assertModel(role, candidate, target);
-      this.#setReadiness(
-        role,
-        candidate,
-        candidate.isCached ? "loading" : "downloading",
-        candidate.isCached ? `Loading ${candidate.id}.` : `Downloading ${candidate.id}.`,
-      );
       if (!candidate.isCached) {
         phase = "model_download";
-        this.#emitPrepareProgress(
-          onProgress,
-          "downloading_model",
-          `Downloading exact model ${candidate.id}.`,
-          role,
-        );
+        const detail = `Downloading exact model ${candidate.id}.`;
+        this.#setReadiness(role, candidate, "downloading", detail);
+        this.#emitPrepareProgress(onProgress, "downloading_model", detail, role);
         await candidate.download((percent) => {
-          this.#emitPrepareProgress(
-            onProgress,
-            "downloading_model",
-            `${candidate?.id ?? target.modelId} ${percent.toFixed(1)}%`,
-            role,
-          );
+          const progressDetail = `${candidate?.id ?? target.modelId} ${percent.toFixed(1)}%`;
+          if (candidate !== null) {
+            this.#setReadiness(role, candidate, "downloading", progressDetail);
+          }
+          this.#emitPrepareProgress(onProgress, "downloading_model", progressDetail, role);
         });
         this.#assertCurrent(generation);
         if (!candidate.isCached) {
@@ -977,16 +967,15 @@ export class FoundryRecorderRuntime {
         }
       }
       phase = "provider_discovery";
-      this.#emitPrepareProgress(
-        onProgress,
-        "checking_provider",
-        `Checking ${target.executionProvider} for ${target.modelId}.`,
-        role,
-      );
-      await this.#ensureProvider(target, manager.handle, onProgress);
+      const providerDetail = `Checking ${target.executionProvider} for ${target.modelId}.`;
+      this.#setReadiness(role, candidate, "checking", providerDetail);
+      this.#emitPrepareProgress(onProgress, "checking_provider", providerDetail, role);
+      await this.#ensureProvider(target, candidate, manager.handle, onProgress);
       this.#assertCurrent(generation);
       phase = "model_load";
-      this.#emitPrepareProgress(onProgress, "loading_model", `Loading ${candidate.id} in-process.`, role);
+      const loadingDetail = `Loading ${candidate.id} in-process.`;
+      this.#setReadiness(role, candidate, "loading", loadingDetail);
+      this.#emitPrepareProgress(onProgress, "loading_model", loadingDetail, role);
       await this.#slots[role].activate(candidate, manager);
       this.#assertCurrent(generation);
       this.#setReadiness(role, candidate, "ready", `${candidate.id} is ready for local inference.`);
@@ -1039,12 +1028,9 @@ export class FoundryRecorderRuntime {
     try {
       return await manager.handle.catalog.getModelVariant(target.modelId);
     } catch (catalogError) {
-      this.#emitPrepareProgress(
-        onProgress,
-        "checking_cache",
-        `The catalog lookup failed; checking the local cache for ${target.modelId}.`,
-        target.role,
-      );
+      const detail = `The catalog lookup failed; checking the local cache for ${target.modelId}.`;
+      this.#setReadiness(target.role, null, "checking", detail);
+      this.#emitPrepareProgress(onProgress, "checking_cache", detail, target.role);
       let cachedModels: IModel[];
       try {
         cachedModels = await manager.handle.catalog.getCachedModels();
@@ -1077,6 +1063,7 @@ export class FoundryRecorderRuntime {
 
   async #ensureProvider(
     target: RuntimeTarget,
+    model: IModel,
     manager: ManagerHandle,
     onProgress?: (event: PrepareProgressEvent) => void,
   ): Promise<void> {
@@ -1092,7 +1079,8 @@ export class FoundryRecorderRuntime {
     if (provider.isRegistered) {
       return;
     }
-    this.#setReadiness(target.role, null, "registering_provider", `Registering ${provider.name}.`);
+    const detail = `Registering ${provider.name}.`;
+    this.#setReadiness(target.role, model, "registering_provider", detail);
     this.#emitPrepareProgress(
       onProgress,
       "registering_provider",
@@ -1100,12 +1088,9 @@ export class FoundryRecorderRuntime {
       target.role,
     );
     const result = await manager.downloadAndRegisterEps([provider.name], (name, percent) => {
-      this.#emitPrepareProgress(
-        onProgress,
-        "registering_provider",
-        `${name} ${percent.toFixed(1)}%`,
-        target.role,
-      );
+      const progressDetail = `${name} ${percent.toFixed(1)}%`;
+      this.#setReadiness(target.role, model, "registering_provider", progressDetail);
+      this.#emitPrepareProgress(onProgress, "registering_provider", progressDetail, target.role);
     });
     if (!result.success || result.failedEps.length > 0) {
       throw createSafeDiagnosticError(

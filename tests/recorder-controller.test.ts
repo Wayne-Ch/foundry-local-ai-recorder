@@ -15,6 +15,7 @@ import {
 } from "../src/audio/audio-types";
 import type { PrepareRuntimeResult, SummaryGenerationResult } from "../src/foundry/foundry-runtime";
 import {
+  type RuntimeTargets,
   resolveRuntimeTargets,
   SUMMARY_EXECUTION_PROVIDER,
   SUMMARY_MODEL_ID,
@@ -26,41 +27,14 @@ import {
   POPULATED_SUMMARY_CAPTURE_FORMATTED,
   POPULATED_SUMMARY_CAPTURE_RAW,
 } from "../src/main/ui-capture-fixture";
-import type { RuntimeReadiness } from "../src/shared/contracts";
+import type { PrepareProgressEvent, RuntimeReadiness } from "../src/shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import { formatSummaryForDisplay } from "../src/summary/summary-format";
 
 const targets = resolveRuntimeTargets({});
 
 class FakeRuntime implements RecorderRuntime {
-  readonly cleanupCompletion: Promise<void> | null = null;
-  readonly readiness: RuntimeReadiness = {
-    sdkVersion: "2.2.1",
-    provider: "Foundry Local in-process SDK",
-    externalEndpointUsed: false,
-    inProcessModeValidated: true,
-    embeddedWebServiceRunning: false,
-    embeddedWebServiceUrls: [],
-    cleanup: {
-      state: "none",
-      required: false,
-      completionPending: false,
-      detail: "No deferred runtime cleanup is pending.",
-    },
-    nonessentialTelemetryDisabled: true,
-    modelCachePath: "C:\\models",
-    audioRecovery: {
-      discovered: 0,
-      removed: 0,
-      retained: 0,
-      pathPolicy: "App-owned temporary audio directory; exact paths are not exposed.",
-      retryGuidance:
-        "Close applications using retained files, then use Delete / reset or restart to retry cleanup.",
-    },
-    whisper: modelReadiness("whisper", WHISPER_AUDIO_MODEL_ID, AUDIO_EXECUTION_PROVIDER),
-    nemotron: modelReadiness("nemotron", NEMOTRON_AUDIO_MODEL_ID, AUDIO_EXECUTION_PROVIDER),
-    summary: modelReadiness("summary", SUMMARY_MODEL_ID, SUMMARY_EXECUTION_PROVIDER),
-  };
+  readonly readiness: RuntimeReadiness;
   summaryInput = "";
   lastCapture: ValidatedAudioCapture | null = null;
 
@@ -68,9 +42,27 @@ class FakeRuntime implements RecorderRuntime {
     readonly finalTranscript = "Whisper authoritative final transcript.",
     readonly transcriptionError: Error | null = null,
     readonly summaryText = "Overview.\n\n- Key point.",
-  ) {}
+    runtimeTargets: RuntimeTargets = targets,
+  ) {
+    this.readiness = runtimeReadiness(runtimeTargets);
+  }
 
-  async prepare(): Promise<PrepareRuntimeResult> {
+  get cleanupCompletion(): Promise<void> | null {
+    return null;
+  }
+
+  async prepare(
+    _enableLiveCaptions: boolean,
+    onProgress?: (event: PrepareProgressEvent) => void,
+  ): Promise<PrepareRuntimeResult> {
+    onProgress?.({
+      operation: "prepare",
+      phase: "summary:checking_catalog",
+      stage: "checking_catalog",
+      role: "summary",
+      detail: "Checking the exact summary model in the public catalog.",
+      readiness: this.readiness,
+    });
     return {
       readiness: this.readiness,
       liveCaptionsAvailable: true,
@@ -165,7 +157,97 @@ describe("RecorderController", () => {
       correlationId: start?.correlationId,
       generation: 0,
     });
+    expect(
+      events.find((event) => event.operation === "prepare" && event.status === "progress"),
+    ).toMatchObject({
+      modelRole: "summary",
+      modelSource: "built_in_default",
+      modelId: SUMMARY_MODEL_ID,
+    });
     expect(JSON.stringify(events)).not.toContain("C:\\models");
+  });
+
+  it.each([
+    ["URL", "https://user:password@example.invalid/model?token=fake-secret"],
+    ["Windows path", "C:\\Users\\private-user\\models\\private-model.onnx"],
+    ["credential", "fake-user:fake-password@example.invalid/model"],
+    ["token", "token_fake_0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"],
+  ])("never persists a raw %s-shaped model override", async (_label, modelId) => {
+    const events: RecorderOperationJournalEvent[] = [];
+    const targetsWithOverride = resolveRuntimeTargets({
+      SMART_RECORDER_SUMMARY_MODEL_ID: modelId,
+      SMART_RECORDER_SUMMARY_EXECUTION_PROVIDER: SUMMARY_EXECUTION_PROVIDER,
+    });
+    const controller = new RecorderController(
+      new FakeRuntime(undefined, undefined, undefined, targetsWithOverride),
+      {
+        record: (event) => events.push(event),
+        flush: async () => {},
+      },
+    );
+
+    await controller.prepare({ enableLiveCaptions: false });
+
+    const progress = events.find((event) => event.operation === "prepare" && event.status === "progress");
+    expect(progress).toMatchObject({
+      modelRole: "summary",
+      modelSource: "environment_override",
+      modelRef: expect.stringMatching(/^override:summary:[a-f0-9]{12}$/),
+    });
+    expect(progress).not.toHaveProperty("modelId");
+    expect(JSON.stringify(events)).not.toContain(modelId);
+  });
+
+  it("persists the Reset terminal event before Shutdown can complete", async () => {
+    class ResetRaceRuntime extends FakeRuntime {
+      readonly resetGate = deferred<void>();
+      readonly shutdownGate = deferred<void>();
+
+      override get cleanupCompletion(): Promise<void> {
+        return this.resetGate.promise;
+      }
+
+      override reset(): Promise<void> {
+        return this.resetGate.promise;
+      }
+
+      override shutdown(): Promise<void> {
+        return this.shutdownGate.promise;
+      }
+    }
+
+    const runtime = new ResetRaceRuntime();
+    const persisted: RecorderOperationJournalEvent[] = [];
+    let tail = Promise.resolve();
+    const controller = new RecorderController(runtime, {
+      record(event) {
+        tail = tail.then(() => {
+          persisted.push(event);
+        });
+      },
+      flush: () => tail,
+    });
+
+    const reset = controller.reset();
+    const shutdown = controller.shutdown();
+    runtime.shutdownGate.resolve();
+    let shutdownSettled = false;
+    void shutdown.then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+
+    runtime.resetGate.resolve();
+    await reset;
+    await shutdown;
+
+    expect(
+      persisted
+        .filter((event) => event.operation === "reset" || event.operation === "shutdown")
+        .map((event) => `${event.operation}:${event.status}`),
+    ).toEqual(["reset:start", "shutdown:start", "reset:complete", "shutdown:complete"]);
   });
 
   it("rejects an imported WAV selected before Reset", async () => {
@@ -413,12 +495,13 @@ describe("RecorderController", () => {
 });
 
 function modelReadiness(
+  runtimeTargets: RuntimeTargets,
   role: keyof typeof targets,
   id: string,
   executionProvider: string,
 ): RuntimeReadiness[typeof role] {
   return {
-    target: targets[role],
+    target: runtimeTargets[role],
     model: {
       role,
       id,
@@ -432,6 +515,50 @@ function modelReadiness(
     cached: true,
     loaded: true,
   };
+}
+
+function runtimeReadiness(runtimeTargets: RuntimeTargets): RuntimeReadiness {
+  return {
+    sdkVersion: "2.2.1",
+    provider: "Foundry Local in-process SDK",
+    externalEndpointUsed: false,
+    inProcessModeValidated: true,
+    embeddedWebServiceRunning: false,
+    embeddedWebServiceUrls: [],
+    cleanup: {
+      state: "none",
+      required: false,
+      completionPending: false,
+      detail: "No deferred runtime cleanup is pending.",
+    },
+    nonessentialTelemetryDisabled: true,
+    modelCachePath: "C:\\models",
+    audioRecovery: {
+      discovered: 0,
+      removed: 0,
+      retained: 0,
+      pathPolicy: "App-owned temporary audio directory; exact paths are not exposed.",
+      retryGuidance:
+        "Close applications using retained files, then use Delete / reset or restart to retry cleanup.",
+    },
+    whisper: modelReadiness(runtimeTargets, "whisper", WHISPER_AUDIO_MODEL_ID, AUDIO_EXECUTION_PROVIDER),
+    nemotron: modelReadiness(runtimeTargets, "nemotron", NEMOTRON_AUDIO_MODEL_ID, AUDIO_EXECUTION_PROVIDER),
+    summary: modelReadiness(runtimeTargets, "summary", SUMMARY_MODEL_ID, SUMMARY_EXECUTION_PROVIDER),
+  };
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (error?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function audioIdentity(id: string, streaming: boolean): AudioTranscriptionResult["model"] {

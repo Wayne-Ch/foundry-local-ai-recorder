@@ -88,22 +88,127 @@ describe("FoundryRecorderRuntime", () => {
       return model;
     });
     vi.mocked(manager.catalog.getCachedModels).mockReturnValue(cache.promise);
-    const progress: Array<{ readonly stage: string; readonly role?: string }> = [];
+    const progress: Array<{
+      readonly stage: string;
+      readonly role?: string;
+      readonly status?: string;
+      readonly detail?: string;
+    }> = [];
     const runtime = createRuntime(root, [manager]);
     const preparing = runtime.prepare(false, (event) => {
       progress.push({
         stage: event.stage,
         ...(event.role === undefined ? {} : { role: event.role }),
+        ...(event.role === undefined
+          ? {}
+          : {
+              status: event.readiness[event.role].status,
+              detail: event.readiness[event.role].detail,
+            }),
       });
     });
 
-    await vi.waitFor(() => expect(progress).toContainEqual({ stage: "checking_catalog", role: "whisper" }));
+    await vi.waitFor(() =>
+      expect(progress).toContainEqual(
+        expect.objectContaining({ stage: "checking_catalog", role: "whisper" }),
+      ),
+    );
     catalog.reject(new Error("catalog unavailable"));
-    await vi.waitFor(() => expect(progress).toContainEqual({ stage: "checking_cache", role: "whisper" }));
+    await vi.waitFor(() =>
+      expect(progress).toContainEqual(expect.objectContaining({ stage: "checking_cache", role: "whisper" })),
+    );
+    expect(
+      progress.find(({ stage, role }) => stage === "checking_cache" && role === "whisper"),
+    ).toMatchObject({
+      status: "checking",
+      detail: expect.stringContaining("checking the local cache"),
+    });
     cache.resolve([...models.values()]);
     await preparing;
 
     expect(runtime.readiness.whisper.status).toBe("ready");
+    await runtime.shutdown();
+  });
+
+  it("keeps model cards truthful through download, provider registration, loading, and ready", async () => {
+    const root = await createTempRoot();
+    const models = createModels();
+    const summary = models.get(SUMMARY_MODEL_ID);
+    if (summary === undefined) {
+      throw new Error("Expected fake summary model.");
+    }
+    summary.cached = false;
+    const manager = new FakeManager(models);
+    vi.spyOn(manager, "discoverEps").mockReturnValue([
+      { name: SUMMARY_EXECUTION_PROVIDER, isRegistered: false } as never,
+    ]);
+    vi.spyOn(manager, "downloadAndRegisterEps").mockImplementation(async (_names, onProgress) => {
+      onProgress(SUMMARY_EXECUTION_PROVIDER, 50);
+      return {
+        success: true,
+        status: "registered",
+        registeredEps: [SUMMARY_EXECUTION_PROVIDER],
+        failedEps: [],
+      };
+    });
+    const progress: Array<{
+      readonly stage: string;
+      readonly status: string;
+      readonly detail: string;
+      readonly cached: boolean;
+      readonly loaded: boolean;
+    }> = [];
+    const runtime = createRuntime(root, [manager]);
+
+    await runtime.prepare(false, (event) => {
+      if (event.role !== "summary") {
+        return;
+      }
+      const readiness = event.readiness.summary;
+      progress.push({
+        stage: event.stage,
+        status: readiness.status,
+        detail: readiness.detail,
+        cached: readiness.cached,
+        loaded: readiness.loaded,
+      });
+    });
+
+    expect(progress.find(({ stage }) => stage === "checking_catalog")).toMatchObject({
+      status: "checking",
+      detail: expect.stringContaining("Resolving exact summary model"),
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "downloading_model")).toMatchObject({
+      status: "downloading",
+      detail: expect.stringContaining("Downloading"),
+      cached: false,
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "checking_provider")).toMatchObject({
+      status: "checking",
+      detail: expect.stringContaining("Checking"),
+      cached: true,
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "registering_provider")).toMatchObject({
+      status: "registering_provider",
+      detail: expect.stringContaining("Registering"),
+      cached: true,
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "loading_model")).toMatchObject({
+      status: "loading",
+      detail: expect.stringContaining("Loading"),
+      cached: true,
+      loaded: false,
+    });
+    expect(progress.find(({ stage }) => stage === "model_ready")).toMatchObject({
+      status: "ready",
+      detail: expect.stringContaining("ready"),
+      cached: true,
+      loaded: true,
+    });
     await runtime.shutdown();
   });
 
@@ -1756,7 +1861,10 @@ class FakeManager {
     return [{ name: SUMMARY_EXECUTION_PROVIDER, isRegistered: true }];
   }
 
-  async downloadAndRegisterEps(): Promise<EpDownloadResult> {
+  async downloadAndRegisterEps(
+    _names: string[],
+    _onProgress: (name: string, percent: number) => void,
+  ): Promise<EpDownloadResult> {
     return {
       success: true,
       status: "registered",
@@ -1846,7 +1954,15 @@ class FakeModel implements IModel {
     return defaultValue;
   }
 
-  async download(): Promise<void> {
+  async download(signal?: AbortSignal): Promise<void>;
+  async download(progressCallback?: (progress: number) => void, signal?: AbortSignal): Promise<void>;
+  async download(
+    progressOrSignal?: AbortSignal | ((progress: number) => void),
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    if (typeof progressOrSignal === "function") {
+      progressOrSignal(50);
+    }
     this.cached = true;
   }
 
