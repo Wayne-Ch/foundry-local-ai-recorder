@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { SUMMARY_EXECUTION_PROVIDER, SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
 import { formatSummaryPresentation } from "../src/summary/summary-format";
+import { hasValidAtlasCacheContract } from "./atlas-cache-contract";
 import { assertSummaryDisplayText } from "./integration-utils";
 
 const MAX_SUMMARY_LATENCY_MS = 10_000;
@@ -16,7 +17,7 @@ const FORBIDDEN_INSTRUCTION_ECHOES = [
 interface ConditionalFact {
   readonly label: string;
   readonly trigger: RegExp;
-  readonly valid: RegExp | ((claim: string) => boolean);
+  readonly valid: RegExp;
 }
 
 interface SummaryFixture {
@@ -27,6 +28,7 @@ interface SummaryFixture {
   readonly forbidden: readonly RegExp[];
   readonly allowedExtraNumbers: readonly string[];
   readonly maxWords?: number;
+  readonly validate?: (text: string) => void;
 }
 
 const transcripts: readonly SummaryFixture[] = [
@@ -94,11 +96,6 @@ const transcripts: readonly SummaryFixture[] = [
           /(?:reduc|fell|decreas)[\s\S]{0,80}420\s*(?:milliseconds|ms)[\s\S]{0,80}280\s*(?:milliseconds|ms)|420\s*(?:milliseconds|ms)[\s\S]{0,80}(?:to|down to)[\s\S]{0,30}280\s*(?:milliseconds|ms)/iu,
       },
       {
-        label: "cache cause",
-        trigger: /\b(?:local model cache|model cache|the cache|cache)\b/iu,
-        valid: hasValidAtlasCacheCause,
-      },
-      {
         label: "latency target",
         trigger: /\btarget\b|250/iu,
         valid: /target[\s\S]{0,40}250\s*(?:milliseconds|ms)|250\s*(?:milliseconds|ms)[\s\S]{0,40}target/iu,
@@ -120,6 +117,9 @@ const transcripts: readonly SummaryFixture[] = [
       /\bPriya\b|\bBattery Pack B\b|\bTeam Aurora\b|\bthermal runaway\b|\bequation\b/iu,
     ],
     allowedExtraNumbers: [],
+    validate: (text) => {
+      assert.ok(hasValidAtlasCacheContract(text), "atlas summary misstated cache cause");
+    },
   },
   {
     id: "aurora",
@@ -452,14 +452,11 @@ function validateSummaryText(fixture: SummaryFixture, text: string): void {
   const allowedNumbers = new Set([...numericTokens(fixture.text), ...fixture.allowedExtraNumbers]);
   const unexpectedNumbers = [...new Set(numericTokens(text).filter((number) => !allowedNumbers.has(number)))];
   assert.deepEqual(unexpectedNumbers, [], `${fixture.id} summary invented numbers`);
+  fixture.validate?.(text);
   for (const fact of fixture.facts) {
     for (const claim of claims) {
       if (matches(fact.trigger, claim)) {
-        if (fact.valid instanceof RegExp) {
-          assert.match(claim, fact.valid, `${fixture.id} summary misstated ${fact.label}`);
-        } else {
-          assert.ok(fact.valid(claim), `${fixture.id} summary misstated ${fact.label}`);
-        }
+        assert.match(claim, fact.valid, `${fixture.id} summary misstated ${fact.label}`);
       }
     }
   }
@@ -482,68 +479,6 @@ function factualClaims(value: string): string[] {
     .flatMap((line) => line.split(/(?<=[.!?;])\s+(?=(?:[-*]\s*)?[\p{L}\d])/u))
     .map((claim) => claim.replace(/^\s*(?:[-*•]|\d+[.)])\s+/u, "").trim())
     .filter(Boolean);
-}
-
-function hasValidAtlasCacheCause(claim: string): boolean {
-  const cacheReferenceSource = String.raw`(?:(?:the\s+)?(?:local\s+)?model\s+cache|the\s+cache|cache)`;
-  const latencySource = String.raw`(?:(?:cold[\s-]*start|response)\s+latency)`;
-  const rangeSource = String.raw`(?:from\s+)?420\s*(?:milliseconds|ms)\s*(?:to|down\s+to)\s*280\s*(?:milliseconds|ms)`;
-  const directReductionSource = String.raw`(?:reduced|lowered|cut|improved)\s+${latencySource}\s+${rangeSource}`;
-  const latencyReductionSource = String.raw`(?:${directReductionSource}|${latencySource}\s+(?:(?:fell|dropped|decreased|declined|was\s+(?:reduced|lowered|cut|improved))\s+${rangeSource}|(?:to\s+)?(?:fall|drop|decrease|decline)\s+${rangeSource}|(?:falling|dropping|decreasing|declining)\s+${rangeSource}|(?:reduction|decrease|improvement)\s+${rangeSource})|(?:(?:a|the)\s+)?(?:reduction|decrease|improvement)\s+(?:in|of)\s+${latencySource}\s+${rangeSource})`;
-  const cacheReference = new RegExp(`\\b${cacheReferenceSource}\\b`, "iu");
-  const cacheSubject = new RegExp(String.raw`^(?:(?:enabling|using)\s+)?${cacheReferenceSource}\b`, "iu");
-  const inheritedCacheEffect =
-    /^(?:also\s+)?(?:caus(?:ed|ing)|enabl(?:ed|ing)|improv(?:ed|ing)|led\s+to|lower(?:ed|ing)|made|reduc(?:ed|ing)|resulted\s+in|schedul(?:ed|ing)|set|setting)\b/iu;
-  const clauses = claim
-    .split(/\s*(?:;|\b(?:and|but|while|whereas|yet)\b)\s*/iu)
-    .map((clause) => clause.trim())
-    .filter(Boolean);
-  const cacheClauses: string[] = [];
-  let inheritsCacheSubject = false;
-  for (const clause of clauses) {
-    if (matches(cacheReference, clause)) {
-      cacheClauses.push(clause);
-      inheritsCacheSubject = matches(cacheSubject, clause);
-    } else if (inheritsCacheSubject && matches(inheritedCacheEffect, clause)) {
-      cacheClauses.push(`The local model cache ${clause}`);
-    } else {
-      inheritsCacheSubject = false;
-    }
-  }
-  if (cacheClauses.length === 0) {
-    return false;
-  }
-  const validPatterns = [
-    new RegExp(
-      String.raw`^(?:(?:enabling|using)\s+)?${cacheReferenceSource}\s+(?:directly\s+)?${directReductionSource}[.!?]?$`,
-      "iu",
-    ),
-    new RegExp(
-      String.raw`^(?:(?:enabling|using)\s+)?${cacheReferenceSource}\s+(?:caused|led\s+to|resulted\s+in|was\s+responsible\s+for)\s+${latencyReductionSource}[.!?]?$`,
-      "iu",
-    ),
-    new RegExp(
-      String.raw`^(?:Project\s+Atlas\s+)?${latencyReductionSource}\s+(?:after|because)\s+(?:the\s+team\s+)?(?:enabled|used)\s+${cacheReferenceSource}[.!?]?$`,
-      "iu",
-    ),
-    new RegExp(
-      String.raw`^(?:Project\s+Atlas\s+)?${latencyReductionSource}\s+(?:because\s+of|due\s+to|following|as\s+a\s+result\s+of|resulted\s+from|was\s+caused\s+by)\s+(?:(?:enabling|using)\s+|the\s+use\s+of\s+)?${cacheReferenceSource}[.!?]?$`,
-      "iu",
-    ),
-    new RegExp(
-      String.raw`^(?:Project\s+Atlas\s+)?${latencyReductionSource}\s+after\s+${cacheReferenceSource}\s+was\s+(?:enabled|used)[.!?]?$`,
-      "iu",
-    ),
-    new RegExp(
-      String.raw`^(?:after|because)\s+(?:the\s+team\s+)?(?:enabled|used)\s+${cacheReferenceSource},?\s+(?:Project\s+Atlas\s+)?${latencyReductionSource}[.!?]?$`,
-      "iu",
-    ),
-    new RegExp(
-      String.raw`^(?:because\s+of|due\s+to|following|as\s+a\s+result\s+of)\s+(?:(?:enabling|using)\s+|the\s+use\s+of\s+)?${cacheReferenceSource},?\s+(?:Project\s+Atlas\s+)?${latencyReductionSource}[.!?]?$`,
-      "iu",
-    ),
-  ] as const;
-  return cacheClauses.every((clause) => validPatterns.some((pattern) => matches(pattern, clause)));
 }
 
 function matches(pattern: RegExp, value: string): boolean {
