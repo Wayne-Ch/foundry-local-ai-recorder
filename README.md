@@ -1,4 +1,4 @@
-# Foundry Local AI Recorder
+# AI Recorder
 
 Windows-first Electron app for a complete local recording workflow:
 
@@ -22,24 +22,45 @@ instances. Prepare may download missing model or execution-provider assets. Once
 inference remains local to the process and the endpoint guard rejects an active embedded web
 service or URL.
 
-## Install and launch
+## Fresh clone, install, and launch
 
-Validated for Windows 11 x64:
+Prerequisites:
+
+- Windows 11 x64.
+- Git.
+- Node.js 22 or later with npm.
+- Internet access for `npm install` and the first model preparation.
+
+From the parent folder where you want the canonical `ai-recorder` clone:
 
 ```powershell
+git clone --branch feature/ai-recorder-ux-parity --single-branch https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git ai-recorder
+Set-Location .\ai-recorder
 npm install
 npm run fixture:generate
-npm run start
+npm run build
+npm run start:built
 ```
 
 Do not install with `--ignore-scripts`. The root `postinstall` first verifies and repairs the
 Foundry native payload, then verifies Electron. If native Foundry files are incomplete, Prepare
 returns an actionable `FOUNDRY_NATIVE_RUNTIME_MISSING` diagnostic with rebuild guidance.
 
+> [!IMPORTANT]
+> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
+> model and execution-provider assets. Remain online, keep **AI Recorder** open, and wait until
+> Nemotron, Whisper, and Qwen3.5 0.8B each show **READY** and the status says
+> **AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint. After the
+> required assets are cached and all three models load successfully, subsequent demo actions can
+> run offline.
+
 Select **Prepare local models** before recording. The status becomes
 **AI Recorder offline ready · 3/3 models** only when Nemotron, Whisper, and Qwen3.5 0.8B all report
 truthful loaded readiness. Whisper and Qwen can remain usable when the optional live-draft path
 fails, but that degraded state is shown as a warning rather than complete offline readiness.
+
+Close the **AI Recorder** window normally when the playtest is complete and wait for the
+`npm run start:built` command to return to the PowerShell prompt.
 
 ## Recorder behavior
 

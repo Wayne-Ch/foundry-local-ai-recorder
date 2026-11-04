@@ -1,14 +1,30 @@
 # AI Recorder colleague playtest
 
-Use a Windows 11 x64 PC with the three exact models cached. Record observations without including
-private transcript content or local paths.
+Use a Windows 11 x64 PC with Git, Node.js 22 or later, npm, and internet access for installation
+and first preparation. Record observations without including private transcript content or local
+paths.
+
+> [!IMPORTANT]
+> The first **Prepare local models** can take several minutes and download roughly 2 GB or more of
+> model and execution-provider assets. Remain online, keep **AI Recorder** open, and wait until all
+> three required model cards show **READY** and the app says
+> **AI Recorder offline ready · 3/3 models**. Do not disconnect before that checkpoint. After the
+> cache is complete and all three models load successfully, subsequent demo actions can run
+> offline.
 
 ## Setup
 
-1. Run `npm install`, `npm run fixture:generate`, and `npm run build`.
-2. Launch with `npm run start:built`.
-3. Confirm the title and top heading both say **AI Recorder**.
-4. Leave live captions enabled and consent unchecked.
+1. From the parent folder where you want the canonical clone, run:
+
+   ```powershell
+   git clone --branch feature/ai-recorder-ux-parity --single-branch https://github.com/Wayne-Ch/foundry-local-smart-ai-recorder.git ai-recorder
+   Set-Location .\ai-recorder
+   ```
+
+2. Run `npm install`, `npm run fixture:generate`, and `npm run build`.
+3. Launch with `npm run start:built`.
+4. Confirm the window title and top heading both say **AI Recorder**.
+5. Leave live captions enabled and consent unchecked.
 
 ## Prepare
 
@@ -19,8 +35,9 @@ private transcript content or local paths.
 4. Confirm the final success says **AI Recorder offline ready · 3/3 models**.
 5. Confirm Nemotron, Whisper, and Qwen3.5 0.8B each show the exact ID and CPU provider.
 
-The first preparation has no fixed duration because uncached assets may download. A second cached
-preparation should reuse loaded models without pretending that work is still downloading.
+The first preparation has no fixed duration because uncached model and execution-provider assets
+must download before loading. A second cached preparation should show loading without a new
+download phase.
 
 ## Record
 
@@ -72,6 +89,25 @@ preparation should reuse loaded models without pretending that work is still dow
 - If any failure occurs, record only the canonical code, operation, model, and phase metadata shown
   in the UI or Developer Trace.
 
+## Shutdown and residue
+
+1. Close the **AI Recorder** window normally.
+2. Wait for `npm run start:built` to return to the PowerShell prompt.
+3. From the clone root, run the following checks. Both commands must produce no output:
+
+   ```powershell
+   $repo = (Resolve-Path .).Path
+   Get-CimInstance Win32_Process |
+     Where-Object {
+       $_.Name -in @("electron.exe", "node.exe") -and
+       $_.CommandLine -and
+       $_.CommandLine.Contains($repo, [System.StringComparison]::OrdinalIgnoreCase)
+     }
+
+   Get-ChildItem -LiteralPath "$env:TEMP\FoundryLocalAIRecorder\audio" `
+     -Filter "capture-*.wav" -File -ErrorAction SilentlyContinue
+   ```
+
 ## Pass criteria
 
 - Every visible product name is **AI Recorder**.
@@ -81,3 +117,5 @@ preparation should reuse loaded models without pretending that work is still dow
 - Prepare, recording, Stop, WAV import, correction-save, summary, and Reset have truthful progress.
 - No stale completion restores transcript or summary state after Reset.
 - No owned temporary WAV remains after transcription or Reset.
+- Normal window close returns the launch command to the prompt with no clone-owned Electron/Node
+  process left running.
