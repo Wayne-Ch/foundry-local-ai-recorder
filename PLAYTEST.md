@@ -14,7 +14,7 @@ Record observations without including private transcript content or local paths.
 
 ## Validated configuration
 
-This playtest's current E2E evidence was collected on a Windows 11 x64 machine with AMD Radeon
+Current E2E evidence for this test guide was collected on a Windows 11 x64 machine with AMD Radeon
 graphics, working WebGPU, and 64 GB RAM.
 Validation used Node.js 26.13.0 and npm 11.20.0. All Recorder models use the
 documented `CPUExecutionProvider` path; AMD Radeon/WebGPU identifies the evidence environment and

@@ -71,7 +71,7 @@ Select **Prepare local models** before recording. The status becomes
 truthful loaded readiness. Whisper and Qwen can remain usable when the optional live-draft path
 fails, but that degraded state is shown as a warning rather than complete offline readiness.
 
-Close the **AI Recorder** window normally when the playtest is complete and wait for the
+Close the **AI Recorder** window normally when testing is complete and wait for the
 `npm run start:built` command to return to the PowerShell prompt.
 
 ## Recorder behavior

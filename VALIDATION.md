@@ -57,7 +57,7 @@ Coverage includes:
 
 ## Developer fixture integrity
 
-Normal setup and playtesting use the committed `fixtures\ode-lesson.wav`; regeneration is not part
+Normal setup and testing use the committed `fixtures\ode-lesson.wav`; regeneration is not part
 of the user flow. To audit the generator, use a clean disposable validation checkout:
 
 ```powershell
