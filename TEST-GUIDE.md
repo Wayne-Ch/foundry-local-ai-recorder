@@ -54,10 +54,10 @@ Recorder open until all three model cards report **READY**. Later test actions c
 ## Correct and summarize
 
 1. Correct one word in **Final transcript**.
-2. Select **Generate summary** without first selecting **Save correction**.
-3. Confirm the status says **Saving the transcript correction before summary generation…** before
-   summary generation begins.
-4. Confirm the transcript version increments.
+2. Select **Save correction**.
+3. Confirm the status says **Transcript correction saved as version _n_.** and the visible transcript
+   version increments.
+4. Select **Generate summary** and wait for summary generation to finish.
 5. Confirm **Session summary** has one overview line followed by bullet lines and remains editable.
 
 ## Reset and WAV fallback
