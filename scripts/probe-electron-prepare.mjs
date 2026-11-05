@@ -27,7 +27,6 @@ const child = spawn(electronPath, args, {
     ENHANCED_AI_RECORDER_PREPARE_UI_CAPTURE_PATH: capturePath,
   },
   stdio: ["ignore", "pipe", "pipe"],
-  windowsHide: true,
 });
 let output = "";
 child.stdout.on("data", (chunk) => {

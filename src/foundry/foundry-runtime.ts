@@ -50,14 +50,14 @@ import {
   type SafeDiagnosticContext,
   toSafeDiagnostic,
 } from "../shared/safe-diagnostic";
-import { SUMMARY_SYSTEM_PROMPT, summaryRequestPlan } from "../summary/summary-prompt";
+import { SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../summary/summary-prompt";
 import { ModelSlot } from "./model-slot";
 import { assertFoundryNativeRuntimeReady, foundryNativeRuntimeError } from "./native-runtime";
 import {
   inspectVisionChatModel,
   type PreparedAssistantModel,
   processAssistantTurn,
-  type VisionChatTurnInputSource,
+  type VisionChatTurnInput,
   type VisionChatTurnResult,
 } from "./optional-vision-chat-runtime";
 import { type RecorderPaths, resolveRecorderPaths } from "./paths";
@@ -163,24 +163,6 @@ interface ActiveAssistantOperation {
   readonly resolveSettled: () => void;
 }
 
-interface SharedAssistantOperation {
-  readonly ticketId: string;
-  readonly controller: AbortController;
-  readonly settled: Promise<void>;
-  readonly resolveSettled: () => void;
-}
-
-interface SharedQwenQueueEntry<T> {
-  readonly ticketId: string;
-  readonly kind: "summary" | "assistant";
-  readonly signal: AbortSignal;
-  readonly run: () => Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (error: unknown) => void;
-  state: "pending" | "active" | "settled";
-  abortListener: (() => void) | null;
-}
-
 interface PreparedSharedModel {
   readonly model: IModel;
   readonly identity: PreparedAssistantModel;
@@ -195,14 +177,11 @@ interface LifecycleCleanupGeneration {
 
 export interface SummaryGenerationResult {
   readonly text: string;
-  readonly finishReason: string;
   readonly durationMs: number;
   readonly model: ModelIdentity;
   readonly preflight: RequestPreflightResult;
   readonly response: Response;
 }
-
-export const SUMMARY_RAW_OUTPUT_MAX_CHARS = 2_500;
 
 export interface PrepareRuntimeResult {
   readonly readiness: RuntimeReadiness;
@@ -217,20 +196,6 @@ export interface AssistantRuntimeStatus {
   readonly cleanupDiagnostic: SafeDiagnostic | null;
 }
 
-export interface SharedQwenLifecycleEvent {
-  readonly ticketId: string;
-  readonly kind: "summary" | "assistant";
-  readonly phase:
-    | "submitted"
-    | "activated"
-    | "native_request_started"
-    | "native_request_settled"
-    | "cancelled"
-    | "released";
-  readonly sequence: number;
-  readonly atMs: number;
-}
-
 export interface FoundryRecorderRuntimeOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly resolvePaths?: () => Promise<RecorderPaths>;
@@ -240,7 +205,6 @@ export interface FoundryRecorderRuntimeOptions {
   readonly assertNativeRuntime?: () => void;
   readonly tempAudioStore?: TempAudioStore;
   readonly settlementTimeoutMs?: number;
-  readonly onSharedQwenLifecycle?: (event: SharedQwenLifecycleEvent) => void;
 }
 
 const DEFAULT_SETTLEMENT_TIMEOUT_MS = 10_000;
@@ -265,16 +229,11 @@ export class FoundryRecorderRuntime {
   #preparePromise: Promise<PrepareRuntimeResult> | null = null;
   #activeStream: ActiveAudioStream | null = null;
   readonly #activeOperations = new Set<ActiveNativeOperation>();
-  readonly #sharedQwenQueue: SharedQwenQueueEntry<unknown>[] = [];
-  #activeSharedQwenOperation: SharedQwenQueueEntry<unknown> | null = null;
-  readonly #assistantSharedOperations = new Set<SharedAssistantOperation>();
   #activeAssistantOperation: ActiveAssistantOperation | null = null;
   #assistantCleanupPromise: Promise<void> | null = null;
   #assistantGeneration = 0;
   #assistantCleanupDiagnostic: SafeDiagnostic | null = null;
   readonly #settlementTimeoutMs: number;
-  readonly #onSharedQwenLifecycle: ((event: SharedQwenLifecycleEvent) => void) | undefined;
-  #sharedQwenLifecycleSequence = 0;
   #cleanupCompletion: Promise<void> | null = null;
   #lifecycleCleanup: LifecycleCleanupGeneration | null = null;
   #generation = 0;
@@ -295,7 +254,6 @@ export class FoundryRecorderRuntime {
       (options.createManager === undefined ? assertFoundryNativeRuntimeReady : () => {});
     this.#tempAudioStore = options.tempAudioStore ?? null;
     this.#settlementTimeoutMs = options.settlementTimeoutMs ?? DEFAULT_SETTLEMENT_TIMEOUT_MS;
-    this.#onSharedQwenLifecycle = options.onSharedQwenLifecycle;
     if (!Number.isFinite(this.#settlementTimeoutMs) || this.#settlementTimeoutMs <= 0) {
       throw new Error("Native settlement timeout must be a positive finite duration.");
     }
@@ -314,10 +272,7 @@ export class FoundryRecorderRuntime {
     const active = this.#activeAssistantOperation;
     return {
       active: active !== null && !active.controller.signal.aborted,
-      draining:
-        this.#assistantCleanupPromise !== null ||
-        [...this.#assistantSharedOperations].some((operation) => operation.controller.signal.aborted) ||
-        active?.controller.signal.aborted === true,
+      draining: this.#assistantCleanupPromise !== null || active?.controller.signal.aborted === true,
       sharedModelId: this.#slots.summary.active?.id ?? null,
       cleanupDiagnostic: this.#assistantCleanupDiagnostic,
     };
@@ -325,20 +280,18 @@ export class FoundryRecorderRuntime {
 
   cancelAssistantOperations(reason?: unknown): Promise<void> | null {
     this.#assistantGeneration += 1;
-    const shared = [...this.#assistantSharedOperations];
-    if (shared.length === 0) {
+    const active = this.#activeAssistantOperation;
+    if (active === null) {
       return null;
     }
-    for (const operation of shared) {
-      if (!operation.controller.signal.aborted) {
-        try {
-          operation.controller.abort(reason);
-        } catch (error) {
-          this.#recordAssistantCleanupError(error);
-        }
+    if (!active.controller.signal.aborted) {
+      try {
+        active.controller.abort(reason);
+      } catch (error) {
+        this.#recordAssistantCleanupError(error);
       }
     }
-    return Promise.all(shared.map((operation) => operation.settled)).then(() => undefined);
+    return active.settled;
   }
 
   resetAssistant(): Promise<void> {
@@ -363,176 +316,34 @@ export class FoundryRecorderRuntime {
     return cleanup;
   }
 
-  runAssistantTurn(
-    input: VisionChatTurnInputSource,
+  async runAssistantTurn(
+    input: VisionChatTurnInput,
     options: {
       readonly signal?: AbortSignal;
       readonly requestOptions?: RequestOptions;
       readonly onProgress?: (phase: AssistantOperationPhase) => void;
-      readonly operationId?: string;
     } = {},
   ): Promise<VisionChatTurnResult> {
-    try {
-      this.#assertAvailable();
-      if (this.#assistantCleanupPromise !== null) {
-        throw new Error("Optional assistant cleanup is still draining.");
-      }
-    } catch (error) {
-      return Promise.reject(error);
+    this.#assertAvailable();
+    if (this.#assistantCleanupPromise !== null) {
+      throw new Error("Optional assistant cleanup is still draining.");
     }
     this.#assistantCleanupDiagnostic = null;
-    const controller = new AbortController();
-    const unlinkSignal = forwardAbortSignal(options.signal, controller, (error) =>
-      this.#recordAssistantCleanupError(error),
-    );
-    let resolveSettled = () => {};
-    const settled = new Promise<void>((resolve) => {
-      resolveSettled = resolve;
-    });
-    const ticketId = options.operationId?.trim() || randomUUID();
-    const shared: SharedAssistantOperation = {
-      ticketId,
-      controller,
-      settled,
-      resolveSettled,
-    };
-    this.#assistantSharedOperations.add(shared);
-    const result = this.#enqueueSharedQwenOperation("assistant", ticketId, controller.signal, async () => {
-      options.onProgress?.("initializing_runtime");
-      const manager = await this.#ensureValidatedManager();
-      this.#assertAvailable();
-      throwIfSignalAborted(controller.signal);
-      const resolvedInput = typeof input === "function" ? input() : input;
-      const kind = (resolvedInput.images?.length ?? 0) > 0 ? "vision" : "text";
-      return this.#runAssistantOperation(kind, manager, controller.signal, async (operationSignal) => {
-        throwIfSignalAborted(operationSignal);
-        const prepared = this.#requirePreparedAssistantModel(manager);
-        options.onProgress?.("running_inference");
-        return processAssistantTurn(prepared.model, prepared.identity, resolvedInput, {
-          signal: operationSignal,
-          ...(options.requestOptions === undefined ? {} : { requestOptions: options.requestOptions }),
-          createChatSession: this.#createChatSession,
-          onCleanupError: (error) => this.#recordAssistantCleanupError(error),
-          onNativeRequestStart: () =>
-            this.#emitSharedQwenLifecycle(ticketId, "assistant", "native_request_started"),
-          onNativeRequestSettled: () =>
-            this.#emitSharedQwenLifecycle(ticketId, "assistant", "native_request_settled"),
-          assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
-        });
+    options.onProgress?.("initializing_runtime");
+    const manager = await this.#ensureValidatedManager();
+    this.#assertAvailable();
+    const kind = (input.images?.length ?? 0) > 0 ? "vision" : "text";
+    return this.#runAssistantOperation(kind, manager, options.signal, async (operationSignal) => {
+      throwIfSignalAborted(operationSignal);
+      const prepared = this.#requirePreparedAssistantModel(manager);
+      options.onProgress?.("running_inference");
+      return processAssistantTurn(prepared.model, prepared.identity, input, {
+        signal: operationSignal,
+        ...(options.requestOptions === undefined ? {} : { requestOptions: options.requestOptions }),
+        createChatSession: this.#createChatSession,
+        onCleanupError: (error) => this.#recordAssistantCleanupError(error),
+        assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
       });
-    });
-    return result.finally(() => {
-      unlinkSignal();
-      this.#assistantSharedOperations.delete(shared);
-      shared.resolveSettled();
-    });
-  }
-
-  #enqueueSharedQwenOperation<T>(
-    kind: SharedQwenQueueEntry<T>["kind"],
-    ticketId: string,
-    signal: AbortSignal,
-    run: () => Promise<T>,
-  ): Promise<T> {
-    if (signal.aborted) {
-      return Promise.reject(abortError(signal.reason));
-    }
-    let resolveEntry = (_value: T) => {};
-    let rejectEntry = (_error: unknown) => {};
-    const result = new Promise<T>((resolve, reject) => {
-      resolveEntry = resolve;
-      rejectEntry = reject;
-    });
-    const entry: SharedQwenQueueEntry<T> = {
-      ticketId,
-      kind,
-      signal,
-      run,
-      resolve: resolveEntry,
-      reject: rejectEntry,
-      state: "pending",
-      abortListener: null,
-    };
-    const abortListener = () => this.#cancelSharedQwenQueueEntry(entry);
-    entry.abortListener = abortListener;
-    signal.addEventListener("abort", abortListener, { once: true });
-    this.#sharedQwenQueue.push(entry as SharedQwenQueueEntry<unknown>);
-    this.#emitSharedQwenLifecycle(ticketId, kind, "submitted");
-    queueMicrotask(() => void this.#drainSharedQwenQueue());
-    return result;
-  }
-
-  #cancelSharedQwenQueueEntry<T>(entry: SharedQwenQueueEntry<T>): void {
-    if (entry.state !== "pending") {
-      return;
-    }
-    const index = this.#sharedQwenQueue.indexOf(entry as SharedQwenQueueEntry<unknown>);
-    if (index >= 0) {
-      this.#sharedQwenQueue.splice(index, 1);
-    }
-    entry.state = "settled";
-    this.#detachSharedQwenAbortListener(entry);
-    this.#emitSharedQwenLifecycle(entry.ticketId, entry.kind, "cancelled");
-    entry.reject(abortError(entry.signal.reason));
-    queueMicrotask(() => void this.#drainSharedQwenQueue());
-  }
-
-  async #drainSharedQwenQueue(): Promise<void> {
-    if (this.#activeSharedQwenOperation !== null) {
-      return;
-    }
-    const next = this.#sharedQwenQueue.shift();
-    if (next === undefined) {
-      return;
-    }
-    if (next.signal.aborted) {
-      next.state = "settled";
-      this.#detachSharedQwenAbortListener(next);
-      this.#emitSharedQwenLifecycle(next.ticketId, next.kind, "cancelled");
-      next.reject(abortError(next.signal.reason));
-      queueMicrotask(() => void this.#drainSharedQwenQueue());
-      return;
-    }
-    next.state = "active";
-    this.#activeSharedQwenOperation = next;
-    this.#emitSharedQwenLifecycle(next.ticketId, next.kind, "activated");
-    try {
-      const value = await next.run();
-      throwIfSignalAborted(next.signal);
-      next.resolve(value);
-    } catch (error) {
-      next.reject(error);
-    } finally {
-      next.state = "settled";
-      this.#detachSharedQwenAbortListener(next);
-      if (this.#activeSharedQwenOperation === next) {
-        this.#activeSharedQwenOperation = null;
-      }
-      this.#emitSharedQwenLifecycle(next.ticketId, next.kind, "released");
-      queueMicrotask(() => void this.#drainSharedQwenQueue());
-    }
-  }
-
-  #detachSharedQwenAbortListener<T>(entry: SharedQwenQueueEntry<T>): void {
-    const listener = entry.abortListener;
-    if (listener !== null) {
-      entry.signal.removeEventListener("abort", listener);
-      entry.abortListener = null;
-    }
-  }
-
-  #emitSharedQwenLifecycle(
-    ticketId: string,
-    kind: SharedQwenLifecycleEvent["kind"],
-    phase: SharedQwenLifecycleEvent["phase"],
-  ): void {
-    this.#sharedQwenLifecycleSequence += 1;
-    this.#onSharedQwenLifecycle?.({
-      ticketId,
-      kind,
-      phase,
-      sequence: this.#sharedQwenLifecycleSequence,
-      atMs: performance.now(),
     });
   }
 
@@ -816,83 +627,61 @@ export class FoundryRecorderRuntime {
 
   async summarize(transcript: string): Promise<SummaryGenerationResult> {
     this.#assertAvailable();
+    await this.#ensureValidatedManager();
+    this.#assertAvailable();
+    const model = this.#requireModel("summary");
     const generation = this.#generation;
     return this.#runTrackedOperation("summary", generation, async (operation) => {
-      const cancellation = new AbortController();
-      const ticketId = randomUUID();
-      let request: Request | null = null;
-      operation.setCancel(() => {
-        if (!cancellation.signal.aborted) {
-          cancellation.abort(recorderOperationCancelledError());
-        }
-        request?.cancel();
-      });
-      return this.#enqueueSharedQwenOperation("summary", ticketId, cancellation.signal, async () => {
-        await this.#ensureValidatedManager();
-        this.#assertAvailable();
-        operation.assertCurrent();
-        const model = this.#requireModel("summary");
-        const session = this.#createChatSession(model);
-        const summaryPlan = summaryRequestPlan(transcript);
-        const summaryRequest = new Request()
-          .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
-          .addItem(Item.userMessage(summaryPlan.prompt))
-          .setOptions({
-            search: {
-              doSample: false,
-              temperature: 0,
-              seed: 42,
-              maxOutputTokens: 512,
-            },
-            toolChoice: "none",
-            additionalOptions: {
-              chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
-              guidance_type: "json_schema",
-              guidance_data: summaryPlan.jsonSchema,
-            },
-          });
-        request = summaryRequest;
-        const startedAt = performance.now();
-        return await runWithCleanup(
-          async () => {
-            const preflight = await session.preflightRequest(summaryRequest);
-            operation.assertCurrent();
-            if (!preflight.fits) {
-              throw new Error(
-                `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
-              );
-            }
-            this.#emitSharedQwenLifecycle(ticketId, "summary", "native_request_started");
-            let response: Response;
-            try {
-              response = await session.processRequest(summaryRequest);
-            } finally {
-              this.#emitSharedQwenLifecycle(ticketId, "summary", "native_request_settled");
-            }
-            operation.assertCurrent();
-            const finishReason =
-              typeof response.finishReason === "string" ? response.finishReason : "unknown";
-            const rawText = extractDefaultText(response);
-            const text = finishReason === "stop" ? rawText : rawText.slice(0, SUMMARY_RAW_OUTPUT_MAX_CHARS);
-            if (finishReason === "stop" && !text.trim()) {
-              throw new Error("The local summary model returned no text.");
-            }
-            if (finishReason === "stop" && text.length > SUMMARY_RAW_OUTPUT_MAX_CHARS) {
-              throw new Error("The local summary exceeded the prototype output bound.");
-            }
-            return {
-              text,
-              finishReason,
-              durationMs: Math.round(performance.now() - startedAt),
-              model: modelIdentity("summary", model),
-              preflight,
-              response,
-            };
+      const session = this.#createChatSession(model);
+      const request = new Request()
+        .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
+        .addItem(Item.userMessage(summaryUserPrompt(transcript)))
+        .setOptions({
+          search: {
+            doSample: false,
+            temperature: 0,
+            seed: 42,
+            maxOutputTokens: 260,
           },
-          [() => summaryRequest.cancel(), () => session.dispose()],
-          "Qwen native request",
-        );
-      });
+          toolChoice: "none",
+          additionalOptions: {
+            chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
+          },
+        });
+      operation.setCancel(() => request.cancel());
+      const startedAt = performance.now();
+      return await runWithCleanup(
+        async () => {
+          const preflight = await session.preflightRequest(request);
+          operation.assertCurrent();
+          if (!preflight.fits) {
+            throw new Error(
+              `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
+            );
+          }
+          const response = await session.processRequest(request);
+          operation.assertCurrent();
+          if (response.finishReason !== "stop") {
+            throw new Error(`Summary generation ended with ${response.finishReason}.`);
+          }
+          const text = extractDefaultText(response);
+          if (!text.trim()) {
+            throw new Error("The local summary model returned no text.");
+          }
+          if (text.length > 2_500) {
+            throw new Error("The local summary exceeded the prototype output bound.");
+          }
+          return {
+            text,
+            durationMs: Math.round(performance.now() - startedAt),
+            model: modelIdentity("summary", model),
+            preflight,
+            response,
+          };
+        },
+        [() => request.cancel(), () => session.dispose()],
+        "Qwen native request",
+      );
     });
   }
 
@@ -1131,7 +920,6 @@ export class FoundryRecorderRuntime {
       if (
         current !== null &&
         current.id === target.modelId &&
-        deviceType(current) === target.deviceType &&
         executionProvider(current) === target.executionProvider &&
         (await current.isLoaded())
       ) {
@@ -1333,9 +1121,6 @@ export class FoundryRecorderRuntime {
     if (model.id !== target.modelId) {
       throw new Error(`Resolved ${model.id}; expected exact model ${target.modelId}.`);
     }
-    if (deviceType(model) !== target.deviceType) {
-      throw new Error(`${model.id} uses ${deviceType(model)}; expected ${target.deviceType}.`);
-    }
     if (executionProvider(model) !== target.executionProvider) {
       throw new Error(`${model.id} uses ${executionProvider(model)}; expected ${target.executionProvider}.`);
     }
@@ -1345,7 +1130,7 @@ export class FoundryRecorderRuntime {
     }
     if (role === "summary") {
       const compatibility = inspectVisionChatModel(model, target.modelId, {
-        deviceType: target.deviceType,
+        deviceType: "CPU",
         executionProvider: target.executionProvider,
       });
       if (!compatibility.compatible) {
@@ -1532,7 +1317,7 @@ export class FoundryRecorderRuntime {
       throw new Error("Prepare local models before using the shared summary and assistant model.");
     }
     const compatibility = inspectVisionChatModel(model, target.modelId, {
-      deviceType: target.deviceType,
+      deviceType: "CPU",
       executionProvider: target.executionProvider,
     });
     if (!compatibility.compatible) {
@@ -1554,12 +1339,18 @@ export class FoundryRecorderRuntime {
     if (cleanup !== null) {
       await cleanup;
     }
-    const settlement = this.cancelAssistantOperations(
-      new Error("Foundry Local manager cleanup cancelled assistant work."),
-    );
-    if (settlement !== null) {
-      await settlement;
+    const active = this.#activeAssistantOperation;
+    if (active === null) {
+      return;
     }
+    if (!active.controller.signal.aborted) {
+      try {
+        active.controller.abort(new Error("Foundry Local manager cleanup cancelled assistant work."));
+      } catch (error) {
+        this.#recordAssistantCleanupError(error);
+      }
+    }
+    await active.settled;
   }
 
   #recordAssistantCleanupError(error: unknown): void {
@@ -2043,9 +1834,6 @@ export class FoundryRecorderRuntime {
   #hasUnsafeManagerResources(): boolean {
     return (
       this.#hasUnsafeNativeResources() ||
-      this.#activeSharedQwenOperation !== null ||
-      this.#sharedQwenQueue.length > 0 ||
-      this.#assistantSharedOperations.size > 0 ||
       this.#activeAssistantOperation !== null ||
       this.#assistantCleanupPromise !== null
     );
@@ -2216,16 +2004,12 @@ function executionProvider(model: IModel): string {
   );
 }
 
-function deviceType(model: IModel): string {
-  return model.info.runtime?.deviceType ?? model.info.deviceType;
-}
-
 function modelIdentity(role: ModelRole, model: IModel): ModelIdentity {
   return {
     role,
     id: model.id,
     alias: model.alias,
-    deviceType: deviceType(model),
+    deviceType: model.info.runtime?.deviceType ?? model.info.deviceType,
     executionProvider: executionProvider(model),
     fileSizeMb: model.info.fileSizeMb ?? null,
   };
@@ -2235,7 +2019,7 @@ function audioModelIdentity(model: IModel, streaming: boolean): AudioModelIdenti
   return {
     alias: model.alias,
     id: model.id,
-    deviceType: deviceType(model),
+    deviceType: model.info.runtime?.deviceType ?? model.info.deviceType,
     executionProvider: executionProvider(model),
     fileSizeMb: model.info.fileSizeMb ?? null,
     language: AUDIO_LANGUAGE,
@@ -2254,7 +2038,7 @@ function assistantModelIdentity(
     source,
     task: model.info.task ?? "",
     runtime: {
-      deviceType: deviceType(model),
+      deviceType: model.info.runtime?.deviceType ?? model.info.deviceType,
       executionProvider: executionProvider(model),
     },
     inputModalities,
@@ -2305,12 +2089,6 @@ function abortError(reason: unknown): Error {
     return reason;
   }
   const error = new Error("The optional assistant operation was cancelled.", { cause: reason });
-  error.name = "AbortError";
-  return error;
-}
-
-function recorderOperationCancelledError(): Error {
-  const error = new Error("The recorder operation was cancelled.");
   error.name = "AbortError";
   return error;
 }

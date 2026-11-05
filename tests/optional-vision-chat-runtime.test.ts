@@ -23,32 +23,32 @@ import {
   type VisionChatSessionHandle,
 } from "../src/foundry/optional-vision-chat-runtime";
 
-const GPU_PROVIDER = "WebGPUExecutionProvider";
+const CPU_PROVIDER = "CPUExecutionProvider";
 
 describe("optional vision/chat adapter", () => {
-  it("accepts only the exact GPU vision-language-chat model and modalities", () => {
+  it("accepts only the exact CPU vision-language-chat model and modalities", () => {
     const compatible = inspectVisionChatModel(
       new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID),
       QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-      { deviceType: DeviceType.GPU, executionProvider: GPU_PROVIDER },
+      { deviceType: DeviceType.CPU, executionProvider: CPU_PROVIDER },
     );
     const incompatible = inspectVisionChatModel(
       new FakeModel(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID, {
-        deviceType: DeviceType.CPU,
-        executionProvider: "CPUExecutionProvider",
+        deviceType: DeviceType.GPU,
+        executionProvider: "WebGPUExecutionProvider",
       }),
       QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-      { deviceType: DeviceType.GPU, executionProvider: GPU_PROVIDER },
+      { deviceType: DeviceType.CPU, executionProvider: CPU_PROVIDER },
     );
 
     expect(compatible).toMatchObject({ compatible: true });
     expect(incompatible).toMatchObject({
       compatible: false,
       issues: expect.arrayContaining([
-        expect.objectContaining({ field: "runtime.deviceType", expected: DeviceType.GPU }),
+        expect.objectContaining({ field: "runtime.deviceType", expected: DeviceType.CPU }),
         expect.objectContaining({
           field: "runtime.executionProvider",
-          expected: GPU_PROVIDER,
+          expected: CPU_PROVIDER,
         }),
       ]),
     });
@@ -320,8 +320,8 @@ class FakeModel implements IModel {
     readonly id: string,
     options: FakeModelOptions = {},
   ) {
-    const deviceType = options.deviceType ?? DeviceType.GPU;
-    const executionProvider = options.executionProvider ?? GPU_PROVIDER;
+    const deviceType = options.deviceType ?? DeviceType.CPU;
+    const executionProvider = options.executionProvider ?? CPU_PROVIDER;
     this.info = {
       id,
       name: id,
@@ -432,7 +432,7 @@ function visionIdentity() {
     modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
     source: "shared_summary_assistant_slot" as const,
     task: "vision-language-chat",
-    runtime: { deviceType: DeviceType.GPU, executionProvider: GPU_PROVIDER },
+    runtime: { deviceType: DeviceType.CPU, executionProvider: CPU_PROVIDER },
     inputModalities: ["text", "image"],
     outputModalities: ["text"],
   };

@@ -1,25 +1,7 @@
-import { canonicalSummarySemanticText } from "./summary-canonical";
-import { SUMMARY_MODEL_DETAIL_COUNT } from "./summary-prompt";
-import {
-  areDuplicateSummaryUnits,
-  hasDuplicateSummaryUnits,
-  hasOverlappingSummaryUnits,
-  isCompleteSummaryUnit,
-} from "./summary-unit";
-
 export interface SummaryDisplayFormatResult {
   readonly text: string;
   readonly formattingApplied: boolean;
 }
-
-export interface SummaryModelOutputDecodeResult {
-  readonly text: string;
-  readonly decodingApplied: boolean;
-}
-
-export const SUMMARY_PRESENTATION_LINE_COUNT = 5;
-export const SUMMARY_PRESENTATION_BULLET_COUNT = 4;
-export const SUMMARY_PRESENTATION_MAX_WORDS = 180;
 
 interface TextRange {
   readonly start: number;
@@ -102,82 +84,6 @@ export function formatSummaryPresentation(rawText: string): SummaryDisplayFormat
     text,
     formattingApplied: formatted.formattingApplied || text !== formatted.text,
   };
-}
-
-export function decodeSummaryModelOutput(rawText: string): SummaryModelOutputDecodeResult {
-  const trimmed = rawText.trim();
-  if (!trimmed.startsWith("{")) {
-    throw new Error("The local summary model returned invalid structured output.");
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch (error) {
-    throw new Error("The local summary model returned invalid structured output.", { cause: error });
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("The local summary model returned invalid structured output.");
-  }
-  const candidate = parsed as Record<string, unknown>;
-  const keys = Object.keys(candidate);
-  const overview = candidate.overview;
-  const details = candidate.details;
-  if (
-    keys.length !== 2 ||
-    !keys.includes("overview") ||
-    !keys.includes("details") ||
-    typeof overview !== "string" ||
-    !overview.trim() ||
-    !Array.isArray(details) ||
-    details.length !== SUMMARY_MODEL_DETAIL_COUNT ||
-    details.some((detail) => typeof detail !== "string" || !detail.trim())
-  ) {
-    throw new Error("The local summary model returned invalid structured output.");
-  }
-  const units = [overview.trim(), ...details.map((detail) => (detail as string).trim())];
-  if (units.some((unit) => /^(?:[-*•]|\d+[.)])\s+/u.test(unit))) {
-    throw new Error("The local summary model returned invalid structured output.");
-  }
-  if (!isCompleteSummaryUnit(units[0] ?? "")) {
-    throw new Error("The local summary overview was incomplete.");
-  }
-  if (units.slice(1).some((unit) => !isCompleteSummaryUnit(unit))) {
-    throw new Error("The local summary ended with an incomplete line.");
-  }
-  if (hasOverlappingSummaryUnits(units)) {
-    throw new Error("The local summary repeated an overview or detail fact.");
-  }
-  return {
-    text: [units[0], ...units.slice(1).map((detail) => `• ${detail}`)].join("\n"),
-    decodingApplied: true,
-  };
-}
-
-export function assertSummaryPresentationContract(text: string): void {
-  const lines = text.split("\n");
-  if (
-    lines.length !== SUMMARY_PRESENTATION_LINE_COUNT ||
-    lines.some((line) => line.trim().length === 0) ||
-    lines[0]?.startsWith("• ")
-  ) {
-    throw new Error("The local summary did not produce exactly one overview and four detail lines.");
-  }
-  if (!lines.slice(1).every((line) => line.startsWith("• "))) {
-    throw new Error("The local summary detail lines did not use the required bullet format.");
-  }
-  if (/^(?:line\s*1|overview|summary)\s*:/iu.test(lines[0] ?? "")) {
-    throw new Error("The local summary overview included a prohibited heading or label.");
-  }
-  if (lines.some((line) => !isCompleteSummaryUnit(line))) {
-    throw new Error("The local summary ended with an incomplete line.");
-  }
-  if (hasOverlappingSummaryUnits(lines)) {
-    throw new Error("The local summary repeated an overview or detail fact.");
-  }
-  const words = text.match(/[\p{L}\p{N}]+/gu) ?? [];
-  if (words.length > SUMMARY_PRESENTATION_MAX_WORDS) {
-    throw new Error(`The local summary exceeded the ${SUMMARY_PRESENTATION_MAX_WORDS}-word limit.`);
-  }
 }
 
 function formatOutsideProtectedRegions(value: string): string {
@@ -1410,14 +1316,11 @@ function normalizeWhitespace(value: string): string {
   return lines.join("\n");
 }
 
-const SUMMARY_TARGET_BULLET_LINES = SUMMARY_PRESENTATION_BULLET_COUNT;
-const SUMMARY_TARGET_LINES = SUMMARY_PRESENTATION_LINE_COUNT;
-const SUMMARY_FALLBACK_MAX_BULLET_LINES = 6;
+const SUMMARY_MAX_BULLET_LINES = 6;
 const SUMMARY_VISUAL_LIST_MARKER = /^(?:•\s+|[-*]\s+(?=[\p{Lu}"'“‘`]))/u;
 const SUMMARY_VISUAL_LIST_WRAPPER = /^(?:•|[-*])\s+/u;
 const SUMMARY_NUMERIC_FACT_PREFIX = /^[+\-−]?\p{Nd}/u;
 const SUMMARY_ORDERED_LIST_MARKER = /^(\d+)([.)])\s+\S/u;
-const SUMMARY_OVERVIEW_LABEL = /^(?:line\s*1|overview|summary)\s*:\s*/iu;
 const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "dr",
   "e.g",
@@ -1431,6 +1334,7 @@ const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "st",
   "vs",
 ]);
+
 function structureSummaryContent(value: string): string {
   const protectedContent = maskSummaryStructureRegions(value);
   const lines = protectedContent.masked
@@ -1464,200 +1368,18 @@ function structureSummaryContent(value: string): string {
     }
   }
 
-  const [originalOverview, ...originalDetails] = units;
-  let removedDuplicateDetails = false;
-  let expandedUnitsAreRestored = false;
-  let expandedUnits: readonly string[];
-  const restoredOriginalDetails = originalDetails.map(protectedContent.restore);
-  if (originalOverview !== undefined && hasDuplicateSummaryUnits(restoredOriginalDetails)) {
-    const wholeDetails = deduplicateSummaryUnits(restoredOriginalDetails);
-    const atomicDetails = deduplicateSummaryUnits(atomizeSummaryUnits(wholeDetails.units));
-    expandedUnits = expandSummaryUnits(
-      [protectedContent.restore(originalOverview), ...atomicDetails.units],
-      SUMMARY_TARGET_LINES,
-    );
-    expandedUnitsAreRestored = true;
-    removedDuplicateDetails = wholeDetails.removed || atomicDetails.removed;
-  } else {
-    expandedUnits = expandSummaryUnits(units, SUMMARY_TARGET_LINES);
-  }
-  const initialUsesExactFiveLineLayout = expandedUnits.length >= SUMMARY_TARGET_LINES;
-  const layoutUnits = initialUsesExactFiveLineLayout || removedDuplicateDetails ? expandedUnits : units;
-  if (layoutUnits.length < 2) {
+  if (units.length < 2) {
     return value;
   }
 
-  const initiallyRestored = expandedUnitsAreRestored
-    ? layoutUnits
-    : layoutUnits.map(protectedContent.restore);
-  const normalized = deduplicateExpandedSummaryUnits(initiallyRestored, SUMMARY_TARGET_LINES);
-  removedDuplicateDetails ||= normalized.removed;
-  const restored = normalized.units;
-  const [rawOverview, ...details] = restored;
-  if (rawOverview === undefined || details.length === 0) {
+  const restored = units.map(protectedContent.restore);
+  const [overview, ...details] = restored;
+  if (overview === undefined || details.length === 0) {
     return value;
   }
-  const overview = rawOverview.replace(SUMMARY_OVERVIEW_LABEL, "").trim();
-  if (!overview) {
-    return value;
-  }
-  const removedOverviewLabel = overview !== rawOverview;
-  const usesExactFiveLineLayout = restored.length >= SUMMARY_TARGET_LINES;
-  const bulletLimit = usesExactFiveLineLayout
-    ? SUMMARY_TARGET_BULLET_LINES
-    : SUMMARY_FALLBACK_MAX_BULLET_LINES;
-  const bullets = groupSummaryUnits(details, bulletLimit);
-  if (usesExactFiveLineLayout && bullets.length !== SUMMARY_TARGET_BULLET_LINES) {
-    return value;
-  }
+  const bullets = groupSummaryUnits(details, SUMMARY_MAX_BULLET_LINES);
   const structured = [overview, ...bullets.map((bullet) => `• ${bullet}`)].join("\n");
-  return removedDuplicateDetails ||
-    removedOverviewLabel ||
-    canonicalSummarySemanticText(structured) === canonicalSummarySemanticText(value)
-    ? structured
-    : value;
-}
-
-function atomizeSummaryUnits(units: readonly string[]): readonly string[] {
-  const pending = [...units];
-  const atomic: string[] = [];
-  while (pending.length > 0) {
-    const unit = pending.shift();
-    if (unit === undefined) {
-      continue;
-    }
-    const split = splitSummaryUnit(unit, "punctuation") ?? splitSummaryUnit(unit, "connector");
-    if (split === null) {
-      atomic.push(unit);
-    } else {
-      pending.unshift(split[0], split[1]);
-    }
-  }
-  return atomic;
-}
-
-function deduplicateSummaryUnits(units: readonly string[]): {
-  readonly units: readonly string[];
-  readonly removed: boolean;
-} {
-  const unique: string[] = [];
-  let removed = false;
-  for (const unit of units) {
-    if (unique.some((candidate) => areDuplicateSummaryUnits(candidate, unit))) {
-      removed = true;
-    } else {
-      unique.push(unit);
-    }
-  }
-  return { units: unique, removed };
-}
-
-function deduplicateExpandedSummaryUnits(
-  units: readonly string[],
-  targetCount: number,
-): { readonly units: readonly string[]; readonly removed: boolean } {
-  let current: readonly string[] = [...units];
-  let removed = false;
-  for (let attempt = 0; attempt < targetCount; attempt += 1) {
-    const [overview, ...details] = current;
-    if (overview === undefined) {
-      return { units: current, removed };
-    }
-    const uniqueDetails = deduplicateSummaryUnits(details);
-    removed ||= uniqueDetails.removed;
-    const deduplicated = [overview, ...uniqueDetails.units];
-    if (deduplicated.length >= targetCount) {
-      return { units: deduplicated, removed };
-    }
-    const expanded = expandRestoredSummaryUnits(deduplicated, targetCount);
-    if (expanded.length === deduplicated.length) {
-      return { units: deduplicated, removed };
-    }
-    current = expanded;
-  }
-  return { units: current, removed };
-}
-
-function expandRestoredSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
-  const protectedContent = maskSummaryStructureRegions(units.join("\n"));
-  return expandSummaryUnits(protectedContent.masked.split("\n"), targetCount).map(protectedContent.restore);
-}
-
-function expandSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
-  const expanded = [...units];
-  while (expanded.length < targetCount) {
-    const split = findSummaryUnitSplit(expanded);
-    if (split === null) {
-      break;
-    }
-    expanded.splice(split.index, 1, split.left, split.right);
-  }
-  return expanded;
-}
-
-function findSummaryUnitSplit(
-  units: readonly string[],
-): { readonly index: number; readonly left: string; readonly right: string } | null {
-  const detailIndexes = units
-    .map((_unit, index) => index)
-    .filter((index) => index > 0)
-    .sort((left, right) => (units[right]?.length ?? 0) - (units[left]?.length ?? 0));
-  const indexes = [...detailIndexes, 0];
-  for (const strategy of ["punctuation", "connector"] as const) {
-    for (const index of indexes) {
-      const unit = units[index];
-      if (unit === undefined) {
-        continue;
-      }
-      const parts = splitSummaryUnit(unit, strategy);
-      if (parts !== null) {
-        return { index, left: parts[0], right: parts[1] };
-      }
-    }
-  }
-  return null;
-}
-
-function splitSummaryUnit(
-  value: string,
-  strategy: "punctuation" | "connector",
-): readonly [string, string] | null {
-  const boundaries: number[] = [];
-  if (strategy === "punctuation") {
-    for (let index = 0; index < value.length; index += 1) {
-      if (value[index] === "," || value[index] === ";") {
-        boundaries.push(index + 1);
-      }
-    }
-  } else if (strategy === "connector") {
-    for (const match of value.matchAll(
-      /\s+(?=(?:after|and|because|but|caused\s+by|is\s+solved\s+by|then|when|where|which|while|whereas|with)\b)/giu,
-    )) {
-      if (match.index !== undefined) {
-        boundaries.push(match.index);
-      }
-    }
-  }
-
-  const candidates = boundaries
-    .map((boundary) => {
-      const left = value.slice(0, boundary).trim();
-      const right = value.slice(boundary).trim();
-      return {
-        boundary,
-        left,
-        right,
-        distanceFromMiddle: Math.abs(value.length / 2 - boundary),
-      };
-    })
-    .filter(({ left, right }) => summaryUnitTokenCount(left) >= 3 && summaryUnitTokenCount(right) >= 3)
-    .sort((left, right) => left.distanceFromMiddle - right.distanceFromMiddle);
-  const best = candidates[0];
-  return best === undefined ? null : [best.left, best.right];
-}
-
-function summaryUnitTokenCount(value: string): number {
-  return value.split(/\s+/u).filter(Boolean).length;
+  return canonicalSummaryContent(structured) === canonicalSummaryContent(value) ? structured : value;
 }
 
 function summaryLineContent(line: string): string {
@@ -1822,19 +1544,18 @@ function groupSummaryUnits(units: readonly string[], maximumGroups: number): rea
   for (let remainingGroups = maximumGroups; remainingGroups > 0; remainingGroups -= 1) {
     const remainingUnits = units.length - cursor;
     const size = Math.ceil(remainingUnits / remainingGroups);
-    groups.push(joinSummaryGroup(units.slice(cursor, cursor + size)));
+    groups.push(units.slice(cursor, cursor + size).join(" "));
     cursor += size;
   }
   return groups;
 }
 
-function joinSummaryGroup(units: readonly string[]): string {
-  const [first, ...rest] = units;
-  if (first === undefined) {
-    return "";
-  }
-  return rest.reduce(
-    (combined, unit) => `${combined}${/[.!?;:,]$/u.test(combined) ? " " : "; "}${unit}`,
-    first,
-  );
+function canonicalSummaryContent(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => line.trim().replace(SUMMARY_VISUAL_LIST_MARKER, ""))
+    .filter(Boolean)
+    .join(" ")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
 }

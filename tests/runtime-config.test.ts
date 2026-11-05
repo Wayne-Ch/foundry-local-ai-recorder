@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   RuntimeConfigurationError,
   resolveRuntimeTargets,
-  SUMMARY_DEVICE_TYPE,
   SUMMARY_EXECUTION_PROVIDER,
   SUMMARY_MODEL_ID,
 } from "../src/foundry/runtime-config";
@@ -12,7 +11,6 @@ describe("runtime configuration", () => {
     const targets = resolveRuntimeTargets({});
     expect(targets.summary).toMatchObject({
       modelId: SUMMARY_MODEL_ID,
-      deviceType: SUMMARY_DEVICE_TYPE,
       executionProvider: SUMMARY_EXECUTION_PROVIDER,
       stageValidated: true,
       source: "built_in_default",
@@ -43,7 +41,6 @@ describe("runtime configuration", () => {
     });
     expect(targets.summary).toMatchObject({
       modelId: SUMMARY_MODEL_ID,
-      deviceType: SUMMARY_DEVICE_TYPE,
       executionProvider: SUMMARY_EXECUTION_PROVIDER,
       source: "environment_override",
       stageValidated: true,

@@ -10,8 +10,7 @@ Meet the [README requirements](README.md#requirements), including Node.js and np
 access through installation and first model preparation. A microphone is needed only for live voice
 testing; use the included WAV fallback otherwise.
 
-Note: This guide was validated on Windows 11 x64 with Node.js 26.13.0, npm 11.20.0, and AMD
-Radeon 860M graphics with working WebGPU support. Other environments have not yet been validated.
+Note: This guide was validated on Windows 11 x64 with Node.js 26.13.0 and npm 11.20.0. Other environments have not yet been validated.
 
 ## Clone the Enhanced branch and start
 
@@ -35,7 +34,7 @@ Use the included fixtures; no download or fixture generation is needed for this 
 
 ## Prepare the local models
 
-First preparation may download model and GPU provider assets. Keep the PC online and Enhanced
+First preparation may download model and runtime assets. Keep the PC online and Enhanced
 AI Recorder open until Whisper, Nemotron, and Shared Qwen report **READY**. Later test actions can
 run offline.
 
@@ -76,8 +75,8 @@ The recorder has a 30-second limit. Speak this exact four-sentence script:
    spoken ODE content.
 10. In **Final transcript**, edit one word, then select **Generate summary** without saving first.
     Verify **Saving correction…** appears before **Generating summary…**, then wait for the
-    editable local Qwen summary. Verify the app presents exactly one overview plus four Unicode
-    bullets.
+    editable local Qwen summary. Verify the app presents one overview plus Unicode bullets when
+    safe.
 11. Return to **Ask AI**, enter exactly
     `What is the solution to y' = -2y with y(0) = y0?`, and select **Ask**. Verify the **Local AI**
     answer states the decay solution `y(t) = y0 e^(-2t)` or mathematically equivalent notation.

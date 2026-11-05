@@ -1,17 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  assertSummaryPresentationContract,
-  decodeSummaryModelOutput,
-  formatSummaryForDisplay,
-  formatSummaryPresentation,
-} from "../src/summary/summary-format";
-import {
-  GENERIC_SUMMARY_OVERVIEW,
-  SUMMARY_JSON_SCHEMA,
-  SUMMARY_SYSTEM_PROMPT,
-  summaryRequestPlan,
-  summaryUserPrompt,
-} from "../src/summary/summary-prompt";
+import { formatSummaryForDisplay, formatSummaryPresentation } from "../src/summary/summary-format";
+import { SUMMARY_SYSTEM_PROMPT } from "../src/summary/summary-prompt";
 
 describe("formatSummaryForDisplay", () => {
   it("instructs Qwen to return readable plain text notation", () => {
@@ -20,225 +9,8 @@ describe("formatSummaryForDisplay", () => {
     expect(SUMMARY_SYSTEM_PROMPT).toContain("Preserve every stated equation");
     expect(SUMMARY_SYSTEM_PROMPT).toContain("resolved constant");
     expect(SUMMARY_SYSTEM_PROMPT).toContain("explicit cause/result");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("never write y(t) = 3e^(−2t)");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("coefficient of 3");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain('Do not reinterpret an "initial value"');
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("subject-only sentence");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("terminal punctuation");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("non-factual meta overview");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain('exactly two keys: "overview" and "details"');
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("exactly four complete, nonempty, non-overlapping");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Never repeat, manufacture, or split a fact");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain(
-      'The phrases "initial condition" and "final condition" are forbidden',
-    );
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not include bullet markers, titles, headings, labels");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not write a title, heading, label");
     expect(SUMMARY_SYSTEM_PROMPT).toContain("Use readable Unicode/plain math");
-    expect(JSON.parse(SUMMARY_JSON_SCHEMA)).toMatchObject({
-      properties: {
-        overview: { maxLength: 500 },
-        details: { minItems: 4, maxItems: 4 },
-      },
-      required: ["overview", "details"],
-      additionalProperties: false,
-    });
-  });
-
-  it("decodes guided JSON without changing model-provided fact strings", () => {
-    const raw = JSON.stringify({
-      overview: "Project Atlas records latency facts.",
-      details: [
-        "Project Atlas target is 250 milliseconds.",
-        "Project Atlas result is 250 milliseconds.",
-        "Maya Chen owns the follow-up.",
-        "The next review is November 12.",
-      ],
-    });
-
-    expect(decodeSummaryModelOutput(raw)).toEqual({
-      text: [
-        "Project Atlas records latency facts.",
-        "• Project Atlas target is 250 milliseconds.",
-        "• Project Atlas result is 250 milliseconds.",
-        "• Maya Chen owns the follow-up.",
-        "• The next review is November 12.",
-      ].join("\n"),
-      decodingApplied: true,
-    });
-  });
-
-  it("numbers source sentences and requires exact one-time detail coverage", () => {
-    const prompt = summaryUserPrompt("First fact. Second fact. Third fact. Fourth fact.");
-
-    expect(prompt).toContain("SOURCE FACTS (4):");
-    expect(prompt).toContain("OVERVIEW TEXT (copy exactly):");
-    expect(prompt).toContain(GENERIC_SUMMARY_OVERVIEW);
-    expect(prompt).toContain("First fact.");
-    expect(prompt).toContain("[F1] First fact.");
-    expect(prompt).toContain("[F4] Fourth fact.");
-    expect(prompt).toContain("Set details[0] to the exact text after [F1]");
-  });
-
-  it.each([1, 2, 3, 5])("fails closed for a generic transcript with %i complete facts", (factCount) => {
-    const transcript = Array.from(
-      { length: factCount },
-      (_value, index) => `Generic fact ${index + 1} is stated.`,
-    ).join(" ");
-
-    expect(() => summaryUserPrompt(transcript)).toThrow("exactly four independent complete facts");
-  });
-
-  it("uses a non-factual generic overview only for four independent complete facts", () => {
-    const transcript =
-      "The microphone stays local. Audio remains on the device. Reset clears the session. Shutdown releases owned resources.";
-    const plan = summaryRequestPlan(transcript);
-    const schema = JSON.parse(plan.jsonSchema);
-
-    expect(plan.prompt).toContain(`OVERVIEW TEXT (copy exactly):\n${GENERIC_SUMMARY_OVERVIEW}`);
-    expect(plan.prompt).toContain("SOURCE FACTS (4):");
-    expect(plan.prompt).toContain("[F1] The microphone stays local.");
-    expect(plan.prompt).toContain("[F4] Shutdown releases owned resources.");
-    expect(schema.properties.overview.enum).toEqual([GENERIC_SUMMARY_OVERVIEW]);
-    expect(schema.properties.details.items.enum).toEqual(plan.facts);
-  });
-
-  it("fails closed when four generic source units are duplicated or incomplete", () => {
-    expect(() =>
-      summaryUserPrompt(
-        "The microphone stays local. Audio remains on the device. The microphone stays local. Shutdown releases owned resources.",
-      ),
-    ).toThrow("exactly four independent complete facts");
-    expect(() =>
-      summaryUserPrompt(
-        "The microphone stays local. Audio remains on the device. Reset clears the session. Shutdown releases owned resources",
-      ),
-    ).toThrow("exactly four independent complete facts");
-  });
-
-  it("extracts four independent facts from three-sentence project and measurement transcripts", () => {
-    const atlas = summaryUserPrompt(
-      "Project Atlas reduced latency. The target remains 250 milliseconds. Maya Chen owns the follow-up, and the next review is November 12.",
-    );
-    expect(atlas).toContain("[F3] Maya Chen owns the follow-up.");
-    expect(atlas).toContain("[F4] The next review is November 12.");
-
-    const aurora = summaryUserPrompt(
-      "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius. Capacity fell after 100 cycles. Priya will rerun the test.",
-    );
-    expect(aurora).toContain("[F1] Team Aurora measured Battery Pack B at 82 watt-hours.");
-    expect(aurora).toContain("[F2] The temperature was 25 degrees Celsius.");
-  });
-
-  it("rejects malformed guided JSON instead of treating it as display text", () => {
-    expect(() => decodeSummaryModelOutput('{"overview":"Only overview"}')).toThrow(
-      "invalid structured output",
-    );
-    expect(() => decodeSummaryModelOutput("Overview.\n• One.\n• Two.\n• Three.\n• Four.")).toThrow(
-      "invalid structured output",
-    );
-  });
-
-  it.each([1, 2, 3, 5])("rejects structured output with %i detail strings", (detailCount) => {
-    expect(() =>
-      decodeSummaryModelOutput(
-        JSON.stringify({
-          overview: "Overview.",
-          details: Array.from({ length: detailCount }, (_value, index) => `Detail ${index + 1}.`),
-        }),
-      ),
-    ).toThrow("invalid structured output");
-  });
-
-  it("rejects duplicate or incomplete exact-four detail strings without manufacturing replacements", () => {
-    expect(() =>
-      decodeSummaryModelOutput(
-        JSON.stringify({
-          overview: "Incomplete overview",
-          details: ["One.", "Two.", "Three.", "Four."],
-        }),
-      ),
-    ).toThrow("overview was incomplete");
-    expect(() =>
-      decodeSummaryModelOutput(
-        JSON.stringify({
-          overview: "Project Atlas records latency facts.",
-          details: [
-            "The target is 250 milliseconds.",
-            "Maya Chen owns the follow-up.",
-            "THE TARGET IS 250 MILLISECONDS!",
-            "The next review is November 12.",
-          ],
-        }),
-      ),
-    ).toThrow("repeated an overview or detail fact");
-    expect(() =>
-      decodeSummaryModelOutput(
-        JSON.stringify({
-          overview: "Project Atlas records latency facts.",
-          details: [
-            "The target is 250 milliseconds.",
-            "Maya Chen owns the follow-up.",
-            "The next review is November 12.",
-            "The cache change was",
-          ],
-        }),
-      ),
-    ).toThrow("incomplete line");
-  });
-
-  it("rejects overlap between the overview and any displayed detail", () => {
-    expect(() =>
-      decodeSummaryModelOutput(
-        JSON.stringify({
-          overview: "The microphone stays local.",
-          details: [
-            "The microphone stays local.",
-            "Audio remains on the device.",
-            "Reset clears the session.",
-            "Shutdown releases owned resources.",
-          ],
-        }),
-      ),
-    ).toThrow("repeated an overview or detail fact");
-  });
-
-  it("rejects a factual overview that absorbs a paraphrased ODE detail", () => {
-    expect(() =>
-      decodeSummaryModelOutput(
-        JSON.stringify({
-          overview:
-            "The transcript describes an ordinary differential equation where a function is related to its derivatives and a first-order decay solution is discussed.",
-          details: [
-            "An ordinary differential equation relates a function to its derivatives.",
-            "The equation is y′ = −2y.",
-            "The solution is y(t) = c · e^(−2t).",
-            "The initial value y(0) = 3 gives c = 3.",
-          ],
-        }),
-      ),
-    ).toThrow("repeated an overview or detail fact");
-  });
-
-  it.each([
-    "Maya Chen owns the follow-up and Priya.",
-    "The cache change was.",
-    "Because.",
-    "And the owner.",
-    "A detail without terminal punctuation",
-  ])("rejects a truncated or dangling structured detail: %s", (detail) => {
-    expect(() =>
-      decodeSummaryModelOutput(
-        JSON.stringify({
-          overview: GENERIC_SUMMARY_OVERVIEW,
-          details: [
-            "The microphone stays local.",
-            "Audio remains on the device.",
-            "Reset clears the session.",
-            detail,
-          ],
-        }),
-      ),
-    ).toThrow("incomplete line");
   });
 
   it.each([
@@ -264,8 +36,7 @@ describe("formatSummaryForDisplay", () => {
         raw: "An ordinary differential equation relates a function to its derivatives. For the first order equation y prime equals negative two y, separate the variables. The solution is y of t equals c times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.",
         expected: [
           "An ordinary differential equation relates a function to its derivatives.",
-          "• For the first order equation y prime equals negative two y,",
-          "• separate the variables.",
+          "• For the first order equation y prime equals negative two y, separate the variables.",
           "• The solution is y of t equals c times e to the negative two t for decay over time.",
           "• If y of 0 equals 3, then c equals 3.",
         ].join("\n"),
@@ -274,11 +45,9 @@ describe("formatSummaryForDisplay", () => {
         name: "Project Atlas",
         raw: "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache. The target remains 250 milliseconds. Maya Chen owns the follow-up, and the next review is November 12.",
         expected: [
-          "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds",
-          "• after the team enabled the local model cache.",
+          "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache.",
           "• The target remains 250 milliseconds.",
-          "• Maya Chen owns the follow-up,",
-          "• and the next review is November 12.",
+          "• Maya Chen owns the follow-up, and the next review is November 12.",
         ].join("\n"),
       },
       {
@@ -286,9 +55,7 @@ describe("formatSummaryForDisplay", () => {
         raw: "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius. After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging. Priya will rerun the test at 0.5 C on December 5.",
         expected: [
           "Team Aurora measured Battery Pack B at 82 watt-hours at 25 degrees Celsius.",
-          "• After 100 cycles,",
-          "• capacity fell to 76 watt-hours,",
-          "• a decline of 6 watt-hours caused by repeated high-rate charging.",
+          "• After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging.",
           "• Priya will rerun the test at 0.5 C on December 5.",
         ].join("\n"),
       },
@@ -300,243 +67,10 @@ describe("formatSummaryForDisplay", () => {
         const formatted = formatSummaryPresentation(raw);
 
         expect(formatted).toEqual({ text: expected, formattingApplied: true });
-        expect(formatted.text.split("\n")).toHaveLength(5);
-        expect(
-          formatted.text
-            .split("\n")
-            .slice(1)
-            .every((line) => line.startsWith("• ")),
-        ).toBe(true);
         expect(contentWords(formatted.text)).toEqual(contentWords(raw));
         expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
       },
     );
-
-    it("enforces the shipped five-line and word-count presentation contract", () => {
-      const valid = [
-        "The transcript concerns an ordinary differential equation.",
-        "• An ordinary differential equation relates a function to its derivatives.",
-        "• The equation is y′ = −2y.",
-        "• The solution is y(t) = c · e^(−2t).",
-        "• The initial value y(0) = 3 gives c = 3.",
-      ].join("\n");
-      expect(() => assertSummaryPresentationContract(valid)).not.toThrow();
-      expect(() => assertSummaryPresentationContract("Only one line.")).toThrow(
-        "exactly one overview and four detail lines",
-      );
-      expect(() =>
-        assertSummaryPresentationContract(
-          ["Overview.", "Detail one.", "• Detail two.", "• Detail three.", "• Detail four."].join("\n"),
-        ),
-      ).toThrow("required bullet format");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            `${Array.from({ length: 181 }, () => "word").join(" ")}.`,
-            "• First.",
-            "• Second.",
-            "• Third.",
-            "• Fourth.",
-          ].join("\n"),
-        ),
-      ).toThrow("180-word limit");
-      expect(() =>
-        assertSummaryPresentationContract(
-          ["Line 1: Overview.", "• First.", "• Second.", "• Third.", "• Fourth."].join("\n"),
-        ),
-      ).toThrow("prohibited heading or label");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "Overview sentence.",
-            "• The initial value determines c.",
-            "• Another fact.",
-            "• The initial value determines c.",
-            "• Final fact.",
-          ].join("\n"),
-        ),
-      ).toThrow("repeated an overview or detail fact");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "The transcript states signed measurements and mathematical relations.",
-            "• The measured temperature is -5 °C.",
-            "• The measured temperature is 5 °C.",
-            "• The constraint is x < 5.",
-            "• The constraint is x > 5.",
-          ].join("\n"),
-        ),
-      ).not.toThrow();
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "The transcript states two distinct differential equations and units.",
-            "• The equation is y′ = −2y.",
-            "• The equation is y′ = 2y.",
-            "• The tolerance is 5 ± 1 millimeters.",
-            "• The result maps input -> output.",
-          ].join("\n"),
-        ),
-      ).not.toThrow();
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "The transcript repeats one inequality with equivalent glyphs.",
-            "• The constraint is x ≤ 5.",
-            "• The constraint is x <= 5.",
-            "• The equation is y′ = −2y.",
-            "• The temperature is -5 °C.",
-          ].join("\n"),
-        ),
-      ).toThrow("repeated an overview or detail fact");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "Project Atlas records explicit latency facts.",
-            "• where the target remains 250 milliseconds.",
-            "• The target remains 250 milliseconds.",
-            "• Maya Chen owns the follow-up.",
-            "• The next review is November 12.",
-          ].join("\n"),
-        ),
-      ).toThrow("repeated an overview or detail fact");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "Project Atlas records the cache observation.",
-            "• The target remains 250 milliseconds.",
-            "• Maya Chen owns the follow-up.",
-            "• The next review is November 12.",
-            "• The cache change was",
-          ].join("\n"),
-        ),
-      ).toThrow("incomplete line");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            GENERIC_SUMMARY_OVERVIEW,
-            "• The microphone stays local.",
-            "• Audio remains on the device.",
-            "• Reset clears the session.",
-            "• Maya Chen owns the follow-up and Priya.",
-          ].join("\n"),
-        ),
-      ).toThrow("incomplete line");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "The microphone stays local.",
-            "• The microphone stays local.",
-            "• Audio remains on the device.",
-            "• Reset clears the session.",
-            "• Shutdown releases owned resources.",
-          ].join("\n"),
-        ),
-      ).toThrow("repeated an overview or detail fact");
-      expect(() =>
-        assertSummaryPresentationContract(
-          [
-            "The equation remains grounded in the transcript.",
-            "• The target remains 250 milliseconds.",
-            "• Maya Chen owns the follow-up.",
-            "• The next review is November 12.",
-            "• The initial value of the derivative is -6.",
-          ].join("\n"),
-        ),
-      ).not.toThrow();
-    });
-
-    it("preserves distinct ODE clauses instead of fuzzy-deduplicating overlapping words and values", () => {
-      const raw = [
-        "The first order equation y′ = −2y is solved by separation of variables to yield y(t) = c·e^(−2t).",
-        "• The constant c is determined by the initial condition y(0) = 3, which results in c = 3.",
-        "• The solution represents exponential decay over time with the specific value c = 3.",
-        "• The initial condition y(0) = 3 is explicitly stated as the condition for determining c.",
-        "• The equation y′ = −2y is the governing differential relation for the system.",
-      ].join("\n");
-
-      expect(formatSummaryPresentation(raw)).toEqual({
-        text: raw,
-        formattingApplied: false,
-      });
-      expect(() => assertSummaryPresentationContract(raw)).not.toThrow();
-    });
-
-    it("preserves distinct Atlas target, ownership, review, cache, and role wording", () => {
-      const raw = [
-        "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache.",
-        "• The target latency remains at 250 milliseconds.",
-        "• Maya Chen owns the follow-up and the next review is scheduled for November 12.",
-        "• The team enabled the local model cache to achieve the new latency reduction.",
-        "• The project continues with the updated target of 250 milliseconds.",
-      ].join("\n");
-
-      expect(formatSummaryPresentation(raw).text).toBe(raw);
-      expect(() => assertSummaryPresentationContract(raw)).not.toThrow();
-    });
-
-    it("merges more than four distinct details without dropping role, subject, predicate, or value", () => {
-      const raw = [
-        "The projects reported separate planning, measurement, and ownership facts.",
-        "• Project Atlas target is 250 milliseconds.",
-        "• Project Atlas result is 250 milliseconds.",
-        "• Project Aurora target is 250 milliseconds.",
-        "• Maya Chen owns the Atlas follow-up.",
-        "• Priya owns the Aurora follow-up.",
-      ].join("\n");
-      const formatted = formatSummaryPresentation(raw).text;
-
-      expect(formatted.split("\n")).toHaveLength(5);
-      expect(contentWords(formatted)).toEqual(contentWords(raw));
-      expect(formatted).toContain("Project Atlas target is 250 milliseconds.");
-      expect(formatted).toContain("Project Atlas result is 250 milliseconds.");
-      expect(formatted).toContain("Project Aurora target is 250 milliseconds.");
-      expect(formatted).toContain("Maya Chen owns the Atlas follow-up.");
-      expect(formatted).toContain("Priya owns the Aurora follow-up.");
-      expect(() => assertSummaryPresentationContract(formatted)).not.toThrow();
-      expect(formatSummaryPresentation(formatted).text).toBe(formatted);
-    });
-
-    it("deduplicates only canonically identical detail text", () => {
-      const raw = [
-        "Project Atlas records explicit latency facts.",
-        "• Project Atlas target is 250 milliseconds.",
-        "• PROJECT ATLAS TARGET IS 250 MILLISECONDS!",
-        "• Maya Chen owns the follow-up and the next review is November 12.",
-        "• The local model cache is enabled.",
-      ].join("\n");
-      const formatted = formatSummaryPresentation(raw).text;
-
-      expect(formatted.split("\n")).toHaveLength(5);
-      expect(formatted.match(/project atlas target is 250 milliseconds/giu)).toHaveLength(1);
-      expect(formatted).toContain("Maya Chen owns the follow-up");
-      expect(formatted).toContain("the next review is November 12.");
-      expect(formatted).toContain("The local model cache is enabled.");
-      expect(() => assertSummaryPresentationContract(formatted)).toThrow("incomplete line");
-    });
-
-    it("does not reintroduce exact duplicates when a raw response has too few distinct details", () => {
-      const raw = [
-        "Line 1: The transcript describes a first-order ordinary differential equation where the solution is y(t) = c·e^(-2t).",
-        "• The equation is y' = -2y.",
-        "• The solution is y(t) = c·e^(-2t).",
-        "• The initial value determines the constant c.",
-        "• The initial value determines the constant c.",
-        "• The initial value determines the constant c.",
-      ].join("\n");
-      const expected = [
-        "The transcript describes a first-order ordinary differential equation",
-        "• where the solution is y(t) = c·e^(−2t).",
-        "• The equation is y′ = −2y.",
-        "• The initial value determines the constant c.",
-      ].join("\n");
-
-      expect(formatSummaryPresentation(raw).text).toBe(expected);
-      expect(() => assertSummaryPresentationContract(expected)).toThrow(
-        "exactly one overview and four detail lines",
-      );
-      expect(formatSummaryPresentation(expected).text).toBe(expected);
-    });
 
     it("normalizes math once while preserving protected code and sentence content", () => {
       const raw =
@@ -698,12 +232,12 @@ describe("formatSummaryForDisplay", () => {
       expect(formatSummaryPresentation(formatted.text).text).toBe(formatted.text);
     });
 
-    it("groups long outputs into exactly four bullets without sentence loss or duplication", () => {
+    it("groups long outputs into at most six bullets without sentence loss or duplication", () => {
       const raw = Array.from({ length: 10 }, (_value, index) => `Sentence ${index + 1}.`).join(" ");
       const formatted = formatSummaryPresentation(raw).text;
       const lines = formatted.split("\n");
 
-      expect(lines).toHaveLength(5);
+      expect(lines).toHaveLength(7);
       expect(lines.slice(1).every((line) => line.startsWith("• "))).toBe(true);
       expect(contentWords(formatted)).toEqual(contentWords(raw));
       expect(formatSummaryPresentation(formatted).text).toBe(formatted);

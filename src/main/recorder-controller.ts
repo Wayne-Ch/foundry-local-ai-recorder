@@ -45,11 +45,7 @@ import type {
   TranscriptionResponse,
 } from "../shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
-import {
-  assertSummaryPresentationContract,
-  decodeSummaryModelOutput,
-  formatSummaryForDisplay,
-} from "../summary/summary-format";
+import { formatSummaryPresentation } from "../summary/summary-format";
 import { TranscriptStore } from "../transcript/transcript-store";
 import { noopRecorderOperationJournal, type RecorderOperationJournal } from "./operation-journal";
 
@@ -57,7 +53,6 @@ const TRACE_LIMIT = 250;
 const SAFE_BUILT_IN_MODEL_IDS = new Set(
   Object.values(resolveRuntimeTargets({})).map(({ modelId }) => modelId),
 );
-const KNOWN_SUMMARY_FINISH_REASONS = new Set(["length", "none", "toolCalls", "error"]);
 
 export interface RecorderRuntime {
   readonly readiness: RuntimeReadiness;
@@ -402,20 +397,15 @@ export class RecorderController {
     try {
       const result = await this.#runtime.summarize(submitted.text);
       this.#assertCurrent(generation);
-      const rawTrace = this.#traceEvent("Foundry Local", "summary-raw", result.text);
-      if (result.finishReason !== "stop") {
-        const finishReason = KNOWN_SUMMARY_FINISH_REASONS.has(result.finishReason)
-          ? result.finishReason
-          : "unknown";
-        throw new Error(`Summary generation ended with ${finishReason}.`);
-      }
-      const decodedSummary = decodeSummaryModelOutput(result.text);
-      const displaySummary = formatSummaryForDisplay(decodedSummary.text);
-      this.#annotateSummaryFormatting(
-        rawTrace,
-        decodedSummary.decodingApplied || displaySummary.formattingApplied,
+      const displaySummary = formatSummaryPresentation(result.text);
+      this.#traceEvent(
+        "Foundry Local",
+        "summary-raw",
+        result.text,
+        "info",
+        undefined,
+        displaySummary.formattingApplied,
       );
-      assertSummaryPresentationContract(displaySummary.text);
       this.#transcript.applySummary({
         text: displaySummary.text,
         transcriptVersion: submitted.version,
@@ -650,8 +640,8 @@ export class RecorderController {
     severity: TraceEntry["severity"] = "info",
     durationMs?: number,
     summaryDisplayFormattingApplied?: boolean,
-  ): TraceEntry {
-    const entry: TraceEntry = {
+  ): void {
+    this.#trace.push({
       at: new Date().toISOString(),
       responsibility,
       phase,
@@ -659,21 +649,9 @@ export class RecorderController {
       severity,
       ...(durationMs === undefined ? {} : { durationMs }),
       ...(summaryDisplayFormattingApplied === undefined ? {} : { summaryDisplayFormattingApplied }),
-    };
-    this.#trace.push(entry);
+    });
     if (this.#trace.length > TRACE_LIMIT) {
       this.#trace.splice(0, this.#trace.length - TRACE_LIMIT);
-    }
-    return entry;
-  }
-
-  #annotateSummaryFormatting(entry: TraceEntry, formattingApplied: boolean): void {
-    const index = this.#trace.indexOf(entry);
-    if (index >= 0) {
-      this.#trace[index] = {
-        ...entry,
-        summaryDisplayFormattingApplied: formattingApplied,
-      };
     }
   }
 

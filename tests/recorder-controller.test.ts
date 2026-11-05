@@ -36,18 +36,12 @@ const targets = resolveRuntimeTargets({});
 class FakeRuntime implements RecorderRuntime {
   readonly readiness: RuntimeReadiness;
   summaryInput = "";
-  summaryFinishReason = "stop";
   lastCapture: ValidatedAudioCapture | null = null;
 
   constructor(
     readonly finalTranscript = "Whisper authoritative final transcript.",
     readonly transcriptionError: Error | null = null,
-    readonly summaryText = summaryJson("Overview.", [
-      "First fact.",
-      "Second fact.",
-      "Third fact.",
-      "Fourth fact.",
-    ]),
+    readonly summaryText = "Overview.\n\n- Key point.",
     runtimeTargets: RuntimeTargets = targets,
   ) {
     this.readiness = runtimeReadiness(runtimeTargets);
@@ -136,8 +130,7 @@ class FakeRuntime implements RecorderRuntime {
         fileSizeMb: 600,
       },
       preflight: preflight(),
-      finishReason: this.summaryFinishReason,
-      response: response(this.summaryText, this.summaryFinishReason),
+      response: response(this.summaryText),
     };
   }
 
@@ -372,12 +365,7 @@ describe("RecorderController", () => {
   });
 
   it("stores formatted summary text and preserves the exact raw Qwen response in trace evidence", async () => {
-    const raw = summaryJson(String.raw`Keep C:\times\reports and \cdot literal.`, [
-      String.raw`The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`,
-      "The equation remains first order.",
-      "The behavior is exponential decay.",
-      "The initial condition determines the constant.",
-    ]);
+    const raw = String.raw`Keep C:\times\reports and \cdot literal. The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`;
     const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
     const controller = new RecorderController(runtime);
 
@@ -394,98 +382,12 @@ describe("RecorderController", () => {
       [
         String.raw`Keep C:\times\reports and \cdot literal.`,
         "• The solution is expressed as y(t) = c · e^(−2t), where c is the initial constant.",
-        "• The equation remains first order.",
-        "• The behavior is exponential decay.",
-        "• The initial condition determines the constant.",
       ].join("\n"),
     );
     expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
       detail: raw,
       summaryDisplayFormattingApplied: true,
     });
-  });
-
-  it.each([
-    {
-      name: "malformed output",
-      raw: "Only one summary line.",
-      expectedError: "invalid structured output",
-      finishReason: "stop" as const,
-    },
-    ...[1, 2, 3, 5].map((detailCount) => ({
-      name: `${detailCount}-detail output`,
-      raw: summaryJson(
-        "Project Atlas records explicit facts.",
-        Array.from({ length: detailCount }, (_value, index) => `Detail ${index + 1}.`),
-      ),
-      expectedError: "invalid structured output",
-      finishReason: "stop" as const,
-    })),
-    {
-      name: "canonically duplicated detail",
-      raw: summaryJson("Project Atlas records explicit facts.", [
-        "The target remains 250 milliseconds.",
-        "Maya Chen owns the follow-up.",
-        "THE TARGET REMAINS 250 MILLISECONDS!",
-        "The next review is November 12.",
-      ]),
-      expectedError: "repeated an overview or detail fact",
-      finishReason: "stop" as const,
-    },
-    {
-      name: "incomplete final bullet",
-      raw: summaryJson("Project Atlas records the cache observation.", [
-        "The target remains 250 milliseconds.",
-        "Maya Chen owns the follow-up.",
-        "The next review is November 12.",
-        "The cache change was",
-      ]),
-      expectedError: "incomplete line",
-      finishReason: "stop" as const,
-    },
-    ...["length", "none", "toolCalls", "error"].map((finishReason) => ({
-      name: `${finishReason}-finished output`,
-      raw: summaryJson("Project Atlas records the cache observation.", [
-        "The target remains 250 milliseconds.",
-        "Maya Chen owns the follow-up.",
-        "The next review is November 12.",
-        "The local model cache is enabled.",
-      ]),
-      expectedError: `ended with ${finishReason}`,
-      finishReason,
-    })),
-    {
-      name: "unknown-finished output",
-      raw: summaryJson("Project Atlas records the cache observation.", [
-        "The target remains 250 milliseconds.",
-        "Maya Chen owns the follow-up.",
-        "The next review is November 12.",
-        "The local model cache is enabled.",
-      ]),
-      expectedError: "ended with unknown",
-      finishReason: "private-path-C:\\Users\\someone\\secret",
-    },
-  ])("traces raw $name but stores no summary", async ({ raw, expectedError, finishReason }) => {
-    const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
-    runtime.summaryFinishReason = finishReason;
-    const controller = new RecorderController(runtime);
-    await controller.transcribeCapture({
-      format: AUDIO_FORMAT,
-      sampleRate: AUDIO_SAMPLE_RATE,
-      channels: AUDIO_CHANNELS,
-      durationMs: 1_000,
-      data: new ArrayBuffer(32_000),
-    });
-
-    await expect(controller.generateSummary()).rejects.toThrow(expectedError);
-    const snapshot = controller.bootstrap();
-    expect(snapshot.transcript.summary).toBeNull();
-    expect(snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
-      detail: raw,
-    });
-    expect(snapshot.trace.some((entry) => entry.phase === "summary-final" && entry.severity === "info")).toBe(
-      false,
-    );
   });
 
   it("builds deterministic populated-summary UI evidence from the exact raw and formatted pair", () => {
@@ -497,7 +399,7 @@ describe("RecorderController", () => {
       text: POPULATED_SUMMARY_CAPTURE_FORMATTED,
       formattingApplied: true,
     });
-    expect(snapshot.transcript.finalText).toContain("ordinary differential equation");
+    expect(snapshot.transcript.finalText).toContain("Today we derived");
     expect(snapshot.transcript.summary?.text).toBe(POPULATED_SUMMARY_CAPTURE_FORMATTED);
     expect(snapshot.transcript.summary?.text).toContain("y′ = −2y");
     expect(snapshot.transcript.summary?.text).toContain("e^(−2t)");
@@ -511,12 +413,7 @@ describe("RecorderController", () => {
   });
 
   it("uses the same summary formatter after imported WAV transcription", async () => {
-    const raw = summaryJson("It describes $ y' = -2y $.", [
-      String.raw`The solution is $ y(t) = c \cdot e^{-2t}} $.`,
-      "The equation is first order.",
-      "The behavior is decay.",
-      "The constant is c.",
-    ]);
+    const raw = String.raw`It describes $ y' = -2y $ and $ y(t) = c \cdot e^{-2t}} $.`;
     const runtime = new FakeRuntime("Imported Whisper final.", null, raw);
     const controller = new RecorderController(runtime);
     const wav = encodePcm16Wav(new Uint8Array(32_000));
@@ -529,15 +426,7 @@ describe("RecorderController", () => {
 
     expect(stages).toEqual(["decoding_audio", "transcribing"]);
     expect(runtime.summaryInput).toBe("Imported Whisper final.");
-    expect(summary.snapshot.transcript.summary?.text).toBe(
-      [
-        "It describes y′ = −2y.",
-        "• The solution is y(t) = c · e^(−2t).",
-        "• The equation is first order.",
-        "• The behavior is decay.",
-        "• The constant is c.",
-      ].join("\n"),
-    );
+    expect(summary.snapshot.transcript.summary?.text).toBe("It describes y′ = −2y and y(t) = c · e^(−2t).");
   });
 
   it("invalidates the summary when the final transcript is corrected", async () => {
@@ -688,7 +577,7 @@ function modelReadiness(
       role,
       id,
       alias: id.split(":")[0] ?? id,
-      deviceType: runtimeTargets[role].deviceType,
+      deviceType: "CPU",
       executionProvider,
       fileSizeMb: 100,
     },
@@ -777,25 +666,18 @@ function transcription(
 function preflight(): RequestPreflightResult {
   return {
     promptTokens: 50,
-    outputReserveTokens: 512,
-    requiredTokens: 562,
+    outputReserveTokens: 260,
+    requiredTokens: 310,
     contextLimitTokens: 4_096,
     fits: true,
     deficitTokens: 0,
   };
 }
 
-function response(
-  text = ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
-  finishReason: string = "stop",
-): Response {
+function response(text = "Overview.\n\n- Key point."): Response {
   return {
     output: [{ type: "text", text }],
-    finishReason: finishReason as Response["finishReason"],
+    finishReason: "stop",
     usage: { promptTokens: 50, completionTokens: 20, totalTokens: 70 },
   };
-}
-
-function summaryJson(overview: string, details: readonly string[]): string {
-  return JSON.stringify({ overview, details });
 }

@@ -6,11 +6,6 @@ import {
   AUDIO_MAX_DURATION_MS,
   AUDIO_SAMPLE_RATE,
 } from "../src/audio/audio-types";
-import {
-  SUMMARY_DEVICE_TYPE,
-  SUMMARY_EXECUTION_PROVIDER,
-  SUMMARY_MODEL_ID,
-} from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
 import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import {
@@ -40,9 +35,6 @@ try {
   assert.equal(prepared.snapshot.readiness.externalEndpointUsed, false);
   assert.equal(prepared.snapshot.readiness.embeddedWebServiceRunning, false);
   assert.deepEqual(prepared.snapshot.readiness.embeddedWebServiceUrls, []);
-  assert.equal(prepared.snapshot.readiness.summary.model?.id, SUMMARY_MODEL_ID);
-  assert.equal(prepared.snapshot.readiness.summary.model?.deviceType, SUMMARY_DEVICE_TYPE);
-  assert.equal(prepared.snapshot.readiness.summary.model?.executionProvider, SUMMARY_EXECUTION_PROVIDER);
   const partials: string[] = [];
   const started = await controller.startLiveStream(
     {
@@ -79,17 +71,7 @@ try {
     durationMs,
     data: pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer,
   });
-  const summary = await controller.generateSummary().catch((error: unknown) => {
-    const snapshot = controller.bootstrap();
-    console.error(
-      `CHAIN_SUMMARY_FAILED ${JSON.stringify({
-        error: error instanceof Error ? error.message : String(error),
-        whisperFinal: final.result.transcript,
-        rawSummary: snapshot.trace.findLast((entry) => entry.phase === "summary-raw")?.detail ?? null,
-      })}`,
-    );
-    throw error;
-  });
+  const summary = await controller.generateSummary();
   const recall = keywordRecall(final.result.transcript);
   assert.ok(partials.length > 0);
   assert.ok(recall.recall >= 0.66, `Whisper keyword recall ${recall.recall}: ${final.result.transcript}`);

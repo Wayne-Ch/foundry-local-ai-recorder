@@ -5,13 +5,12 @@ import type {
   AssistantImageByteLifecycle,
   AssistantImageBytePurpose,
 } from "../src/assistant/image-byte-lifecycle";
-import type { PreparedAssistantInferenceImage } from "../src/assistant/image-inference";
 import type { ValidatedImage } from "../src/assistant/image-security";
 import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
 import {
   processAssistantTurn,
   QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-  type VisionChatTurnInputSource,
+  type VisionChatTurnInput,
   type VisionChatTurnResult,
 } from "../src/foundry/optional-vision-chat-runtime";
 import type { AssistantRuntime } from "../src/main/assistant-controller";
@@ -37,7 +36,7 @@ describe("assistant cancellation cleanup", () => {
         }),
         imageByteLifecycle: lifecycle,
       });
-      controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
+      controller.selectImage(image(), "data:image/png;base64,abc");
       controller.startChat("session-1", "Explain the selected image.", () => {});
       await runtime.started;
       const operationBytes = lifecycle.copies("assistant-operation")[0];
@@ -95,13 +94,8 @@ class ThrowingCancelRuntime implements AssistantRuntime {
   }
 
   async runAssistantTurn(
-    inputSource: VisionChatTurnInputSource,
-    options: {
-      readonly signal?: AbortSignal;
-      readonly requestOptions?: RequestOptions;
-      readonly onProgress?: (phase: "initializing_runtime" | "running_inference") => void;
-      readonly operationId?: string;
-    } = {},
+    input: VisionChatTurnInput,
+    options: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions } = {},
   ): Promise<VisionChatTurnResult> {
     const controller = new AbortController();
     const forwardAbort = () => {
@@ -118,10 +112,7 @@ class ThrowingCancelRuntime implements AssistantRuntime {
     }
     this.#activeController = controller;
     this.assistantStatus = { ...this.assistantStatus, active: true, draining: false };
-    options.onProgress?.("initializing_runtime");
-    const input = typeof inputSource === "function" ? inputSource() : inputSource;
     const nativeResponse = deferred<Response>();
-    options.onProgress?.("running_inference");
     const turn = processAssistantTurn(
       {} as IModel,
       {
@@ -129,8 +120,8 @@ class ThrowingCancelRuntime implements AssistantRuntime {
         source: "shared_summary_assistant_slot",
         task: "vision-language-chat",
         runtime: {
-          deviceType: DeviceType.GPU,
-          executionProvider: "WebGPUExecutionProvider",
+          deviceType: DeviceType.CPU,
+          executionProvider: "CPUExecutionProvider",
         },
         inputModalities: ["text", "image"],
         outputModalities: ["text"],
@@ -247,17 +238,6 @@ function image(): ValidatedImage {
     width: 1,
     height: 1,
     bytes: new Uint8Array([1, 2, 3]),
-  };
-}
-
-function inferenceImage(): PreparedAssistantInferenceImage {
-  return {
-    mimeType: "image/png",
-    format: "png",
-    sizeBytes: 3,
-    width: 1,
-    height: 1,
-    bytes: new Uint8Array([7, 8, 9]),
   };
 }
 

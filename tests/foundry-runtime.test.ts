@@ -27,17 +27,9 @@ import {
   WHISPER_AUDIO_MODEL_ID,
 } from "../src/audio/audio-types";
 import { TempAudioStore } from "../src/audio/temp-audio-store";
-import {
-  FoundryRecorderRuntime,
-  type FoundryRecorderRuntimeOptions,
-  SUMMARY_RAW_OUTPUT_MAX_CHARS,
-} from "../src/foundry/foundry-runtime";
+import { FoundryRecorderRuntime, type FoundryRecorderRuntimeOptions } from "../src/foundry/foundry-runtime";
 import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
-import {
-  SUMMARY_DEVICE_TYPE,
-  SUMMARY_EXECUTION_PROVIDER,
-  SUMMARY_MODEL_ID,
-} from "../src/foundry/runtime-config";
+import { SUMMARY_EXECUTION_PROVIDER, SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
 import { toSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import { summaryUserPrompt } from "../src/summary/summary-prompt";
@@ -203,48 +195,6 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it.each([
-    {
-      name: "CPU device",
-      deviceType: DeviceType.CPU,
-      executionProvider: SUMMARY_EXECUTION_PROVIDER,
-      expected: `uses ${DeviceType.CPU}; expected ${SUMMARY_DEVICE_TYPE}`,
-    },
-    {
-      name: "CPU provider",
-      deviceType: SUMMARY_DEVICE_TYPE,
-      executionProvider: AUDIO_EXECUTION_PROVIDER,
-      expected: `uses ${AUDIO_EXECUTION_PROVIDER}; expected ${SUMMARY_EXECUTION_PROVIDER}`,
-    },
-  ])(
-    "rejects the exact shared model id with an alternate $name and never loads it",
-    async ({ deviceType, executionProvider, expected }) => {
-      const root = await createTempRoot();
-      const models = new Map(createModels());
-      const incompatible = new FakeModel(
-        SUMMARY_MODEL_ID,
-        "qwen-vision",
-        "vision-language-chat",
-        executionProvider,
-        undefined,
-        {
-          deviceType,
-          inputModalities: '["text", "image"]',
-          outputModalities: "text",
-        },
-      );
-      models.set(SUMMARY_MODEL_ID, incompatible);
-      const runtime = createRuntime(root, [new FakeManager(models)]);
-
-      const failure = await captureFailure(runtime.prepare(false));
-
-      expect(errorMessages(failure)).toContainEqual(expect.stringContaining(expected));
-      expect(incompatible.loaded).toBe(false);
-      expect(runtime.readiness.summary).toMatchObject({ status: "error", loaded: false });
-      await runtime.shutdown().catch(() => undefined);
-    },
-  );
-
   it("prepares Whisper, Nemotron, and shared Qwen even when live captions are toggled off", async () => {
     const root = await createTempRoot();
     const models = createModels();
@@ -313,7 +263,7 @@ describe("FoundryRecorderRuntime", () => {
     const catalogCalls = vi.mocked(manager.catalog.getModelVariant).mock.calls.length;
     const downloadCalls = downloads.map(({ mock }) => mock.calls.length);
 
-    await expect(runtime.summarize(genericSummaryTranscript("Exact"))).resolves.toMatchObject({
+    await expect(runtime.summarize("Exact transcript.")).resolves.toMatchObject({
       text: "Exact factual summary.",
     });
     await expect(runtime.runAssistantTurn({ prompt: "Question." })).resolves.toMatchObject({
@@ -323,327 +273,6 @@ describe("FoundryRecorderRuntime", () => {
     expect(vi.mocked(manager.catalog.getModelVariant)).toHaveBeenCalledTimes(catalogCalls);
     expect(downloads.map(({ mock }) => mock.calls.length)).toEqual(downloadCalls);
     expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
-    await runtime.shutdown();
-  });
-
-  it.each(["length", "none", "toolCalls", "error", "futureReason"])(
-    "returns bounded %s-finished text so the controller can trace and reject it",
-    async (finishReason) => {
-      const root = await createTempRoot();
-      const raw = "x".repeat(SUMMARY_RAW_OUTPUT_MAX_CHARS + 37);
-      const runtime = createRuntime(root, [new FakeManager(createModels())], {
-        createChatSession: () =>
-          fakeChatSession({
-            processRequest: async () => textResponse(raw, finishReason),
-          }),
-      });
-      await runtime.prepare(false);
-
-      await expect(runtime.summarize(genericSummaryTranscript("Exact"))).resolves.toMatchObject({
-        text: raw.slice(0, SUMMARY_RAW_OUTPUT_MAX_CHARS),
-        finishReason,
-        response: { finishReason },
-      });
-      await runtime.shutdown();
-    },
-  );
-
-  it("serializes assistant and summary inference through one FIFO until cleanup is complete", async () => {
-    const root = await createTempRoot();
-    const order: string[] = [];
-    const assistantResponse = deferred<Response>();
-    const assistantStarted = deferred<void>();
-    const summaryResponse = deferred<Response>();
-    const summaryStarted = deferred<void>();
-    const runtime = createRuntime(root, [new FakeManager(createModels())], {
-      createChatSession: () => {
-        let sessionKind: "assistant" | "summary" | null = null;
-        return fakeChatSession({
-          processRequest: async (request) => {
-            if (requestText(request).includes("FINAL TRANSCRIPT:")) {
-              sessionKind = "summary";
-              order.push("summary-start");
-              summaryStarted.resolve();
-              return summaryResponse.promise;
-            }
-            sessionKind = "assistant";
-            order.push("assistant-start");
-            assistantStarted.resolve();
-            return assistantResponse.promise;
-          },
-          dispose: () => {
-            order.push(`${sessionKind ?? "unknown"}-dispose`);
-          },
-        });
-      },
-    });
-    await runtime.prepare(false);
-
-    const assistant = runtime.runAssistantTurn({ prompt: "Hold the shared model." });
-    await assistantStarted.promise;
-    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(order).toEqual(["assistant-start"]);
-
-    assistantResponse.resolve(textResponse("Assistant answer."));
-    await expect(assistant).resolves.toMatchObject({ text: "Assistant answer." });
-    await summaryStarted.promise;
-
-    expect(order.indexOf("assistant-dispose")).toBeLessThan(order.indexOf("summary-start"));
-
-    summaryResponse.resolve(
-      textResponse(
-        ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
-      ),
-    );
-    await expect(summary).resolves.toMatchObject({
-      response: { finishReason: "stop" },
-    });
-    expect(order.indexOf("summary-dispose")).toBeGreaterThan(order.indexOf("summary-start"));
-    await runtime.shutdown();
-  });
-
-  it("orders Ask1, queued Ask2, and Summary by submission time", async () => {
-    const root = await createTempRoot();
-    const order: string[] = [];
-    const ask1Response = deferred<Response>();
-    const ask2Response = deferred<Response>();
-    const summaryResponse = deferred<Response>();
-    const ask1Started = deferred<void>();
-    const ask2Started = deferred<void>();
-    const summaryStarted = deferred<void>();
-    const runtime = createRuntime(root, [new FakeManager(createModels())], {
-      createChatSession: () => {
-        let label = "unknown";
-        return fakeChatSession({
-          processRequest: async (request) => {
-            const text = requestText(request);
-            if (text.includes("FINAL TRANSCRIPT:")) {
-              label = "summary";
-              order.push("summary-start");
-              summaryStarted.resolve();
-              return summaryResponse.promise;
-            }
-            if (text.includes("ASK_ONE")) {
-              label = "ask1";
-              order.push("ask1-start");
-              ask1Started.resolve();
-              return ask1Response.promise;
-            }
-            label = "ask2";
-            order.push("ask2-start");
-            ask2Started.resolve();
-            return ask2Response.promise;
-          },
-          dispose: () => order.push(`${label}-dispose`),
-        });
-      },
-    });
-    await runtime.prepare(false);
-
-    const ask1 = runtime.runAssistantTurn({ prompt: "ASK_ONE" }, { operationId: "ask-1" });
-    await ask1Started.promise;
-    const ask2 = runtime.runAssistantTurn({ prompt: "ASK_TWO" }, { operationId: "ask-2" });
-    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(order).toEqual(["ask1-start"]);
-
-    ask1Response.resolve(textResponse("First answer."));
-    await expect(ask1).resolves.toMatchObject({ text: "First answer." });
-    await ask2Started.promise;
-    expect(order.indexOf("ask1-dispose")).toBeLessThan(order.indexOf("ask2-start"));
-    expect(order).not.toContain("summary-start");
-
-    ask2Response.resolve(textResponse("Second answer."));
-    await expect(ask2).resolves.toMatchObject({ text: "Second answer." });
-    await summaryStarted.promise;
-    expect(order.indexOf("ask2-dispose")).toBeLessThan(order.indexOf("summary-start"));
-
-    summaryResponse.resolve(
-      textResponse('{"overview":"Summary.","details":["One.","Two.","Three.","Four."]}'),
-    );
-    await expect(summary).resolves.toMatchObject({ response: { finishReason: "stop" } });
-    await runtime.shutdown();
-  });
-
-  it("removes a cancelled pending assistant ticket without overtaking later summary work", async () => {
-    const root = await createTempRoot();
-    const order: string[] = [];
-    const events: Array<{ readonly ticketId: string; readonly phase: string }> = [];
-    const ask1Response = deferred<Response>();
-    const ask1Started = deferred<void>();
-    const summaryStarted = deferred<void>();
-    const pendingController = new AbortController();
-    const runtime = createRuntime(root, [new FakeManager(createModels())], {
-      onSharedQwenLifecycle: (event) => events.push(event),
-      createChatSession: () =>
-        fakeChatSession({
-          processRequest: async (request) => {
-            const text = requestText(request);
-            if (text.includes("FINAL TRANSCRIPT:")) {
-              order.push("summary-start");
-              summaryStarted.resolve();
-              return textResponse('{"overview":"Summary.","details":["One.","Two.","Three.","Four."]}');
-            }
-            order.push(text.includes("ASK_ONE") ? "ask1-start" : "ask2-start");
-            if (text.includes("ASK_ONE")) {
-              ask1Started.resolve();
-              return ask1Response.promise;
-            }
-            return textResponse("Cancelled answer.");
-          },
-        }),
-    });
-    await runtime.prepare(false);
-
-    const ask1 = runtime.runAssistantTurn({ prompt: "ASK_ONE" }, { operationId: "ask-1" });
-    await ask1Started.promise;
-    const ask2 = runtime.runAssistantTurn(
-      { prompt: "ASK_TWO" },
-      { operationId: "ask-2", signal: pendingController.signal },
-    );
-    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
-    pendingController.abort(new Error("Cancel pending Ask2."));
-    await expect(ask2).rejects.toMatchObject({ name: "AbortError" });
-
-    ask1Response.resolve(textResponse("First answer."));
-    await expect(ask1).resolves.toMatchObject({ text: "First answer." });
-    await summaryStarted.promise;
-    await expect(summary).resolves.toMatchObject({ response: { finishReason: "stop" } });
-
-    expect(order).toEqual(["ask1-start", "summary-start"]);
-    expect(events).toEqual(
-      expect.arrayContaining([expect.objectContaining({ ticketId: "ask-2", phase: "cancelled" })]),
-    );
-    await runtime.shutdown();
-  });
-
-  it("keeps later work blocked until an actively cancelled assistant session is disposed", async () => {
-    const root = await createTempRoot();
-    const order: string[] = [];
-    const askResponse = deferred<Response>();
-    const askStarted = deferred<void>();
-    const summaryStarted = deferred<void>();
-    const controller = new AbortController();
-    const runtime = createRuntime(root, [new FakeManager(createModels())], {
-      createChatSession: () => {
-        let assistant = false;
-        return fakeChatSession({
-          processRequest: async (request) => {
-            if (requestText(request).includes("FINAL TRANSCRIPT:")) {
-              order.push("summary-start");
-              summaryStarted.resolve();
-              return textResponse('{"overview":"Summary.","details":["One.","Two.","Three.","Four."]}');
-            }
-            assistant = true;
-            order.push("ask-start");
-            askStarted.resolve();
-            return askResponse.promise;
-          },
-          dispose: () => {
-            if (assistant) {
-              order.push("ask-dispose");
-            }
-          },
-        });
-      },
-    });
-    await runtime.prepare(false);
-
-    const ask = runtime.runAssistantTurn(
-      { prompt: "Hold until native cleanup." },
-      { operationId: "ask-active", signal: controller.signal },
-    );
-    await askStarted.promise;
-    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
-    controller.abort(new Error("Cancel active Ask."));
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(order).toEqual(["ask-start"]);
-
-    askResponse.resolve(textResponse("Stale answer."));
-    await expect(ask).rejects.toMatchObject({ name: "AbortError" });
-    await summaryStarted.promise;
-    await expect(summary).resolves.toMatchObject({ response: { finishReason: "stop" } });
-    expect(order.indexOf("ask-dispose")).toBeLessThan(order.indexOf("summary-start"));
-    await runtime.shutdown();
-  });
-
-  it("runs multiple summaries in exact submission order", async () => {
-    const root = await createTempRoot();
-    const starts: string[] = [];
-    const firstResponse = deferred<Response>();
-    const secondResponse = deferred<Response>();
-    const firstStarted = deferred<void>();
-    const secondStarted = deferred<void>();
-    const runtime = createRuntime(root, [new FakeManager(createModels())], {
-      createChatSession: () =>
-        fakeChatSession({
-          processRequest: async (request) => {
-            const label = requestText(request).includes("FIRST") ? "first" : "second";
-            starts.push(label);
-            if (label === "first") {
-              firstStarted.resolve();
-              return firstResponse.promise;
-            }
-            secondStarted.resolve();
-            return secondResponse.promise;
-          },
-        }),
-    });
-    await runtime.prepare(false);
-
-    const first = runtime.summarize(genericSummaryTranscript("FIRST"));
-    await firstStarted.promise;
-    const second = runtime.summarize(genericSummaryTranscript("SECOND"));
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(starts).toEqual(["first"]);
-
-    firstResponse.resolve(textResponse('{"overview":"First.","details":["One.","Two.","Three.","Four."]}'));
-    await expect(first).resolves.toMatchObject({ response: { finishReason: "stop" } });
-    await secondStarted.promise;
-    secondResponse.resolve(textResponse('{"overview":"Second.","details":["One.","Two.","Three.","Four."]}'));
-    await expect(second).resolves.toMatchObject({ response: { finishReason: "stop" } });
-    expect(starts).toEqual(["first", "second"]);
-    await runtime.shutdown();
-  });
-
-  it("serializes multiple summaries and cancels all queued tickets during reset", async () => {
-    const root = await createTempRoot();
-    const starts: string[] = [];
-    const firstResponse = deferred<Response>();
-    const firstStarted = deferred<void>();
-    const runtime = createRuntime(root, [new FakeManager(createModels())], {
-      createChatSession: () =>
-        fakeChatSession({
-          processRequest: async (request) => {
-            const text = requestText(request);
-            const label = text.includes("FIRST") ? "first" : "second";
-            starts.push(label);
-            if (label === "first") {
-              firstStarted.resolve();
-              return firstResponse.promise;
-            }
-            return textResponse('{"overview":"Second.","details":["One.","Two.","Three.","Four."]}');
-          },
-        }),
-    });
-    await runtime.prepare(false);
-
-    const first = runtime.summarize(genericSummaryTranscript("FIRST"));
-    await firstStarted.promise;
-    const second = runtime.summarize(genericSummaryTranscript("SECOND"));
-    const reset = runtime.reset();
-    firstResponse.resolve(textResponse('{"overview":"First.","details":["One.","Two.","Three.","Four."]}'));
-
-    await expect(first).rejects.toMatchObject({ name: "AbortError" });
-    await expect(second).rejects.toMatchObject({ name: "AbortError" });
-    await expect(reset).resolves.toBeUndefined();
-    expect(starts).toEqual(["first"]);
     await runtime.shutdown();
   });
 
@@ -711,12 +340,8 @@ describe("FoundryRecorderRuntime", () => {
 
   it("preserves exact Whisper text through the controller and exact Qwen prompt input", async () => {
     const root = await createTempRoot();
-    const exact =
-      "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.\nFourth line stays exact.  ";
-    const rawSummary = `\n  ${JSON.stringify({
-      overview: "  Summary with exact outer whitespace.  ",
-      details: ["  First fact.  ", "  Second fact.  ", "  Third fact.  ", "  Fourth fact.  "],
-    })}  \n`;
+    const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
+    const rawSummary = "\n  Summary with exact outer whitespace.  \n";
     let summaryPrompt = "";
     const manager = new FakeManager(createModels());
     const runtime = createRuntime(root, [manager], {
@@ -747,15 +372,7 @@ describe("FoundryRecorderRuntime", () => {
       expect(final.snapshot.transcript.finalText).toBe(exact);
       expect(summary.summaryInput).toBe(exact);
       expect(summaryPrompt).toBe(summaryUserPrompt(exact));
-      expect(summary.snapshot.transcript.summary?.text).toBe(
-        [
-          "Summary with exact outer whitespace.",
-          "• First fact.",
-          "• Second fact.",
-          "• Third fact.",
-          "• Fourth fact.",
-        ].join("\n"),
-      );
+      expect(summary.snapshot.transcript.summary?.text).toBe("Summary with exact outer whitespace.");
       expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
         detail: rawSummary,
         summaryDisplayFormattingApplied: true,
@@ -1253,7 +870,7 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const failure = await captureFailure(runtime.summarize(genericSummaryTranscript("Exact")));
+    const failure = await captureFailure(runtime.summarize("Exact transcript"));
 
     expect(errorMessages(failure)).toEqual(
       expect.arrayContaining([
@@ -1327,7 +944,7 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
+    const summary = runtime.summarize("Exact transcript");
     await requestReady.promise;
     const shutdown = runtime.shutdown();
     responseDeferred.resolve(textResponse("stale summary"));
@@ -1419,7 +1036,7 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
+    const summary = runtime.summarize("Exact transcript");
     await requestReady.promise;
     const shutdown = runtime.shutdown();
     await vi.waitFor(() => expect(cancelSpy).not.toBeNull());
@@ -1557,9 +1174,7 @@ describe("FoundryRecorderRuntime", () => {
       required: true,
       completionPending: true,
     });
-    await expect(runtime.summarize(genericSummaryTranscript("blocked"))).rejects.toThrow(
-      "blocked for cleanup",
-    );
+    await expect(runtime.summarize("blocked")).rejects.toThrow("blocked for cleanup");
     expect(dispose).not.toHaveBeenCalled();
     expect(order).not.toContain("temp-remove");
     expect(store.activeCount).toBe(1);
@@ -1609,7 +1224,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.prepare(false);
     order.length = 0;
 
-    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
+    const summary = runtime.summarize("Exact transcript");
     await requestReady.promise;
     const shutdownFailure = await captureFailure(runtime.shutdown());
     const cleanupCompletion = runtime.cleanupCompletion;
@@ -1647,23 +1262,8 @@ describe("FoundryRecorderRuntime", () => {
     const nemotronDispose = vi.fn(() => {
       order.push("nemotron-session-dispose");
     });
-    const exactWhisperFinal = genericSummaryTranscript("Exact Whisper");
-    const whisperProcess = vi.fn(async () => speechResponse(exactWhisperFinal));
-    const exactQwenSummary = [
-      "Exact Qwen summary.",
-      "• First fact.",
-      "• Second fact.",
-      "• Third fact.",
-      "• Fourth fact.",
-    ].join("\n");
-    const qwenProcess = vi.fn(async () =>
-      textResponse(
-        JSON.stringify({
-          overview: "Exact Qwen summary.",
-          details: ["First fact.", "Second fact.", "Third fact.", "Fourth fact."],
-        }),
-      ),
-    );
+    const whisperProcess = vi.fn(async () => speechResponse("Exact Whisper final."));
+    const qwenProcess = vi.fn(async () => textResponse("Exact Qwen summary."));
     const stream: StreamingResponse = {
       response: streamSettled.promise.then(() => speechResponse("stale live transcript")),
       [Symbol.asyncIterator]() {
@@ -1725,9 +1325,9 @@ describe("FoundryRecorderRuntime", () => {
     });
     const summary = await controller.generateSummary();
 
-    expect(final.result.transcript).toBe(exactWhisperFinal);
-    expect(summary.summaryInput).toBe(exactWhisperFinal);
-    expect(summary.snapshot.transcript.summary?.text).toBe(exactQwenSummary);
+    expect(final.result.transcript).toBe("Exact Whisper final.");
+    expect(summary.summaryInput).toBe("Exact Whisper final.");
+    expect(summary.snapshot.transcript.summary?.text).toBe("Exact Qwen summary.");
     expect(whisperProcess).toHaveBeenCalledOnce();
     expect(qwenProcess).toHaveBeenCalledOnce();
     expect(summary.snapshot.trace.find((entry) => entry.phase === "live-caption-warning")).toMatchObject({
@@ -1946,7 +1546,7 @@ describe("FoundryRecorderRuntime", () => {
     expect(manager.dispose).toHaveBeenCalledOnce();
   });
 
-  it("uses one manager and the exact GPU vision slot for text assistant turns", async () => {
+  it("uses one manager and the exact CPU vision slot for text assistant turns", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const manager = new FakeManager(models);
@@ -1975,8 +1575,8 @@ describe("FoundryRecorderRuntime", () => {
       source: "shared_summary_assistant_slot",
       task: "vision-language-chat",
       runtime: {
-        deviceType: SUMMARY_DEVICE_TYPE,
-        executionProvider: SUMMARY_EXECUTION_PROVIDER,
+        deviceType: DeviceType.CPU,
+        executionProvider: AUDIO_EXECUTION_PROVIDER,
       },
     });
     expect(manager.catalog.getModelVariant).toHaveBeenCalledWith(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
@@ -2014,8 +1614,8 @@ describe("FoundryRecorderRuntime", () => {
       modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
       source: "shared_summary_assistant_slot",
       runtime: {
-        deviceType: SUMMARY_DEVICE_TYPE,
-        executionProvider: SUMMARY_EXECUTION_PROVIDER,
+        deviceType: DeviceType.CPU,
+        executionProvider: AUDIO_EXECUTION_PROVIDER,
       },
     });
     expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
@@ -2030,7 +1630,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("keeps all core slots loaded when optional GPU vision inference fails", async () => {
+  it("keeps all core slots loaded when optional CPU vision inference fails", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const manager = new FakeManager(models);
@@ -2168,20 +1768,19 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("blocks new shared-Qwen work behind a cancelled assistant drain and bounds reset and shutdown", async () => {
+  it("runs core summary while a cancelled assistant request never settles and defers shutdown once", async () => {
     const root = await createTempRoot();
     const order: string[] = [];
     const models = createModels(order);
     const manager = new FakeManager(models, { order });
     const assistantResponse = deferred<Response>();
     const assistantStarted = deferred<void>();
-    const summaryStarted = vi.fn();
     const assistantDispose = vi.fn(() => {
       order.push("assistant-session-dispose");
     });
     const visionModel = models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
     if (visionModel === undefined) {
-      throw new Error("Expected the shared GPU VLM.");
+      throw new Error("Expected the optional CPU VLM.");
     }
     const visionUnload = vi.spyOn(visionModel, "unload");
     const runtime = createRuntime(root, [manager], {
@@ -2191,8 +1790,11 @@ describe("FoundryRecorderRuntime", () => {
         let assistantSession = false;
         return fakeChatSession({
           processRequest: async (request) => {
-            if (requestText(request).includes("FINAL TRANSCRIPT:")) {
-              summaryStarted();
+            const requestText = Array.from({ length: request.itemCount }, (_value, index) => {
+              const item = request.getItem(index);
+              return item.type === "message" && typeof item.content === "string" ? item.content : "";
+            }).join("\n");
+            if (requestText.includes("FINAL TRANSCRIPT:")) {
               return textResponse("Core summary completed.");
             }
             assistantSession = true;
@@ -2215,11 +1817,10 @@ describe("FoundryRecorderRuntime", () => {
     const assistantDrain = runtime.resetAssistant();
     expect(runtime.assistantStatus).toMatchObject({ active: false, draining: true });
 
-    const summary = runtime.summarize(genericSummaryTranscript("Exact core"));
-    void summary.catch(() => undefined);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(summaryStarted).not.toHaveBeenCalled();
+    await expect(runtime.summarize("Exact core transcript.")).resolves.toMatchObject({
+      text: "Core summary completed.",
+      model: { id: SUMMARY_MODEL_ID },
+    });
     await expect(runtime.runAssistantTurn({ prompt: "Replacement." })).rejects.toThrow(
       "cleanup is still draining",
     );
@@ -2230,8 +1831,6 @@ describe("FoundryRecorderRuntime", () => {
       "Foundry Local shutdown cleanup did not settle within 10 ms.",
     );
     expect(cleanupCompletion).not.toBeNull();
-    await expect(summary).rejects.toMatchObject({ name: "AbortError" });
-    expect(summaryStarted).not.toHaveBeenCalled();
     expect(manager.shutdown).not.toHaveBeenCalled();
     expect(manager.dispose).not.toHaveBeenCalled();
 
@@ -2252,7 +1851,6 @@ interface RuntimeFactoryOptions {
   readonly settlementTimeoutMs?: number;
   readonly createAudioSession?: NonNullable<FoundryRecorderRuntimeOptions["createAudioSession"]>;
   readonly createChatSession?: NonNullable<FoundryRecorderRuntimeOptions["createChatSession"]>;
-  readonly onSharedQwenLifecycle?: NonNullable<FoundryRecorderRuntimeOptions["onSharedQwenLifecycle"]>;
 }
 
 function createRuntime(
@@ -2273,9 +1871,6 @@ function createRuntime(
     },
     createAudioSession: options.createAudioSession ?? (() => fakeAudioSession()),
     createChatSession: options.createChatSession ?? (() => fakeChatSession()),
-    ...(options.onSharedQwenLifecycle === undefined
-      ? {}
-      : { onSharedQwenLifecycle: options.onSharedQwenLifecycle }),
     ...(options.settlementTimeoutMs === undefined
       ? {}
       : { settlementTimeoutMs: options.settlementTimeoutMs }),
@@ -2494,10 +2089,10 @@ function createModels(order?: string[]): ReadonlyMap<string, FakeModel> {
         QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
         "qwen-vision",
         "vision-language-chat",
-        SUMMARY_EXECUTION_PROVIDER,
+        AUDIO_EXECUTION_PROVIDER,
         order,
         {
-          deviceType: SUMMARY_DEVICE_TYPE,
+          deviceType: DeviceType.CPU,
           inputModalities: '["text", "image"]',
           outputModalities: "text",
         },
@@ -2538,8 +2133,8 @@ function fakeChatSession(
     turnCount: 0,
     preflightRequest: async (): Promise<RequestPreflightResult> => ({
       promptTokens: 10,
-      outputReserveTokens: 512,
-      requiredTokens: 522,
+      outputReserveTokens: 260,
+      requiredTokens: 270,
       contextLimitTokens: 4_096,
       fits: true,
       deficitTokens: 0,
@@ -2561,19 +2156,12 @@ function speechResponse(text: string): Response {
   };
 }
 
-function textResponse(text: string, finishReason: string = "stop"): Response {
+function textResponse(text: string): Response {
   return {
     output: [{ type: "text", text }],
-    finishReason: finishReason as Response["finishReason"],
+    finishReason: "stop",
     usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
   };
-}
-
-function requestText(request: Request): string {
-  return Array.from({ length: request.itemCount }, (_value, index) => {
-    const item = request.getItem(index);
-    return item.type === "message" && typeof item.content === "string" ? item.content : "";
-  }).join("\n");
 }
 
 function completedAudioStream(text: string): StreamingResponse {
@@ -2595,15 +2183,6 @@ function capturePayload() {
     durationMs: 1_000,
     data: new ArrayBuffer(32_000),
   } as const;
-}
-
-function genericSummaryTranscript(label: string): string {
-  return [
-    `${label} fact one is recorded.`,
-    `${label} fact two remains local.`,
-    `${label} fact three is complete.`,
-    `${label} fact four closes the transcript.`,
-  ].join(" ");
 }
 
 function validatedCapture(): ValidatedAudioCapture {

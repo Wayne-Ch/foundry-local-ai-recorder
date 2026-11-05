@@ -5,7 +5,6 @@ import type {
   AssistantImageByteLifecycle,
   AssistantImageBytePurpose,
 } from "../src/assistant/image-byte-lifecycle";
-import type { PreparedAssistantInferenceImage } from "../src/assistant/image-inference";
 import {
   type AssistantImagePickerDependencies,
   type AssistantImagePickerGuard,
@@ -89,40 +88,6 @@ describe("assistant image picker ownership", () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
-  it("zeroes the prepared inference PNG when Reset wins after preprocessing", async () => {
-    const inference = deferred<PreparedAssistantInferenceImage>();
-    const fileBytes = Buffer.from(pngHeader());
-    const inferenceBytes = pngHeader();
-    const lifecycle = new TrackingImageByteLifecycle();
-    let current = true;
-    const commit = vi.fn();
-    const selection = pickAssistantImage(
-      dependencies({
-        readFile: async () => fileBytes,
-        createInferenceImage: async () => {
-          inference.markStarted();
-          return inference.promise;
-        },
-        imageByteLifecycle: lifecycle,
-      }),
-      guard(() => current, commit),
-    );
-    await vi.waitFor(() => expect(inference.started).toBe(true));
-
-    current = false;
-    inference.resolve(preparedInferenceImage(inferenceBytes));
-
-    await expect(selection).rejects.toThrow("stale");
-    expect(fileBytes.every((value) => value === 0)).toBe(true);
-    expect(inferenceBytes.every((value) => value === 0)).toBe(true);
-    expect(lifecycle.releases.map(({ purpose }) => purpose)).toEqual([
-      "picker-file",
-      "validated-image",
-      "prepared-inference-image",
-    ]);
-    expect(commit).not.toHaveBeenCalled();
-  });
-
   it("rejects a stale renderer owner after stat and before any read", async () => {
     const stat = deferred<{ readonly size: number }>();
     let ownerCurrent = true;
@@ -157,7 +122,6 @@ function dependencies(
     stat: async () => ({ size: 24 }),
     readFile: async () => pngHeader(),
     createThumbnail: async () => "data:image/png;base64,abc",
-    createInferenceImage: async () => preparedInferenceImage(pngHeader()),
     ...overrides,
   };
 }
@@ -183,17 +147,6 @@ function pngHeader(): Uint8Array {
   bytes.set([0x49, 0x48, 0x44, 0x52], 12);
   bytes.set([0, 0, 0, 1, 0, 0, 0, 1], 16);
   return bytes;
-}
-
-function preparedInferenceImage(bytes: Uint8Array): PreparedAssistantInferenceImage {
-  return {
-    mimeType: "image/png",
-    format: "png",
-    sizeBytes: bytes.byteLength,
-    width: 1,
-    height: 1,
-    bytes,
-  };
 }
 
 class TrackingImageByteLifecycle implements AssistantImageByteLifecycle {

@@ -1,12 +1,9 @@
 export type AssistantImageBytePurpose =
   | "selected-image"
-  | "selected-inference-image"
   | "assistant-operation"
   | "native-request"
   | "picker-file"
-  | "validated-image"
-  | "encoded-inference-image"
-  | "prepared-inference-image";
+  | "validated-image";
 
 export interface AssistantImageByteLifecycle {
   copy(source: Uint8Array, purpose: AssistantImageBytePurpose): Uint8Array;

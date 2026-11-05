@@ -12,12 +12,9 @@ import { validateImage } from "../src/assistant/image-security";
 import { formatAssistantPlainText } from "../src/assistant/plain-text";
 import { FoundryRecorderRuntime } from "../src/foundry/foundry-runtime";
 import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
-import { SUMMARY_DEVICE_TYPE, SUMMARY_EXECUTION_PROVIDER } from "../src/foundry/runtime-config";
 import { parseImageAnalysisNote } from "../src/main/assistant-controller";
 import { RecorderController } from "../src/main/recorder-controller";
-import { prepareFixtureInferenceImage } from "./integration-image";
 import { assertSummaryDisplayText } from "./integration-utils";
-import { SUMMARY_FACT_CONTRACTS, summaryFactViolations } from "./summary-fact-contract";
 
 assert.equal(
   process.platform,
@@ -67,13 +64,8 @@ const runtime = new FoundryRecorderRuntime({
 const controller = new RecorderController(runtime);
 const transcript =
   "An ordinary differential equation relates a function to its derivatives. For the first order equation y prime equals negative two y, separate the variables. The solution is y of t equals c times e to the negative two t for decay over time. If y of 0 equals 3, then c equals 3.";
-const odeFactContract = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "ode");
-if (odeFactContract === undefined) {
-  throw new Error("The ODE summary fact contract is unavailable.");
-}
 let sourceBytes: Uint8Array | null = null;
 let imageBytes: Uint8Array | null = null;
-let inferenceImageBytes: Uint8Array | null = null;
 
 try {
   const prepareStartedAt = performance.now();
@@ -84,8 +76,6 @@ try {
   const rssAfterPrepareBytes = process.memoryUsage().rss;
   expectThreeReady(prepared.snapshot);
   assert.equal(prepared.snapshot.readiness.summary.model?.id, QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
-  assert.equal(prepared.snapshot.readiness.summary.model?.deviceType, SUMMARY_DEVICE_TYPE);
-  assert.equal(prepared.snapshot.readiness.summary.model?.executionProvider, SUMMARY_EXECUTION_PROVIDER);
   offline = true;
 
   controller.editTranscript(transcript);
@@ -100,7 +90,8 @@ try {
       .slice(1)
       .every((line) => line.startsWith("• ")),
   );
-  assert.deepEqual(summaryFactViolations(odeFactContract, visibleSummary), []);
+  assert.match(visibleSummary, /\b(?:ordinary differential equation|ODE)\b/iu);
+  assert.match(visibleSummary, /(?:c\s*=\s*3|c equals 3)/iu);
 
   const askStartedAt = performance.now();
   const ask = await runtime.runAssistantTurn(
@@ -132,15 +123,13 @@ try {
     bytes: sourceBytes,
   });
   imageBytes = image.bytes;
-  const inferenceImage = await prepareFixtureInferenceImage(path.resolve("fixtures", "ode-slide.png"), image);
-  inferenceImageBytes = inferenceImage.bytes;
   const imageContext = buildImageAnalysisContext(summary.snapshot.transcript);
   const imageStartedAt = performance.now();
   const analysis = await runtime.runAssistantTurn(
     {
       systemPrompt: assistantSystemPrompt("classroom"),
       prompt: imageAnalysisPrompt(imageContext),
-      images: [{ kind: "data", format: inferenceImage.format, data: inferenceImage.bytes }],
+      images: [{ kind: "data", format: "png", data: imageBytes }],
     },
     {
       requestOptions: {
@@ -165,28 +154,30 @@ try {
     /(ordinary differential|dy\/dt|derivative|decay)/iu,
   );
 
-  const sequentialReuseStartedAt = performance.now();
-  const repeatedSummary = await runtime.summarize(transcript);
-  const repeatedAsk = await runtime.runAssistantTurn(
-    {
-      systemPrompt: assistantSystemPrompt("classroom"),
-      prompt: chatUserPrompt(
-        "What is ODE? Answer in one sentence.",
-        buildAssistantContext(summary.snapshot.transcript, null),
-      ),
-    },
-    {
-      requestOptions: {
-        search: { doSample: false, temperature: 0, seed: 42, maxOutputTokens: 100 },
-        toolChoice: "none",
-        additionalOptions: {
-          chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
+  const concurrentStartedAt = performance.now();
+  const [concurrentSummary, concurrentAsk] = await Promise.all([
+    runtime.summarize(transcript),
+    runtime.runAssistantTurn(
+      {
+        systemPrompt: assistantSystemPrompt("classroom"),
+        prompt: chatUserPrompt(
+          "What is ODE? Answer in one sentence.",
+          buildAssistantContext(summary.snapshot.transcript, null),
+        ),
+      },
+      {
+        requestOptions: {
+          search: { doSample: false, temperature: 0, seed: 42, maxOutputTokens: 100 },
+          toolChoice: "none",
+          additionalOptions: {
+            chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
+          },
         },
       },
-    },
-  );
-  assert.equal(repeatedSummary.response.finishReason, "stop");
-  assert.equal(repeatedAsk.response.finishReason, "stop");
+    ),
+  ]);
+  assert.equal(concurrentSummary.response.finishReason, "stop");
+  assert.equal(concurrentAsk.response.finishReason, "stop");
   assert.deepEqual(blockedAcquisitionAttempts, []);
   expectThreeReady(controller.bootstrap());
   peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
@@ -197,11 +188,6 @@ try {
       summary: visibleSummary,
       ask: formatAssistantPlainText(ask.text),
       imageNote: note,
-      inferenceImage: {
-        width: inferenceImage.width,
-        height: inferenceImage.height,
-        sizeBytes: inferenceImage.sizeBytes,
-      },
       prepareMs,
       rssAfterPrepareBytes,
       peakRssBytes,
@@ -209,7 +195,7 @@ try {
       summaryGenerationMs: summary.snapshot.transcript.summary?.durationMs ?? null,
       askMs,
       imageMs,
-      sequentialReuseWallMs: Math.round(performance.now() - sequentialReuseStartedAt),
+      concurrentWallMs: Math.round(performance.now() - concurrentStartedAt),
       catalogOrProviderAttemptsAfterPrepare: blockedAcquisitionAttempts.length,
       managerDisposedBeforeShutdown: disposedState(nativeManager),
     })}`,
@@ -218,7 +204,6 @@ try {
   clearInterval(rssTimer);
   sourceBytes?.fill(0);
   imageBytes?.fill(0);
-  inferenceImageBytes?.fill(0);
   await controller.shutdown();
 }
 

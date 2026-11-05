@@ -1466,7 +1466,7 @@ function renderAssistant(): void {
 }
 
 function renderModel(role: "whisper" | "nemotron" | "summary", readiness: ModelReadiness): void {
-  const deviceType = readiness.model?.deviceType ?? readiness.target.deviceType;
+  const deviceType = readiness.model?.deviceType ?? (role === "summary" ? "CPU" : null);
   elements.model[role].id.textContent = [
     readiness.target.modelId,
     deviceType,

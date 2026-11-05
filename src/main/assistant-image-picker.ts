@@ -5,7 +5,6 @@ import {
   type AssistantImageByteLifecycle,
   secureAssistantImageByteLifecycle,
 } from "../assistant/image-byte-lifecycle";
-import type { PreparedAssistantInferenceImage } from "../assistant/image-inference";
 import {
   declaredImageMimeType,
   MAX_IMAGE_BYTES,
@@ -22,18 +21,13 @@ export interface AssistantImagePickerDependencies {
   readonly showDialog: () => Promise<AssistantImagePickerDialogResult>;
   readonly readFile: (filePath: string) => Promise<Uint8Array>;
   readonly createThumbnail: (image: ValidatedImage) => Promise<string>;
-  readonly createInferenceImage: (image: ValidatedImage) => Promise<PreparedAssistantInferenceImage>;
   readonly stat?: (filePath: string) => Promise<{ readonly size: number }>;
   readonly imageByteLifecycle?: AssistantImageByteLifecycle;
 }
 
 export interface AssistantImagePickerGuard {
   assertCurrent(): void;
-  commit(
-    image: ValidatedImage,
-    thumbnailDataUrl: string,
-    inferenceImage: PreparedAssistantInferenceImage,
-  ): AssistantLaneSnapshot;
+  commit(image: ValidatedImage, thumbnailDataUrl: string): AssistantLaneSnapshot;
 }
 
 export async function pickAssistantImage(
@@ -50,7 +44,6 @@ export async function pickAssistantImage(
 
   let fileBytes: Uint8Array | null = null;
   let validatedBytes: Uint8Array | null = null;
-  let inferenceBytes: Uint8Array | null = null;
   try {
     const file = await (dependencies.stat ?? statFile)(filePath);
     guard.assertCurrent();
@@ -71,19 +64,13 @@ export async function pickAssistantImage(
 
     const thumbnailDataUrl = await dependencies.createThumbnail(validated);
     guard.assertCurrent();
-    const inferenceImage = await dependencies.createInferenceImage(validated);
-    inferenceBytes = inferenceImage.bytes;
-    guard.assertCurrent();
-    return guard.commit(validated, thumbnailDataUrl, inferenceImage);
+    return guard.commit(validated, thumbnailDataUrl);
   } finally {
     if (fileBytes !== null) {
       imageByteLifecycle.release(fileBytes, "picker-file");
     }
     if (validatedBytes !== null) {
       imageByteLifecycle.release(validatedBytes, "validated-image");
-    }
-    if (inferenceBytes !== null) {
-      imageByteLifecycle.release(inferenceBytes, "prepared-inference-image");
     }
   }
 }

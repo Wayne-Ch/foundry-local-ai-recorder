@@ -13,10 +13,6 @@ import {
   type WebFrameMain,
 } from "electron";
 import type { AssistantLaneSnapshot } from "../assistant/assistant-types";
-import {
-  type AssistantInferenceImageDimensions,
-  prepareAssistantInferenceImage,
-} from "../assistant/image-inference";
 import type { ValidatedImage } from "../assistant/image-security";
 import type {
   AudioCapturePayload,
@@ -90,7 +86,6 @@ const rendererPermissionOrigin = permissionOriginForDocument(rendererDocumentUrl
 const microphonePermissionProbeEnabled = process.env.ENHANCED_AI_RECORDER_MIC_PERMISSION_PROBE === "1";
 const streamOwnerProbeEnabled = process.env.ENHANCED_AI_RECORDER_STREAM_OWNER_PROBE === "1";
 const prepareUiProbeEnabled = process.env.ENHANCED_AI_RECORDER_PREPARE_UI_PROBE === "1";
-const smokeAndExitEnabled = process.env.ENHANCED_AI_RECORDER_SMOKE_AND_EXIT === "1";
 const streamOwnerReloadProbeId = "00000000-0000-4000-8000-000000000001";
 const streamOwnerCloseProbeId = "00000000-0000-4000-8000-000000000002";
 const streamOwnerProbeIds = new Set([streamOwnerReloadProbeId, streamOwnerCloseProbeId]);
@@ -219,11 +214,11 @@ function createWindow(): BrowserWindow {
 
   void webContents.loadURL(rendererDocumentUrl);
   window.once("ready-to-show", () => {
-    if (!window.isDestroyed() && !prepareUiProbeEnabled && !smokeAndExitEnabled) {
+    if (!window.isDestroyed() && !prepareUiProbeEnabled) {
       window.show();
     }
   });
-  if (smokeAndExitEnabled) {
+  if (process.env.ENHANCED_AI_RECORDER_SMOKE_AND_EXIT === "1") {
     webContents.once("did-finish-load", () => setTimeout(() => app.quit(), 3_000));
   }
   if (microphonePermissionProbeEnabled) {
@@ -448,21 +443,15 @@ function registerIpc(): void {
           }),
         readFile,
         createThumbnail: async (image) => createSafeThumbnail(image),
-        createInferenceImage: async (image) => createBoundedInferenceImage(image),
       },
       {
         assertCurrent: () => {
           assertAssistantLease(renderer, pickerToken.ownerSessionId);
           assistantController.assertImagePickerToken(pickerToken);
         },
-        commit: (image, thumbnailDataUrl, inferenceImage) => {
+        commit: (image, thumbnailDataUrl) => {
           assertAssistantLease(renderer, pickerToken.ownerSessionId);
-          const snapshot = assistantController.selectImage(
-            image,
-            thumbnailDataUrl,
-            inferenceImage,
-            pickerToken,
-          );
+          const snapshot = assistantController.selectImage(image, thumbnailDataUrl, pickerToken);
           routeAssistantUpdate(renderer, snapshot, pickerToken.ownerSessionId);
           return snapshot;
         },
@@ -654,36 +643,6 @@ function createSafeThumbnail(image: ValidatedImage): string {
     throw new Error("The selected image thumbnail was not encoded as a safe PNG.");
   }
   return dataUrl;
-}
-
-function createBoundedInferenceImage(image: ValidatedImage) {
-  return prepareAssistantInferenceImage(image, (source, target) => transcodeInferencePng(source, target));
-}
-
-function transcodeInferencePng(source: Uint8Array, target: AssistantInferenceImageDimensions) {
-  const decoded = nativeImage.createFromBuffer(
-    Buffer.from(source.buffer, source.byteOffset, source.byteLength),
-  );
-  if (decoded.isEmpty()) {
-    throw new Error("The selected image could not be decoded for local inference.");
-  }
-  const decodedSize = decoded.getSize();
-  const output =
-    decodedSize.width === target.width && decodedSize.height === target.height
-      ? decoded
-      : decoded.resize({
-          width: target.width,
-          height: target.height,
-          quality: "good",
-        });
-  const outputSize = output.getSize();
-  return {
-    decodedWidth: decodedSize.width,
-    decodedHeight: decodedSize.height,
-    width: outputSize.width,
-    height: outputSize.height,
-    bytes: output.toPNG(),
-  };
 }
 
 function synchronizeAssistantTranscript(renderer: ReturnType<typeof assertTrustedRendererIpc>): void {
