@@ -50,7 +50,7 @@ import {
   type SafeDiagnosticContext,
   toSafeDiagnostic,
 } from "../shared/safe-diagnostic";
-import { SUMMARY_JSON_SCHEMA, SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../summary/summary-prompt";
+import { SUMMARY_SYSTEM_PROMPT, summaryRequestPlan } from "../summary/summary-prompt";
 import { ModelSlot } from "./model-slot";
 import { assertFoundryNativeRuntimeReady, foundryNativeRuntimeError } from "./native-runtime";
 import {
@@ -195,11 +195,14 @@ interface LifecycleCleanupGeneration {
 
 export interface SummaryGenerationResult {
   readonly text: string;
+  readonly finishReason: string;
   readonly durationMs: number;
   readonly model: ModelIdentity;
   readonly preflight: RequestPreflightResult;
   readonly response: Response;
 }
+
+export const SUMMARY_RAW_OUTPUT_MAX_CHARS = 2_500;
 
 export interface PrepareRuntimeResult {
   readonly readiness: RuntimeReadiness;
@@ -830,9 +833,10 @@ export class FoundryRecorderRuntime {
         operation.assertCurrent();
         const model = this.#requireModel("summary");
         const session = this.#createChatSession(model);
+        const summaryPlan = summaryRequestPlan(transcript);
         const summaryRequest = new Request()
           .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
-          .addItem(Item.userMessage(summaryUserPrompt(transcript)))
+          .addItem(Item.userMessage(summaryPlan.prompt))
           .setOptions({
             search: {
               doSample: false,
@@ -844,7 +848,7 @@ export class FoundryRecorderRuntime {
             additionalOptions: {
               chat_template_kwargs: JSON.stringify({ enable_thinking: false }),
               guidance_type: "json_schema",
-              guidance_data: SUMMARY_JSON_SCHEMA,
+              guidance_data: summaryPlan.jsonSchema,
             },
           });
         request = summaryRequest;
@@ -866,18 +870,19 @@ export class FoundryRecorderRuntime {
               this.#emitSharedQwenLifecycle(ticketId, "summary", "native_request_settled");
             }
             operation.assertCurrent();
-            if (response.finishReason !== "stop" && response.finishReason !== "length") {
-              throw new Error(`Summary generation ended with ${response.finishReason}.`);
-            }
-            const text = extractDefaultText(response);
-            if (!text.trim()) {
+            const finishReason =
+              typeof response.finishReason === "string" ? response.finishReason : "unknown";
+            const rawText = extractDefaultText(response);
+            const text = finishReason === "stop" ? rawText : rawText.slice(0, SUMMARY_RAW_OUTPUT_MAX_CHARS);
+            if (finishReason === "stop" && !text.trim()) {
               throw new Error("The local summary model returned no text.");
             }
-            if (text.length > 2_500) {
+            if (finishReason === "stop" && text.length > SUMMARY_RAW_OUTPUT_MAX_CHARS) {
               throw new Error("The local summary exceeded the prototype output bound.");
             }
             return {
               text,
+              finishReason,
               durationMs: Math.round(performance.now() - startedAt),
               model: modelIdentity("summary", model),
               preflight,

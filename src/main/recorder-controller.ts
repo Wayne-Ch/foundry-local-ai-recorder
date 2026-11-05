@@ -57,6 +57,7 @@ const TRACE_LIMIT = 250;
 const SAFE_BUILT_IN_MODEL_IDS = new Set(
   Object.values(resolveRuntimeTargets({})).map(({ modelId }) => modelId),
 );
+const KNOWN_SUMMARY_FINISH_REASONS = new Set(["length", "none", "toolCalls", "error"]);
 
 export interface RecorderRuntime {
   readonly readiness: RuntimeReadiness;
@@ -402,8 +403,11 @@ export class RecorderController {
       const result = await this.#runtime.summarize(submitted.text);
       this.#assertCurrent(generation);
       const rawTrace = this.#traceEvent("Foundry Local", "summary-raw", result.text);
-      if (result.response.finishReason !== "stop") {
-        throw new Error(`Summary generation ended with ${result.response.finishReason}.`);
+      if (result.finishReason !== "stop") {
+        const finishReason = KNOWN_SUMMARY_FINISH_REASONS.has(result.finishReason)
+          ? result.finishReason
+          : "unknown";
+        throw new Error(`Summary generation ended with ${finishReason}.`);
       }
       const decodedSummary = decodeSummaryModelOutput(result.text);
       const displaySummary = formatSummaryForDisplay(decodedSummary.text);

@@ -7,7 +7,11 @@ import {
 import { RecorderController } from "../src/main/recorder-controller";
 import { formatSummaryForDisplay } from "../src/summary/summary-format";
 import { assertSummaryDisplayText } from "./integration-utils";
-import { SUMMARY_FACT_CONTRACTS, summaryFactViolations } from "./summary-fact-contract";
+import {
+  GENERIC_SUMMARY_FACT_CONTRACT,
+  SUMMARY_FACT_CONTRACTS,
+  summaryFactViolations,
+} from "./summary-fact-contract";
 
 const controller = new RecorderController();
 try {
@@ -18,7 +22,7 @@ try {
   assert.equal(prepared.snapshot.readiness.summary.model?.deviceType, SUMMARY_DEVICE_TYPE);
   assert.equal(prepared.snapshot.readiness.summary.model?.executionProvider, SUMMARY_EXECUTION_PROVIDER);
   const results = [];
-  for (const fixture of SUMMARY_FACT_CONTRACTS) {
+  for (const fixture of [...SUMMARY_FACT_CONTRACTS, GENERIC_SUMMARY_FACT_CONTRACT]) {
     controller.editTranscript(fixture.text);
     const result = await controller.generateSummary().catch((error: unknown) => {
       const snapshot = controller.bootstrap();

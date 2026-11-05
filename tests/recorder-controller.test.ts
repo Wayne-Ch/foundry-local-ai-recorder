@@ -36,7 +36,7 @@ const targets = resolveRuntimeTargets({});
 class FakeRuntime implements RecorderRuntime {
   readonly readiness: RuntimeReadiness;
   summaryInput = "";
-  summaryFinishReason: Response["finishReason"] = "stop";
+  summaryFinishReason = "stop";
   lastCapture: ValidatedAudioCapture | null = null;
 
   constructor(
@@ -136,6 +136,7 @@ class FakeRuntime implements RecorderRuntime {
         fileSizeMb: 600,
       },
       preflight: preflight(),
+      finishReason: this.summaryFinishReason,
       response: response(this.summaryText, this.summaryFinishReason),
     };
   }
@@ -428,7 +429,7 @@ describe("RecorderController", () => {
         "THE TARGET REMAINS 250 MILLISECONDS!",
         "The next review is November 12.",
       ]),
-      expectedError: "repeated a detail fact",
+      expectedError: "repeated an overview or detail fact",
       finishReason: "stop" as const,
     },
     {
@@ -442,16 +443,27 @@ describe("RecorderController", () => {
       expectedError: "incomplete line",
       finishReason: "stop" as const,
     },
-    {
-      name: "length-finished output",
+    ...["length", "none", "toolCalls", "error"].map((finishReason) => ({
+      name: `${finishReason}-finished output`,
       raw: summaryJson("Project Atlas records the cache observation.", [
         "The target remains 250 milliseconds.",
         "Maya Chen owns the follow-up.",
         "The next review is November 12.",
         "The local model cache is enabled.",
       ]),
-      expectedError: "ended with length",
-      finishReason: "length" as const,
+      expectedError: `ended with ${finishReason}`,
+      finishReason,
+    })),
+    {
+      name: "unknown-finished output",
+      raw: summaryJson("Project Atlas records the cache observation.", [
+        "The target remains 250 milliseconds.",
+        "Maya Chen owns the follow-up.",
+        "The next review is November 12.",
+        "The local model cache is enabled.",
+      ]),
+      expectedError: "ended with unknown",
+      finishReason: "private-path-C:\\Users\\someone\\secret",
     },
   ])("traces raw $name but stores no summary", async ({ raw, expectedError, finishReason }) => {
     const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
@@ -775,11 +787,11 @@ function preflight(): RequestPreflightResult {
 
 function response(
   text = ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
-  finishReason: Response["finishReason"] = "stop",
+  finishReason: string = "stop",
 ): Response {
   return {
     output: [{ type: "text", text }],
-    finishReason,
+    finishReason: finishReason as Response["finishReason"],
     usage: { promptTokens: 50, completionTokens: 20, totalTokens: 70 },
   };
 }

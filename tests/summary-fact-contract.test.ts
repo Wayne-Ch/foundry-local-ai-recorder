@@ -1,16 +1,41 @@
 import { describe, expect, it } from "vitest";
 import {
+  GENERIC_SUMMARY_FACT_CONTRACT,
   SUMMARY_FACT_CONTRACTS,
   SUMMARY_ROLE_DISTINCTION_CONTRACT,
   summaryFactViolations,
 } from "../scripts/summary-fact-contract";
 import { formatSummaryPresentation } from "../src/summary/summary-format";
+import { GENERIC_SUMMARY_OVERVIEW } from "../src/summary/summary-prompt";
 
 describe("summary fact contracts", () => {
-  it.each(SUMMARY_FACT_CONTRACTS)("accepts the factual $id formatter fixture", (contract) => {
-    const summary = formatSummaryPresentation(contract.text).text;
+  const validSummaries = {
+    ode: [
+      "The transcript concerns an ordinary differential equation.",
+      "• An ordinary differential equation relates a function to its derivatives.",
+      "• For the first order equation y prime equals negative two y, separate the variables.",
+      "• The solution is y of t equals c times e to the negative two t for decay over time.",
+      "• If y of 0 equals 3, then c equals 3.",
+    ].join("\n"),
+    atlas: [
+      "The transcript concerns Project Atlas.",
+      "• Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache.",
+      "• The target remains 250 milliseconds.",
+      "• Maya Chen owns the follow-up.",
+      "• The next review is November 12.",
+    ].join("\n"),
+    aurora: [
+      "The transcript concerns Team Aurora.",
+      "• Team Aurora measured Battery Pack B at 82 watt-hours.",
+      "• The temperature was 25 degrees Celsius.",
+      "• After 100 cycles, capacity fell to 76 watt-hours, a decline of 6 watt-hours caused by repeated high-rate charging.",
+      "• Priya will rerun the test at 0.5 C on December 5.",
+    ].join("\n"),
+  } as const;
 
-    expect(summary.split("\n")).toHaveLength(5);
+  it.each(SUMMARY_FACT_CONTRACTS)("accepts the factual $id summary fixture", (contract) => {
+    const summary = validSummaries[contract.id];
+
     expect(summaryFactViolations(contract, summary)).toEqual([]);
   });
 
@@ -24,10 +49,22 @@ describe("summary fact contracts", () => {
       "• Cold start latency changed from 420 milliseconds to 280 milliseconds.",
       "• The team enabled the local model cache.",
       "• Maya Chen owns the follow-up.",
-      "• Project Atlas remains the named project.",
+      "• The next review is November 12.",
     ].join("\n");
 
     expect(summaryFactViolations(atlas, summary)).toEqual([]);
+  });
+
+  it("does not treat the generic meta overview as a transcript claim", () => {
+    const summary = [
+      GENERIC_SUMMARY_OVERVIEW,
+      "• The microphone stays local.",
+      "• Audio remains on the device.",
+      "• Reset clears the current session.",
+      "• Shutdown releases owned resources.",
+    ].join("\n");
+
+    expect(summaryFactViolations(GENERIC_SUMMARY_FACT_CONTRACT, summary)).toEqual([]);
   });
 
   it("rejects the captured GPU ODE substitution and repeated initial-condition bullets", () => {
@@ -238,8 +275,69 @@ describe("summary fact contracts", () => {
     ].join("\n");
 
     expect(summaryFactViolations(atlas, summary)).toEqual(
-      expect.arrayContaining([expect.stringContaining("invalid target value relationship")]),
+      expect.arrayContaining([expect.stringMatching(/not traceable|invalid target value relationship/u)]),
     );
+  });
+
+  it("rejects a valid latency relation combined with invented cache ownership", () => {
+    const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
+    if (atlas === undefined) {
+      throw new Error("Atlas contract missing.");
+    }
+    const summary = [
+      "The transcript concerns Project Atlas.",
+      "• Cold start latency changed from 420 milliseconds to 280 milliseconds, and the local model cache owns the follow-up.",
+      "• The target remains 250 milliseconds.",
+      "• Maya Chen owns the follow-up.",
+      "• The next review is November 12.",
+    ].join("\n");
+
+    expect(summaryFactViolations(atlas, summary)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/not traceable|invalid .*relationship/u)]),
+    );
+  });
+
+  it.each([
+    [
+      "atlas ownership role swap",
+      "atlas",
+      [
+        "The transcript concerns Project Atlas.",
+        "• Cold start latency changed from 420 milliseconds to 280 milliseconds.",
+        "• Maya Chen enabled the local model cache.",
+        "• The target remains 250 milliseconds.",
+        "• The next review is November 12.",
+      ].join("\n"),
+    ],
+    [
+      "aurora reversed cause",
+      "aurora",
+      [
+        "The transcript concerns Team Aurora.",
+        "• Team Aurora measured Battery Pack B at 82 watt-hours.",
+        "• The temperature was 25 degrees Celsius.",
+        "• Repeated high-rate charging was caused by the 6 watt-hour decline.",
+        "• Priya will rerun the test at 0.5 C on December 5.",
+      ].join("\n"),
+    ],
+    [
+      "aurora rerun owner swap",
+      "aurora",
+      [
+        "The transcript concerns Team Aurora.",
+        "• Team Aurora measured Battery Pack B at 82 watt-hours.",
+        "• The temperature was 25 degrees Celsius.",
+        "• Capacity fell to 76 watt-hours after 100 cycles.",
+        "• Battery Pack B will rerun the test at 0.5 C on December 5.",
+      ].join("\n"),
+    ],
+  ])("rejects %s", (_name, id, summary) => {
+    const contract = SUMMARY_FACT_CONTRACTS.find((candidate) => candidate.id === id);
+    if (contract === undefined) {
+      throw new Error(`${id} contract missing.`);
+    }
+
+    expect(summaryFactViolations(contract, summary)).not.toEqual([]);
   });
 
   it.each([

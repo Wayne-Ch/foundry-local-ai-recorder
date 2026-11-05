@@ -1,8 +1,15 @@
 import { canonicalSummarySemanticText, summarySemanticTokens } from "../src/summary/summary-canonical";
+import { GENERIC_SUMMARY_OVERVIEW } from "../src/summary/summary-prompt";
 
 export interface SummaryClaim {
   readonly id: string;
   readonly pattern: RegExp;
+}
+
+export interface SummaryRelationship {
+  readonly id: string;
+  readonly pattern: RegExp;
+  readonly claimIds: readonly string[];
 }
 
 export interface SummarySemanticGuard {
@@ -15,6 +22,7 @@ export interface SummaryFactContract {
   readonly id: string;
   readonly text: string;
   readonly claims: readonly SummaryClaim[];
+  readonly relationships: readonly SummaryRelationship[];
   readonly forbidden: readonly RegExp[];
   readonly allowedNumbers?: readonly string[];
   readonly allowedVocabulary?: readonly string[];
@@ -46,6 +54,53 @@ export const SUMMARY_FACT_CONTRACTS = [
       {
         id: "resolved-constant",
         pattern: /\bc\s*(?:=|equals|is(?:\s+determined\s+to\s+be)?)\s*3\b/iu,
+      },
+    ],
+    relationships: [
+      {
+        id: "subject-meta",
+        pattern:
+          /^(?:the\s+(?:transcript|recording)\s+concerns\s+an?\s+ordinary differential equation|(?:the\s+)?(?:ordinary differential equation|ODE)\s+is\s+(?:stated|described))[.!?]?$/iu,
+        claimIds: ["subject"],
+      },
+      {
+        id: "function-derivative-relation",
+        pattern:
+          /\b(?:ordinary differential equation|ODE)\b[^.\n]*\brelates?\b[^.\n]*\bfunction\b[^.\n]*\bderivatives?\b/iu,
+        claimIds: ["subject", "relation"],
+      },
+      {
+        id: "derivative-equation",
+        pattern:
+          /(?:\b(?:equation|relation)\b[^.\n]*?)?(?:y\s*[′']\s*=\s*[−-]2y|y prime equals negative two y)/iu,
+        claimIds: ["equation"],
+      },
+      {
+        id: "separation-method",
+        pattern: /\bseparat(?:e|ed|ing|ion)\b[^.\n]*\bvariables?\b/iu,
+        claimIds: ["separation"],
+      },
+      {
+        id: "general-solution",
+        pattern:
+          /(?:y\s*\(\s*t\s*\)\s*=\s*c\s*(?:[·*]?\s*)?e\^?\(?[−-]2t\)?|y of t equals c times e to the negative two t)/iu,
+        claimIds: ["general-solution"],
+      },
+      {
+        id: "decay-behavior",
+        pattern: /\b(?:behavior|solution|term)\b[^.\n]*\bdecay\b/iu,
+        claimIds: ["decay"],
+      },
+      {
+        id: "initial-value",
+        pattern: /(?:y\s*\(\s*0\s*\)\s*=\s*3|y of 0 equals 3|initial condition[^.\n]*3)/iu,
+        claimIds: ["initial-condition"],
+      },
+      {
+        id: "resolved-constant",
+        pattern:
+          /(?:\b(?:resolved\s+constant|constant\s+c)\b[^.\n]*(?:=|equals|is)\s*3\b|\bc\s*(?:=|equals|is)\s*3\b)/iu,
+        claimIds: ["resolved-constant"],
       },
     ],
     forbidden: [
@@ -129,6 +184,44 @@ export const SUMMARY_FACT_CONTRACTS = [
         pattern: /(?:\breview\b[^.\n]*\bNovember\s+12\b|\bNovember\s+12\b[^.\n]*\breview\b)/iu,
       },
     ],
+    relationships: [
+      {
+        id: "subject-meta",
+        pattern:
+          /^(?:the\s+(?:transcript|recording)\s+concerns\s+Project Atlas|Project Atlas\s+(?:is\s+the\s+(?:explicit|named)\s+project|records\s+(?:explicit\s+)?(?:(?:project|latency)\s+)?facts|records\s+the\s+cache\s+observation))[.!?]?$/iu,
+        claimIds: ["subject"],
+      },
+      {
+        id: "latency-reduction",
+        pattern:
+          /(?:\bProject Atlas\b[^.\n]*)?\b(?:cold start\s+)?latency\b[^.\n]*\b(?:reduced|changed|moved)\b[^.\n]*\bfrom\s+420\s*(?:milliseconds|ms)\b[^.\n]*\bto\s+280\s*(?:milliseconds|ms)\b|\bProject Atlas\b[^.\n]*\breduced\b[^.\n]*\bcold start latency\b[^.\n]*\bfrom\s+420\s*(?:milliseconds|ms)\b[^.\n]*\bto\s+280\s*(?:milliseconds|ms)\b/iu,
+        claimIds: ["subject", "latency-reduction"],
+      },
+      {
+        id: "cache-enabled",
+        pattern:
+          /(?:\bteam\b[^.\n]*\benabled\b[^.\n]*\blocal model cache\b|\blocal model cache\b[^.\n]*\b(?:is|was)\s+enabled\b(?:[^.\n]*\bteam\b)?)/iu,
+        claimIds: ["cache"],
+      },
+      {
+        id: "target-value",
+        pattern:
+          /(?:\b(?:target|goal)\b[^.\n]*250\s*(?:milliseconds|ms)|250\s*(?:milliseconds|ms)[^.\n]*\b(?:target|goal)\b)/iu,
+        claimIds: ["target"],
+      },
+      {
+        id: "follow-up-owner",
+        pattern:
+          /(?:\bMaya Chen\b[^.\n]*\bowns?\b[^.\n]*\bfollow-up\b|\bfollow-up\b[^.\n]*\b(?:is|was)\s+owned\s+by\s+Maya Chen\b)/iu,
+        claimIds: ["owner"],
+      },
+      {
+        id: "review-date",
+        pattern:
+          /(?:\breview\b[^.\n]*\b(?:is|was|remains)?\s*(?:scheduled\s+for\s+|on\s+)?November\s+12\b|\bNovember\s+12\b[^.\n]*\breview\b)/iu,
+        claimIds: ["review"],
+      },
+    ],
     forbidden: [
       /\b(?:Priya|battery|equation)\b/iu,
       /280\s*(?:milliseconds|ms)[\s\S]{0,100}420\s*(?:milliseconds|ms)/iu,
@@ -163,6 +256,16 @@ export const SUMMARY_FACT_CONTRACTS = [
         description: "follow-up owner",
         cue: /\bMaya Chen\b/u,
         claimIds: ["owner"],
+      },
+      {
+        description: "follow-up ownership",
+        cue: /\bfollow-up\b/iu,
+        claimIds: ["owner"],
+      },
+      {
+        description: "cache role",
+        cue: /\blocal model cache\b/iu,
+        claimIds: ["cache"],
       },
       {
         description: "review date",
@@ -210,6 +313,68 @@ export const SUMMARY_FACT_CONTRACTS = [
           /(?:\b(?:rerun|repeat|test)\b[\s\S]{0,120}\bDecember\s+5\b|\bDecember\s+5\b[\s\S]{0,120}\b(?:rerun|repeat|test)\b)/iu,
       },
     ],
+    relationships: [
+      {
+        id: "subject-meta",
+        pattern:
+          /^(?:the\s+(?:transcript|recording)\s+concerns\s+Team Aurora|Team Aurora\s+(?:is\s+the\s+(?:explicit|named)\s+team|records\s+(?:explicit\s+)?(?:measurement\s+)?facts))[.!?]?$/iu,
+        claimIds: ["subject"],
+      },
+      {
+        id: "initial-capacity",
+        pattern:
+          /(?:\bTeam Aurora\b[^.\n]*)?\b(?:measured|capacity)\b[^.\n]*\bBattery Pack B\b[^.\n]*\b82\s*(?:watt-hours|Wh)\b|\bBattery Pack B\b[^.\n]*\b(?:measured|capacity)\b[^.\n]*\b82\s*(?:watt-hours|Wh)\b/iu,
+        claimIds: ["subject", "battery", "initial-capacity"],
+      },
+      {
+        id: "temperature",
+        pattern:
+          /(?:\b(?:temperature|at)\b[^.\n]*\b25\s*(?:degrees Celsius|°C|C)\b|\b25\s*(?:degrees Celsius|°C|C)\b[^.\n]*\btemperature\b)/iu,
+        claimIds: ["temperature"],
+      },
+      {
+        id: "final-capacity",
+        pattern:
+          /(?:\bcapacity\b[^.\n]*\b(?:fell|declined|decreased|dropped)\b[^.\n]*\b76\s*(?:watt-hours|Wh)\b|\b76\s*(?:watt-hours|Wh)\b[^.\n]*\bcapacity\b)/iu,
+        claimIds: ["final-capacity"],
+      },
+      {
+        id: "cycle-result",
+        pattern:
+          /\bafter\s+100\s+cycles\b[^.\n]*\bcapacity\b[^.\n]*\b(?:fell|declined|decreased|dropped)\b/iu,
+        claimIds: ["cycles", "final-capacity"],
+      },
+      {
+        id: "capacity-decline",
+        pattern:
+          /(?:\b(?:decline|loss|decrease|drop)\b[^.\n]*\b6\s*(?:watt-hours|Wh)\b|\b6\s*(?:watt-hours|Wh)\b[^.\n]*\b(?:decline|loss|decrease|drop)\b)/iu,
+        claimIds: ["decline"],
+      },
+      {
+        id: "charging-cause",
+        pattern:
+          /(?:\b(?:decline|loss|decrease|drop|capacity)\b[^.\n]*\bcaused\s+by\s+repeated high-rate charging\b|\brepeated high-rate charging\b\s+(?:caused|causes)\b[^.\n]*\b(?:decline|loss|decrease|drop|capacity)\b)/iu,
+        claimIds: ["cause"],
+      },
+      {
+        id: "rerun-owner",
+        pattern:
+          /(?:\bPriya\b[^.\n]*\b(?:will\s+)?(?:rerun|repeat)\b[^.\n]*\btest\b|\btest\b[^.\n]*\b(?:will\s+be\s+)?(?:rerun|repeated)\s+by\s+Priya\b)/iu,
+        claimIds: ["owner"],
+      },
+      {
+        id: "rerun-rate",
+        pattern:
+          /(?:\b(?:rerun|repeat|test)\b[^.\n]*\b0\.5\s*C\b|\b0\.5\s*C\b[^.\n]*\b(?:rerun|repeat|test)\b)/iu,
+        claimIds: ["rate"],
+      },
+      {
+        id: "rerun-date",
+        pattern:
+          /(?:\b(?:rerun|repeat|test)\b[\s\S]{0,120}\bDecember\s+5\b|\bDecember\s+5\b[\s\S]{0,120}\b(?:rerun|repeat|test)\b)/iu,
+        claimIds: ["date"],
+      },
+    ],
     forbidden: [
       /\b(?:Maya Chen|Project Atlas|thermal runaway)\b/iu,
       /(?:decline[\s\S]{0,100}(?:low-rate|temperature)|(?:low-rate|temperature)[\s\S]{0,100}caus)/iu,
@@ -248,6 +413,11 @@ export const SUMMARY_FACT_CONTRACTS = [
         claimIds: ["cause"],
       },
       { description: "rerun owner", cue: /\bPriya\b/u, claimIds: ["owner"] },
+      {
+        description: "rerun ownership",
+        cue: /\b(?:rerun|repeat)\b/iu,
+        claimIds: ["owner"],
+      },
       { description: "rerun rate", cue: /\b0\.5\s*C\b/iu, claimIds: ["rate"] },
       { description: "rerun date", cue: /\bDecember\s+5\b/iu, claimIds: ["date"] },
     ],
@@ -270,6 +440,34 @@ export const SUMMARY_ROLE_DISTINCTION_CONTRACT = {
     { id: "owner", pattern: /\bMaya Chen\b[^.\n]*\bowns?\b[^.\n]*\bfollow-up\b/iu },
     { id: "review", pattern: /\bNovember\s+12\b/iu },
   ],
+  relationships: [
+    {
+      id: "subject-meta",
+      pattern:
+        /^(?:the\s+(?:transcript|recording)\s+concerns\s+Project Atlas|Project Atlas\s+records\s+(?:separately\s+stated\s+)?(?:target\s+and\s+result\s+values|explicit\s+facts))[.!?]?$/iu,
+      claimIds: ["subject"],
+    },
+    {
+      id: "target-role",
+      pattern: /\bProject Atlas\b[^.\n]*\btarget\b[^.\n]*250\s*(?:milliseconds|ms)/iu,
+      claimIds: ["target"],
+    },
+    {
+      id: "result-role",
+      pattern: /\bProject Atlas\b[^.\n]*\bresult\b[^.\n]*250\s*(?:milliseconds|ms)/iu,
+      claimIds: ["result"],
+    },
+    {
+      id: "follow-up-owner",
+      pattern: /\bMaya Chen\b[^.\n]*\bowns?\b[^.\n]*\bfollow-up\b/iu,
+      claimIds: ["owner"],
+    },
+    {
+      id: "review-date",
+      pattern: /\breview\b[^.\n]*\bNovember\s+12\b|\bNovember\s+12\b[^.\n]*\breview\b/iu,
+      claimIds: ["review"],
+    },
+  ],
   forbidden: [/\b(?:Project Aurora|Priya|420|280)\b/iu],
   allowedVocabulary: ["records", "separately", "stated", "values", "explicit", "facts"],
   semanticGuards: [
@@ -286,6 +484,43 @@ export const SUMMARY_ROLE_DISTINCTION_CONTRACT = {
     { description: "follow-up owner", cue: /\bMaya Chen\b/u, claimIds: ["owner"] },
     { description: "review date", cue: /\bNovember\s+12\b/iu, claimIds: ["review"] },
   ],
+} as const satisfies SummaryFactContract;
+
+export const GENERIC_SUMMARY_FACT_CONTRACT = {
+  id: "generic",
+  text: "The microphone stays local. Audio remains on the device. Reset clears the current session. Shutdown releases owned resources.",
+  claims: [
+    { id: "microphone", pattern: /\bmicrophone\b[^.\n]*\blocal\b/iu },
+    { id: "audio", pattern: /\baudio\b[^.\n]*\b(?:remains|stays)\b[^.\n]*\bdevice\b/iu },
+    { id: "reset", pattern: /\bReset\b[^.\n]*\bclears?\b[^.\n]*\bsession\b/u },
+    {
+      id: "shutdown",
+      pattern: /\bShutdown\b[^.\n]*\breleases?\b[^.\n]*\b(?:owned\s+)?resources?\b/u,
+    },
+  ],
+  relationships: [
+    {
+      id: "local-microphone",
+      pattern: /\bmicrophone\b[^.\n]*\b(?:remains|stays|is)\b[^.\n]*\blocal\b/iu,
+      claimIds: ["microphone"],
+    },
+    {
+      id: "on-device-audio",
+      pattern: /\baudio\b[^.\n]*\b(?:remains|stays|is)\b[^.\n]*\b(?:on\s+)?the\s+device\b/iu,
+      claimIds: ["audio"],
+    },
+    {
+      id: "reset-session",
+      pattern: /\bReset\b[^.\n]*\bclears?\b[^.\n]*\b(?:current\s+)?session\b/u,
+      claimIds: ["reset"],
+    },
+    {
+      id: "shutdown-resources",
+      pattern: /\bShutdown\b[^.\n]*\breleases?\b[^.\n]*\b(?:owned\s+)?resources?\b/u,
+      claimIds: ["shutdown"],
+    },
+  ],
+  forbidden: [/\b(?:cloud|upload|remote|network)\b/iu],
 } as const satisfies SummaryFactContract;
 
 export function summaryFactViolations(contract: SummaryFactContract, summary: string): readonly string[] {
@@ -311,12 +546,16 @@ export function summaryFactViolations(contract: SummaryFactContract, summary: st
   const bulletFacts = new Set<string>();
   const bulletClaimOwners = new Map<string, number>();
   for (const [index, line] of lines.entries()) {
+    if (index === 0 && canonicalFactText(line) === canonicalFactText(GENERIC_SUMMARY_OVERVIEW)) {
+      continue;
+    }
     const lineClaims = new Set<string>();
     for (const clause of splitSummaryClauses(line)) {
-      const matched = contract.claims.filter(({ pattern }) => pattern.test(clause)).map(({ id }) => id);
-      if (matched.length === 0) {
+      const relationships = contract.relationships.filter(({ pattern }) => pattern.test(clause));
+      const matched = [...new Set(relationships.flatMap(({ claimIds }) => claimIds))];
+      if (relationships.length === 0) {
         violations.push(
-          `line ${index + 1} clause is not traceable to an allowed transcript claim: ${clause}`,
+          `line ${index + 1} clause is not traceable to an allowed transcript relationship: ${clause}`,
         );
         continue;
       }
@@ -387,6 +626,10 @@ const COMMON_TRACEABLE_WORDS = [
   "being",
   "but",
   "by",
+  "concern",
+  "concerns",
+  "cover",
+  "covers",
   "explicit",
   "explicitly",
   "fact",
@@ -404,6 +647,7 @@ const COMMON_TRACEABLE_WORDS = [
   "project",
   "record",
   "records",
+  "recording",
   "report",
   "reports",
   "separate",
@@ -418,6 +662,7 @@ const COMMON_TRACEABLE_WORDS = [
   "then",
   "these",
   "this",
+  "transcript",
   "to",
   "value",
   "values",
@@ -431,8 +676,8 @@ const COMMON_TRACEABLE_WORDS = [
 
 function splitSummaryClauses(line: string): readonly string[] {
   return line
-    .split(/(?<=[.!?;])\s+|,\s+(?=(?:after|and|because|but|caused\s+by|then|where|which|while)\b)/iu)
-    .flatMap((part) => part.split(/\s+(?=(?:after|because|but|caused\s+by|then|where|which|while)\b)/iu))
+    .split(/(?<=[.!?;])\s+|,\s+(?=(?:after|and|because|but|then|where|which|while)\b)/iu)
+    .flatMap((part) => part.split(/\s+(?=(?:after|because|but|then|where|which|while)\b)/iu))
     .map((clause) => clause.trim())
     .filter(Boolean);
 }

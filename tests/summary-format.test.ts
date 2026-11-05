@@ -5,7 +5,13 @@ import {
   formatSummaryForDisplay,
   formatSummaryPresentation,
 } from "../src/summary/summary-format";
-import { SUMMARY_JSON_SCHEMA, SUMMARY_SYSTEM_PROMPT, summaryUserPrompt } from "../src/summary/summary-prompt";
+import {
+  GENERIC_SUMMARY_OVERVIEW,
+  SUMMARY_JSON_SCHEMA,
+  SUMMARY_SYSTEM_PROMPT,
+  summaryRequestPlan,
+  summaryUserPrompt,
+} from "../src/summary/summary-prompt";
 
 describe("formatSummaryForDisplay", () => {
   it("instructs Qwen to return readable plain text notation", () => {
@@ -18,6 +24,8 @@ describe("formatSummaryForDisplay", () => {
     expect(SUMMARY_SYSTEM_PROMPT).toContain("coefficient of 3");
     expect(SUMMARY_SYSTEM_PROMPT).toContain('Do not reinterpret an "initial value"');
     expect(SUMMARY_SYSTEM_PROMPT).toContain("subject-only sentence");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("terminal punctuation");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("non-factual meta overview");
     expect(SUMMARY_SYSTEM_PROMPT).toContain('exactly two keys: "overview" and "details"');
     expect(SUMMARY_SYSTEM_PROMPT).toContain("exactly four complete, nonempty, non-overlapping");
     expect(SUMMARY_SYSTEM_PROMPT).toContain("Never repeat, manufacture, or split a fact");
@@ -64,10 +72,47 @@ describe("formatSummaryForDisplay", () => {
 
     expect(prompt).toContain("SOURCE FACTS (4):");
     expect(prompt).toContain("OVERVIEW TEXT (copy exactly):");
+    expect(prompt).toContain(GENERIC_SUMMARY_OVERVIEW);
     expect(prompt).toContain("First fact.");
     expect(prompt).toContain("[F1] First fact.");
     expect(prompt).toContain("[F4] Fourth fact.");
     expect(prompt).toContain("Set details[0] to the exact text after [F1]");
+  });
+
+  it.each([1, 2, 3, 5])("fails closed for a generic transcript with %i complete facts", (factCount) => {
+    const transcript = Array.from(
+      { length: factCount },
+      (_value, index) => `Generic fact ${index + 1} is stated.`,
+    ).join(" ");
+
+    expect(() => summaryUserPrompt(transcript)).toThrow("exactly four independent complete facts");
+  });
+
+  it("uses a non-factual generic overview only for four independent complete facts", () => {
+    const transcript =
+      "The microphone stays local. Audio remains on the device. Reset clears the session. Shutdown releases owned resources.";
+    const plan = summaryRequestPlan(transcript);
+    const schema = JSON.parse(plan.jsonSchema);
+
+    expect(plan.prompt).toContain(`OVERVIEW TEXT (copy exactly):\n${GENERIC_SUMMARY_OVERVIEW}`);
+    expect(plan.prompt).toContain("SOURCE FACTS (4):");
+    expect(plan.prompt).toContain("[F1] The microphone stays local.");
+    expect(plan.prompt).toContain("[F4] Shutdown releases owned resources.");
+    expect(schema.properties.overview.enum).toEqual([GENERIC_SUMMARY_OVERVIEW]);
+    expect(schema.properties.details.items.enum).toEqual(plan.facts);
+  });
+
+  it("fails closed when four generic source units are duplicated or incomplete", () => {
+    expect(() =>
+      summaryUserPrompt(
+        "The microphone stays local. Audio remains on the device. The microphone stays local. Shutdown releases owned resources.",
+      ),
+    ).toThrow("exactly four independent complete facts");
+    expect(() =>
+      summaryUserPrompt(
+        "The microphone stays local. Audio remains on the device. Reset clears the session. Shutdown releases owned resources",
+      ),
+    ).toThrow("exactly four independent complete facts");
   });
 
   it("extracts four independent facts from three-sentence project and measurement transcripts", () => {
@@ -125,7 +170,7 @@ describe("formatSummaryForDisplay", () => {
           ],
         }),
       ),
-    ).toThrow("repeated a detail fact");
+    ).toThrow("repeated an overview or detail fact");
     expect(() =>
       decodeSummaryModelOutput(
         JSON.stringify({
@@ -135,6 +180,61 @@ describe("formatSummaryForDisplay", () => {
             "Maya Chen owns the follow-up.",
             "The next review is November 12.",
             "The cache change was",
+          ],
+        }),
+      ),
+    ).toThrow("incomplete line");
+  });
+
+  it("rejects overlap between the overview and any displayed detail", () => {
+    expect(() =>
+      decodeSummaryModelOutput(
+        JSON.stringify({
+          overview: "The microphone stays local.",
+          details: [
+            "The microphone stays local.",
+            "Audio remains on the device.",
+            "Reset clears the session.",
+            "Shutdown releases owned resources.",
+          ],
+        }),
+      ),
+    ).toThrow("repeated an overview or detail fact");
+  });
+
+  it("rejects a factual overview that absorbs a paraphrased ODE detail", () => {
+    expect(() =>
+      decodeSummaryModelOutput(
+        JSON.stringify({
+          overview:
+            "The transcript describes an ordinary differential equation where a function is related to its derivatives and a first-order decay solution is discussed.",
+          details: [
+            "An ordinary differential equation relates a function to its derivatives.",
+            "The equation is y′ = −2y.",
+            "The solution is y(t) = c · e^(−2t).",
+            "The initial value y(0) = 3 gives c = 3.",
+          ],
+        }),
+      ),
+    ).toThrow("repeated an overview or detail fact");
+  });
+
+  it.each([
+    "Maya Chen owns the follow-up and Priya.",
+    "The cache change was.",
+    "Because.",
+    "And the owner.",
+    "A detail without terminal punctuation",
+  ])("rejects a truncated or dangling structured detail: %s", (detail) => {
+    expect(() =>
+      decodeSummaryModelOutput(
+        JSON.stringify({
+          overview: GENERIC_SUMMARY_OVERVIEW,
+          details: [
+            "The microphone stays local.",
+            "Audio remains on the device.",
+            "Reset clears the session.",
+            detail,
           ],
         }),
       ),
@@ -213,7 +313,13 @@ describe("formatSummaryForDisplay", () => {
     );
 
     it("enforces the shipped five-line and word-count presentation contract", () => {
-      const valid = fixtures[0].expected;
+      const valid = [
+        "The transcript concerns an ordinary differential equation.",
+        "• An ordinary differential equation relates a function to its derivatives.",
+        "• The equation is y′ = −2y.",
+        "• The solution is y(t) = c · e^(−2t).",
+        "• The initial value y(0) = 3 gives c = 3.",
+      ].join("\n");
       expect(() => assertSummaryPresentationContract(valid)).not.toThrow();
       expect(() => assertSummaryPresentationContract("Only one line.")).toThrow(
         "exactly one overview and four detail lines",
@@ -226,7 +332,7 @@ describe("formatSummaryForDisplay", () => {
       expect(() =>
         assertSummaryPresentationContract(
           [
-            Array.from({ length: 181 }, () => "word").join(" "),
+            `${Array.from({ length: 181 }, () => "word").join(" ")}.`,
             "• First.",
             "• Second.",
             "• Third.",
@@ -249,7 +355,7 @@ describe("formatSummaryForDisplay", () => {
             "• Final fact.",
           ].join("\n"),
         ),
-      ).toThrow("repeated a detail fact");
+      ).toThrow("repeated an overview or detail fact");
       expect(() =>
         assertSummaryPresentationContract(
           [
@@ -282,7 +388,7 @@ describe("formatSummaryForDisplay", () => {
             "• The temperature is -5 °C.",
           ].join("\n"),
         ),
-      ).toThrow("repeated a detail fact");
+      ).toThrow("repeated an overview or detail fact");
       expect(() =>
         assertSummaryPresentationContract(
           [
@@ -293,7 +399,7 @@ describe("formatSummaryForDisplay", () => {
             "• The next review is November 12.",
           ].join("\n"),
         ),
-      ).toThrow("repeated a detail fact");
+      ).toThrow("repeated an overview or detail fact");
       expect(() =>
         assertSummaryPresentationContract(
           [
@@ -305,6 +411,28 @@ describe("formatSummaryForDisplay", () => {
           ].join("\n"),
         ),
       ).toThrow("incomplete line");
+      expect(() =>
+        assertSummaryPresentationContract(
+          [
+            GENERIC_SUMMARY_OVERVIEW,
+            "• The microphone stays local.",
+            "• Audio remains on the device.",
+            "• Reset clears the session.",
+            "• Maya Chen owns the follow-up and Priya.",
+          ].join("\n"),
+        ),
+      ).toThrow("incomplete line");
+      expect(() =>
+        assertSummaryPresentationContract(
+          [
+            "The microphone stays local.",
+            "• The microphone stays local.",
+            "• Audio remains on the device.",
+            "• Reset clears the session.",
+            "• Shutdown releases owned resources.",
+          ].join("\n"),
+        ),
+      ).toThrow("repeated an overview or detail fact");
       expect(() =>
         assertSummaryPresentationContract(
           [
@@ -384,7 +512,7 @@ describe("formatSummaryForDisplay", () => {
       expect(formatted).toContain("Maya Chen owns the follow-up");
       expect(formatted).toContain("the next review is November 12.");
       expect(formatted).toContain("The local model cache is enabled.");
-      expect(() => assertSummaryPresentationContract(formatted)).not.toThrow();
+      expect(() => assertSummaryPresentationContract(formatted)).toThrow("incomplete line");
     });
 
     it("does not reintroduce exact duplicates when a raw response has too few distinct details", () => {

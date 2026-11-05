@@ -26,6 +26,9 @@ describe("Clinic answer safety", () => {
     "What should they do next?",
     "Should I take these pills?",
     "The patient needs to start supportive care.",
+    "What disease does this patient have?",
+    "What medical condition does the patient have?",
+    "What does this patient have?",
   ])("detects bounded medical-decision wording: %s", (question) => {
     expect(clinicQuestionNeedsClinicianHandoff(question)).toBe(true);
   });
@@ -35,6 +38,7 @@ describe("Clinic answer safety", () => {
     "Summarize the visible labels.",
     "What does this diagnostic axis mean in the math diagram?",
     "What should the student do next?",
+    "What condition makes this equation stable?",
   ])("does not match unrelated wording: %s", (question) => {
     expect(clinicQuestionNeedsClinicianHandoff(question)).toBe(false);
   });
@@ -95,7 +99,11 @@ describe("Clinic answer safety", () => {
 
   it.each([
     "The diagnosis is pneumonia.",
+    "The disease is pneumonia.",
+    "The medical condition is pneumonia.",
     "This is pneumonia.",
+    "You have pneumonia.",
+    "The patient has pneumonia.",
     "It looks like appendicitis.",
     "The image confirms pneumonia.",
     "This is a medical emergency.",
@@ -110,6 +118,10 @@ describe("Clinic answer safety", () => {
     "These findings are diagnostic of pneumonia.",
     "This can safely wait until next week.",
     "This does not require emergency care.",
+    "You should probably start antibiotics.",
+    "I strongly recommend taking antibiotics.",
+    "Antibiotics could be started promptly.",
+    "Promptly seek emergency care.",
   ])("fails closed for asserted diagnosis, triage, or treatment wording: %s", (unsafe) => {
     const question = "What is the diagnosis, is this urgent, and what treatment should they start?";
 
@@ -118,6 +130,30 @@ describe("Clinic answer safety", () => {
     );
     expect(clinicModelAnswerForHistory("clinic", question, unsafe)).toBe(
       CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+    );
+  });
+
+  it.each([
+    "This is pneumonia.",
+    "You have pneumonia.",
+    "The patient has pneumonia.",
+    "The patient needs urgent evaluation.",
+    "Start antibiotics immediately.",
+  ])("scans every Clinic answer even when the question classifier does not match: %s", (unsafe) => {
+    const question = "Describe the visible labels.";
+
+    expect(clinicQuestionNeedsClinicianHandoff(question)).toBe(false);
+    expect(applyClinicAnswerSafety("clinic", question, unsafe)).toBe(CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE);
+    expect(clinicModelAnswerForHistory("clinic", question, unsafe)).toBe(
+      CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+    );
+  });
+
+  it("adds the clinician handoff when a disease question receives an unsafe diagnosis", () => {
+    const question = "What disease does this patient have?";
+
+    expect(applyClinicAnswerSafety("clinic", question, "This is pneumonia.")).toBe(
+      `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
     );
   });
 
@@ -147,6 +183,14 @@ describe("Clinic answer safety", () => {
     const answer = "Visible text includes AP and upright labels; the right side marker is uncertain.";
 
     expect(applyClinicAnswerSafety("clinic", "Describe the visible labels.", answer)).toBe(answer);
+  });
+
+  it.each([
+    "This is a first-order decay equation.",
+    "This is a local model cache example.",
+    "Use separation of variables for this equation.",
+  ])("preserves bounded nonmedical educational statements: %s", (answer) => {
+    expect(applyClinicAnswerSafety("clinic", "Explain the visible material.", answer)).toBe(answer);
   });
 
   it("preserves a safe refusal without storing the clinician handoff in chat history", () => {

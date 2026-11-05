@@ -1,5 +1,11 @@
 import { canonicalSummarySemanticText } from "./summary-canonical";
 import { SUMMARY_MODEL_DETAIL_COUNT } from "./summary-prompt";
+import {
+  areDuplicateSummaryUnits,
+  hasDuplicateSummaryUnits,
+  hasOverlappingSummaryUnits,
+  isCompleteSummaryUnit,
+} from "./summary-unit";
 
 export interface SummaryDisplayFormatResult {
   readonly text: string;
@@ -132,14 +138,14 @@ export function decodeSummaryModelOutput(rawText: string): SummaryModelOutputDec
   if (units.some((unit) => /^(?:[-*•]|\d+[.)])\s+/u.test(unit))) {
     throw new Error("The local summary model returned invalid structured output.");
   }
-  if (!/[.!?]$/u.test(units[0] ?? "")) {
+  if (!isCompleteSummaryUnit(units[0] ?? "")) {
     throw new Error("The local summary overview was incomplete.");
   }
-  if (units.some(hasIncompleteSummaryLine)) {
+  if (units.slice(1).some((unit) => !isCompleteSummaryUnit(unit))) {
     throw new Error("The local summary ended with an incomplete line.");
   }
-  if (hasDuplicateSummaryUnits(units.slice(1))) {
-    throw new Error("The local summary repeated a detail fact.");
+  if (hasOverlappingSummaryUnits(units)) {
+    throw new Error("The local summary repeated an overview or detail fact.");
   }
   return {
     text: [units[0], ...units.slice(1).map((detail) => `• ${detail}`)].join("\n"),
@@ -162,12 +168,11 @@ export function assertSummaryPresentationContract(text: string): void {
   if (/^(?:line\s*1|overview|summary)\s*:/iu.test(lines[0] ?? "")) {
     throw new Error("The local summary overview included a prohibited heading or label.");
   }
-  const details = lines.slice(1).map((line) => line.replace(/^•\s+/u, ""));
-  if (lines.some(hasIncompleteSummaryLine)) {
+  if (lines.some((line) => !isCompleteSummaryUnit(line))) {
     throw new Error("The local summary ended with an incomplete line.");
   }
-  if (hasDuplicateSummaryUnits(details)) {
-    throw new Error("The local summary repeated a detail fact.");
+  if (hasOverlappingSummaryUnits(lines)) {
+    throw new Error("The local summary repeated an overview or detail fact.");
   }
   const words = text.match(/[\p{L}\p{N}]+/gu) ?? [];
   if (words.length > SUMMARY_PRESENTATION_MAX_WORDS) {
@@ -1426,36 +1431,6 @@ const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "st",
   "vs",
 ]);
-const SUMMARY_INCOMPLETE_TRAILING_WORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "at",
-  "be",
-  "because",
-  "been",
-  "being",
-  "but",
-  "by",
-  "for",
-  "from",
-  "had",
-  "has",
-  "have",
-  "in",
-  "is",
-  "of",
-  "on",
-  "or",
-  "the",
-  "to",
-  "was",
-  "were",
-  "with",
-]);
-
 function structureSummaryContent(value: string): string {
   const protectedContent = maskSummaryStructureRegions(value);
   const lines = protectedContent.masked
@@ -1561,12 +1536,6 @@ function atomizeSummaryUnits(units: readonly string[]): readonly string[] {
   return atomic;
 }
 
-function hasDuplicateSummaryUnits(units: readonly string[]): boolean {
-  return units.some((unit, index) =>
-    units.slice(0, index).some((candidate) => areDuplicateSummaryUnits(candidate, unit)),
-  );
-}
-
 function deduplicateSummaryUnits(units: readonly string[]): {
   readonly units: readonly string[];
   readonly removed: boolean;
@@ -1612,11 +1581,6 @@ function deduplicateExpandedSummaryUnits(
 function expandRestoredSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
   const protectedContent = maskSummaryStructureRegions(units.join("\n"));
   return expandSummaryUnits(protectedContent.masked.split("\n"), targetCount).map(protectedContent.restore);
-}
-
-function areDuplicateSummaryUnits(left: string, right: string): boolean {
-  const leftCanonical = canonicalSummarySemanticText(left);
-  return leftCanonical.length > 0 && leftCanonical === canonicalSummarySemanticText(right);
 }
 
 function expandSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
@@ -1873,13 +1837,4 @@ function joinSummaryGroup(units: readonly string[]): string {
     (combined, unit) => `${combined}${/[.!?;:,]$/u.test(combined) ? " " : "; "}${unit}`,
     first,
   );
-}
-
-function hasIncompleteSummaryLine(line: string): boolean {
-  const tokens =
-    summaryLineContent(line)
-      .toLowerCase()
-      .match(/\p{L}+|\p{N}+(?:\.\p{N}+)?/gu) ?? [];
-  const trailingWord = tokens.at(-1);
-  return trailingWord !== undefined && SUMMARY_INCOMPLETE_TRAILING_WORDS.has(trailingWord);
 }

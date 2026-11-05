@@ -1,27 +1,47 @@
-export const SUMMARY_MODEL_DETAIL_COUNT = 4;
+import { canonicalSummarySemanticText } from "./summary-canonical";
+import { GENERIC_SUMMARY_OVERVIEW, hasDuplicateSummaryUnits, isCompleteSummaryUnit } from "./summary-unit";
 
-export const SUMMARY_JSON_SCHEMA = JSON.stringify({
-  type: "object",
-  properties: {
-    overview: {
-      type: "string",
-      minLength: 1,
-      maxLength: 500,
-    },
-    details: {
-      type: "array",
-      minItems: SUMMARY_MODEL_DETAIL_COUNT,
-      maxItems: SUMMARY_MODEL_DETAIL_COUNT,
-      items: {
+export const SUMMARY_MODEL_DETAIL_COUNT = 4;
+export { GENERIC_SUMMARY_OVERVIEW } from "./summary-unit";
+
+export const SUMMARY_JSON_SCHEMA = JSON.stringify(summaryJsonSchemaShape());
+
+export interface SummaryRequestPlan {
+  readonly overview: string;
+  readonly facts: readonly string[];
+  readonly prompt: string;
+  readonly jsonSchema: string;
+}
+
+function summaryJsonSchemaShape(overview?: string, facts?: readonly string[]): object {
+  return {
+    type: "object",
+    properties: {
+      overview: {
         type: "string",
         minLength: 1,
         maxLength: 500,
+        description:
+          "One complete subject-only sentence, or the exact generic meta overview supplied in the prompt.",
+        ...(overview === undefined ? {} : { enum: [overview] }),
+      },
+      details: {
+        type: "array",
+        minItems: SUMMARY_MODEL_DETAIL_COUNT,
+        maxItems: SUMMARY_MODEL_DETAIL_COUNT,
+        items: {
+          type: "string",
+          minLength: 1,
+          maxLength: 500,
+          description: "One complete, source-supported fact with terminal punctuation.",
+          ...(facts?.length === SUMMARY_MODEL_DETAIL_COUNT ? { enum: facts } : {}),
+        },
       },
     },
-  },
-  required: ["overview", "details"],
-  additionalProperties: false,
-});
+    required: ["overview", "details"],
+    additionalProperties: false,
+  };
+}
 
 export const SUMMARY_SYSTEM_PROMPT = `
 Summarize only the FINAL TRANSCRIPT. Faithfulness is more important than style.
@@ -40,6 +60,9 @@ For measurement transcripts, select explicit measurement, change/cause, target, 
 The phrases "initial condition" and "final condition" are forbidden unless the transcript uses those exact phrases.
 Return one JSON object with exactly two keys: "overview" and "details".
 "overview" is one concise subject-only sentence and must not absorb or restate the four detail facts.
+"overview" and every detail must end with terminal punctuation and must not end in a dangling conjunction, name, preposition, or incomplete predicate.
+For a transcript without a recognized Project, Team, or ordinary-differential-equation subject, use the exact non-factual meta overview supplied by the user prompt only when there are exactly four independent source facts.
+The generic meta overview is presentation text, not a transcript claim, and it never replaces a detail.
 "details" is an array containing exactly four complete, nonempty, non-overlapping transcript-stated detail strings.
 If the FINAL TRANSCRIPT has exactly four complete sentences, copy those four sentences into "details" in the same order, changing only notation.
 If it has three sentences, split one sentence only at an explicitly stated independent clause so that no fact is repeated or inferred.
@@ -50,18 +73,29 @@ Use readable Unicode/plain math and keep the combined strings under 180 words.
 `.trim();
 
 export function summaryUserPrompt(transcript: string): string {
+  return summaryRequestPlan(transcript).prompt;
+}
+
+export function summaryRequestPlan(transcript: string): SummaryRequestPlan {
   const sentences = splitTranscriptSentences(transcript);
-  const facts = sourceFactCandidates(sentences);
-  const overview = sourceOverview(transcript, facts);
+  const recognizedOverview = sourceOverview(transcript);
+  const facts =
+    recognizedOverview === null ? validateGenericFacts(sentences) : sourceFactCandidates(sentences);
+  const overview = recognizedOverview ?? GENERIC_SUMMARY_OVERVIEW;
   const numberedFacts = facts.map((fact, index) => `[F${index + 1}] ${fact}`).join("\n");
   const detailInstruction =
     facts.length === SUMMARY_MODEL_DETAIL_COUNT
       ? "Set details[0] to the exact text after [F1], details[1] to [F2], details[2] to [F3], and details[3] to [F4]. The overview does not replace any detail."
       : "Select four different complete source facts in source order without repeating or combining them.";
-  return `FINAL TRANSCRIPT:\n${transcript}\n\nOVERVIEW TEXT (copy exactly):\n${overview}\n\nSOURCE FACTS (${facts.length}):\n${numberedFacts}\n\nSet "overview" to the exact OVERVIEW TEXT above.\nThe [F#] labels, the words "source fact", and any discussion of these instructions are forbidden in the output.\n${detailInstruction}\nWrite the JSON summary now.`;
+  return {
+    overview,
+    facts,
+    prompt: `FINAL TRANSCRIPT:\n${transcript}\n\nOVERVIEW TEXT (copy exactly):\n${overview}\n\nSOURCE FACTS (${facts.length}):\n${numberedFacts}\n\nSet "overview" to the exact OVERVIEW TEXT above.\nThe [F#] labels, the words "source fact", and any discussion of these instructions are forbidden in the output.\n${detailInstruction}\nWrite the JSON summary now.`,
+    jsonSchema: JSON.stringify(summaryJsonSchemaShape(overview, facts)),
+  };
 }
 
-function sourceOverview(transcript: string, facts: readonly string[]): string {
+function sourceOverview(transcript: string): string | null {
   const namedSubject = transcript.match(/\b(?:Project|Team)\s+[\p{L}\p{N}-]+/u)?.[0];
   if (namedSubject !== undefined) {
     return `The transcript concerns ${namedSubject}.`;
@@ -69,7 +103,21 @@ function sourceOverview(transcript: string, facts: readonly string[]): string {
   if (/\bordinary differential equation\b/iu.test(transcript)) {
     return "The transcript concerns an ordinary differential equation.";
   }
-  return facts[0] ?? transcript.trim();
+  return null;
+}
+
+function validateGenericFacts(sentences: readonly string[]): readonly string[] {
+  if (
+    sentences.length !== SUMMARY_MODEL_DETAIL_COUNT ||
+    sentences.some((sentence) => !isCompleteSummaryUnit(sentence)) ||
+    hasDuplicateSummaryUnits(sentences) ||
+    sentences.some((sentence) => canonicalSummarySemanticText(sentence).length === 0)
+  ) {
+    throw new Error(
+      "The final transcript did not contain exactly four independent complete facts for a generic summary.",
+    );
+  }
+  return sentences;
 }
 
 function sourceFactCandidates(sentences: readonly string[]): readonly string[] {

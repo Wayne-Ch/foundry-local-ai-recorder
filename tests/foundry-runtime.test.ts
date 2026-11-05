@@ -27,7 +27,11 @@ import {
   WHISPER_AUDIO_MODEL_ID,
 } from "../src/audio/audio-types";
 import { TempAudioStore } from "../src/audio/temp-audio-store";
-import { FoundryRecorderRuntime, type FoundryRecorderRuntimeOptions } from "../src/foundry/foundry-runtime";
+import {
+  FoundryRecorderRuntime,
+  type FoundryRecorderRuntimeOptions,
+  SUMMARY_RAW_OUTPUT_MAX_CHARS,
+} from "../src/foundry/foundry-runtime";
 import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
 import {
   SUMMARY_DEVICE_TYPE,
@@ -309,7 +313,7 @@ describe("FoundryRecorderRuntime", () => {
     const catalogCalls = vi.mocked(manager.catalog.getModelVariant).mock.calls.length;
     const downloadCalls = downloads.map(({ mock }) => mock.calls.length);
 
-    await expect(runtime.summarize("Exact transcript.")).resolves.toMatchObject({
+    await expect(runtime.summarize(genericSummaryTranscript("Exact"))).resolves.toMatchObject({
       text: "Exact factual summary.",
     });
     await expect(runtime.runAssistantTurn({ prompt: "Question." })).resolves.toMatchObject({
@@ -322,25 +326,27 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("returns bounded length-finished text so the controller can trace and reject it", async () => {
-    const root = await createTempRoot();
-    const runtime = createRuntime(root, [new FakeManager(createModels())], {
-      createChatSession: () =>
-        fakeChatSession({
-          processRequest: async () =>
-            textResponse(
-              ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
-              "length",
-            ),
-        }),
-    });
-    await runtime.prepare(false);
+  it.each(["length", "none", "toolCalls", "error", "futureReason"])(
+    "returns bounded %s-finished text so the controller can trace and reject it",
+    async (finishReason) => {
+      const root = await createTempRoot();
+      const raw = "x".repeat(SUMMARY_RAW_OUTPUT_MAX_CHARS + 37);
+      const runtime = createRuntime(root, [new FakeManager(createModels())], {
+        createChatSession: () =>
+          fakeChatSession({
+            processRequest: async () => textResponse(raw, finishReason),
+          }),
+      });
+      await runtime.prepare(false);
 
-    await expect(runtime.summarize("Exact transcript.")).resolves.toMatchObject({
-      response: { finishReason: "length" },
-    });
-    await runtime.shutdown();
-  });
+      await expect(runtime.summarize(genericSummaryTranscript("Exact"))).resolves.toMatchObject({
+        text: raw.slice(0, SUMMARY_RAW_OUTPUT_MAX_CHARS),
+        finishReason,
+        response: { finishReason },
+      });
+      await runtime.shutdown();
+    },
+  );
 
   it("serializes assistant and summary inference through one FIFO until cleanup is complete", async () => {
     const root = await createTempRoot();
@@ -375,7 +381,7 @@ describe("FoundryRecorderRuntime", () => {
 
     const assistant = runtime.runAssistantTurn({ prompt: "Hold the shared model." });
     await assistantStarted.promise;
-    const summary = runtime.summarize("Exact transcript.");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -440,7 +446,7 @@ describe("FoundryRecorderRuntime", () => {
     const ask1 = runtime.runAssistantTurn({ prompt: "ASK_ONE" }, { operationId: "ask-1" });
     await ask1Started.promise;
     const ask2 = runtime.runAssistantTurn({ prompt: "ASK_TWO" }, { operationId: "ask-2" });
-    const summary = runtime.summarize("Exact transcript.");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
     await Promise.resolve();
     await Promise.resolve();
     expect(order).toEqual(["ask1-start"]);
@@ -499,7 +505,7 @@ describe("FoundryRecorderRuntime", () => {
       { prompt: "ASK_TWO" },
       { operationId: "ask-2", signal: pendingController.signal },
     );
-    const summary = runtime.summarize("Exact transcript.");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
     pendingController.abort(new Error("Cancel pending Ask2."));
     await expect(ask2).rejects.toMatchObject({ name: "AbortError" });
 
@@ -552,7 +558,7 @@ describe("FoundryRecorderRuntime", () => {
       { operationId: "ask-active", signal: controller.signal },
     );
     await askStarted.promise;
-    const summary = runtime.summarize("Exact transcript.");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
     controller.abort(new Error("Cancel active Ask."));
     await Promise.resolve();
     await Promise.resolve();
@@ -590,9 +596,9 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const first = runtime.summarize("FIRST transcript.");
+    const first = runtime.summarize(genericSummaryTranscript("FIRST"));
     await firstStarted.promise;
-    const second = runtime.summarize("SECOND transcript.");
+    const second = runtime.summarize(genericSummaryTranscript("SECOND"));
     await Promise.resolve();
     await Promise.resolve();
     expect(starts).toEqual(["first"]);
@@ -628,9 +634,9 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const first = runtime.summarize("FIRST transcript.");
+    const first = runtime.summarize(genericSummaryTranscript("FIRST"));
     await firstStarted.promise;
-    const second = runtime.summarize("SECOND transcript.");
+    const second = runtime.summarize(genericSummaryTranscript("SECOND"));
     const reset = runtime.reset();
     firstResponse.resolve(textResponse('{"overview":"First.","details":["One.","Two.","Three.","Four."]}'));
 
@@ -705,7 +711,8 @@ describe("FoundryRecorderRuntime", () => {
 
   it("preserves exact Whisper text through the controller and exact Qwen prompt input", async () => {
     const root = await createTempRoot();
-    const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
+    const exact =
+      "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.\nFourth line stays exact.  ";
     const rawSummary = `\n  ${JSON.stringify({
       overview: "  Summary with exact outer whitespace.  ",
       details: ["  First fact.  ", "  Second fact.  ", "  Third fact.  ", "  Fourth fact.  "],
@@ -1246,7 +1253,7 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const failure = await captureFailure(runtime.summarize("Exact transcript"));
+    const failure = await captureFailure(runtime.summarize(genericSummaryTranscript("Exact")));
 
     expect(errorMessages(failure)).toEqual(
       expect.arrayContaining([
@@ -1320,7 +1327,7 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const summary = runtime.summarize("Exact transcript");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
     await requestReady.promise;
     const shutdown = runtime.shutdown();
     responseDeferred.resolve(textResponse("stale summary"));
@@ -1412,7 +1419,7 @@ describe("FoundryRecorderRuntime", () => {
     });
     await runtime.prepare(false);
 
-    const summary = runtime.summarize("Exact transcript");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
     await requestReady.promise;
     const shutdown = runtime.shutdown();
     await vi.waitFor(() => expect(cancelSpy).not.toBeNull());
@@ -1550,7 +1557,9 @@ describe("FoundryRecorderRuntime", () => {
       required: true,
       completionPending: true,
     });
-    await expect(runtime.summarize("blocked")).rejects.toThrow("blocked for cleanup");
+    await expect(runtime.summarize(genericSummaryTranscript("blocked"))).rejects.toThrow(
+      "blocked for cleanup",
+    );
     expect(dispose).not.toHaveBeenCalled();
     expect(order).not.toContain("temp-remove");
     expect(store.activeCount).toBe(1);
@@ -1600,7 +1609,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.prepare(false);
     order.length = 0;
 
-    const summary = runtime.summarize("Exact transcript");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact"));
     await requestReady.promise;
     const shutdownFailure = await captureFailure(runtime.shutdown());
     const cleanupCompletion = runtime.cleanupCompletion;
@@ -1638,7 +1647,8 @@ describe("FoundryRecorderRuntime", () => {
     const nemotronDispose = vi.fn(() => {
       order.push("nemotron-session-dispose");
     });
-    const whisperProcess = vi.fn(async () => speechResponse("Exact Whisper final."));
+    const exactWhisperFinal = genericSummaryTranscript("Exact Whisper");
+    const whisperProcess = vi.fn(async () => speechResponse(exactWhisperFinal));
     const exactQwenSummary = [
       "Exact Qwen summary.",
       "• First fact.",
@@ -1715,8 +1725,8 @@ describe("FoundryRecorderRuntime", () => {
     });
     const summary = await controller.generateSummary();
 
-    expect(final.result.transcript).toBe("Exact Whisper final.");
-    expect(summary.summaryInput).toBe("Exact Whisper final.");
+    expect(final.result.transcript).toBe(exactWhisperFinal);
+    expect(summary.summaryInput).toBe(exactWhisperFinal);
     expect(summary.snapshot.transcript.summary?.text).toBe(exactQwenSummary);
     expect(whisperProcess).toHaveBeenCalledOnce();
     expect(qwenProcess).toHaveBeenCalledOnce();
@@ -2205,7 +2215,7 @@ describe("FoundryRecorderRuntime", () => {
     const assistantDrain = runtime.resetAssistant();
     expect(runtime.assistantStatus).toMatchObject({ active: false, draining: true });
 
-    const summary = runtime.summarize("Exact core transcript.");
+    const summary = runtime.summarize(genericSummaryTranscript("Exact core"));
     void summary.catch(() => undefined);
     await Promise.resolve();
     await Promise.resolve();
@@ -2551,10 +2561,10 @@ function speechResponse(text: string): Response {
   };
 }
 
-function textResponse(text: string, finishReason: Response["finishReason"] = "stop"): Response {
+function textResponse(text: string, finishReason: string = "stop"): Response {
   return {
     output: [{ type: "text", text }],
-    finishReason,
+    finishReason: finishReason as Response["finishReason"],
     usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
   };
 }
@@ -2585,6 +2595,15 @@ function capturePayload() {
     durationMs: 1_000,
     data: new ArrayBuffer(32_000),
   } as const;
+}
+
+function genericSummaryTranscript(label: string): string {
+  return [
+    `${label} fact one is recorded.`,
+    `${label} fact two remains local.`,
+    `${label} fact three is complete.`,
+    `${label} fact four closes the transcript.`,
+  ].join(" ");
 }
 
 function validatedCapture(): ValidatedAudioCapture {
