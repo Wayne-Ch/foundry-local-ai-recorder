@@ -22,18 +22,33 @@ const CLINICIAN_HANDOFF_DIRECTION =
   /\b(?:must|should|need(?:s)?\s+to|has\s+to|have\s+to|can\s+only|consult|ask|contact|see|speak\s+with|discuss\s+with|defer(?:red|s|ring)?\s+to|decid(?:e|ed|es|ing)|determin(?:e|ed|es|ing)|make|made|handle(?:d|s|ing)?|guide(?:d|s|ing)?|belong(?:s|ed|ing)?|left\s+to)\b|\b(?:is|are)\s+(?:a\s+matter\s+)?for\b/iu;
 const DIRECT_CLINICIAN_REFERRAL =
   /\b(?:consult|ask|contact|see|speak\s+with|discuss\s+with|defer(?:red|s|ring)?\s+to)\b/iu;
-const DIRECT_CLINICAL_RECOMMENDATION =
-  /\b(?:(?:(?:the|this|a)\s+)?patient|they|he|she|you)\s+(?:(?:definitely|probably|strongly)\s+)?(?:should|must|ought\s+to|need(?:s)?\s+to|has\s+to|have\s+to|may\s+want\s+to)\s+(?:immediately\s+|promptly\s+|urgently\s+)?(?:(?:begin|continue|follow|receive|start|stop|take|undergo|use)\s+(?:an?\s+|the\s+|this\s+)?(?:antibiotic(?:s)?|care|dose|evaluation|inhaler|medication(?:s)?|medicine(?:s)?|prescription(?:s)?|therapy|treatment)|seek\s+(?:immediate\s+|prompt\s+|urgent\s+|emergency\s+)?(?:care|evaluation|treatment)|go\s+to\s+(?:an?\s+|the\s+)?(?:clinic|emergency\s+department|hospital)|call\s+(?:911|an?\s+clinician|the\s+doctor))\b|\b(?:i\s+(?:would\s+|strongly\s+|definitely\s+|probably\s+)?(?:recommend|advise|suggest)|my\s+recommendation\s+(?:is|would\s+be))\s+(?:(?:immediately|promptly|urgently)\s+)?(?:(?:beginning|continuing|following|receiving|starting|stopping|taking|undergoing|using)\s+)?(?:an?\s+|the\s+|this\s+)?(?:antibiotic(?:s)?|care|dose|evaluation|inhaler|medication(?:s)?|medicine(?:s)?|prescription(?:s)?|therapy|treatment)\b|\b(?:start\s+with\s+the\s+treatment|(?:the\s+)?treatment\s+(?:is|would\s+be|should\s+be|must\s+be|could\s+be)\s+(?:to\s+)?(?:immediately\s+|promptly\s+|urgently\s+)?(?:begin|continue|follow|receive|start|stop|take|undergo|use|administer|give|prescribe))\b/iu;
-const ASSERTED_DIAGNOSIS_OR_URGENCY =
-  /\b(?:(?:the\s+)?(?:diagnos(?:is|tic\s+conclusion)|disease|medical\s+condition)\s+(?:is|would\s+be|appears\s+to\s+be|seems\s+to\s+be)|(?:(?:the|this|a)\s+)?patient\s+is\s+diagnosed\s+with|(?:this|it|you|the\s+patient|these\s+findings?)\s+(?:clearly\s+|definitely\s+|likely\s+|probably\s+|appears\s+to\s+|seems\s+to\s+|looks\s+)?(?:is|are)\s+(?:an?\s+)?(?:medical\s+)?(?:urgent|emergency|critical|life[- ]threatening)|(?:diagnostic|indicative|consistent)\s+(?:of|with)\s+\S)\b/iu;
+const ANSWER_SENTENCE = /[^.!?\n]+(?:[.!?]+(?=\s|$)|(?=\n)|$)/gu;
+const CLINICAL_OR_IMAGE_CONTEXT =
+  /\b(?:patient|clinical|medical|diagnos(?:e|ed|es|ing|is|tic)|disease|symptom(?:s)?|treat(?:ment|ments|ed|ing|s)?|therap(?:y|ies)|medication(?:s)?|medicine(?:s)?|prescription(?:s)?|prescrib(?:e|ed|es|ing)|procedure(?:s)?|surgery|urgent|urgency|emergenc(?:y|ies)|hospital|clinic|clinician|doctor|physician|health(?:care|\s+care)|scan|image|x-ray|radiograph|findings?)\b/iu;
+const CONTRASTIVE_TAIL =
+  /(?:^|[\s,;:])(?:but|however|yet|nevertheless|nonetheless|still|even\s+so|although|though|despite\s+(?:that|this))[\s,;:]+(.+)$/iu;
+const SAFE_NONCLINICAL_PREDICATE =
+  /\b(?:educational\s+(?:context|information|description)|equation|formula|calculation|derivative|integral|function|variable|graph|plot|chart|diagram|illustration|example|lesson|exercise|problem|concept|definition|model(?:\s+cache)?|cache|algorithm|code|file|system|application|workflow|label|marker|text|object|view|projection|image|radiograph|x-ray|scan|silhouette|outline|visible\s+(?:structure|feature)|anatomy)\b/iu;
+const PATIENT_DIRECTED_MEDICAL_ACTION =
+  /\b(?:(?:(?:the|this|a)\s+)?patient|you|they|he|she)\s+(?:(?:definitely|probably|strongly)\s+)?(?:should|must|ought\s+to|need(?:s)?\s+to|has\s+to|have\s+to)\s+(?:immediately\s+|promptly\s+|urgently\s+)?(?:begin|continue|follow|receive|start|stop|take|undergo|use|avoid|seek|get|schedule|go|call)\b(?:\s+[^.!?;\n]{1,120})?/iu;
+const RECOMMENDED_PATIENT_MEDICAL_ACTION =
+  /\b(?:i|we)\s+(?:(?:would|strongly|definitely|probably)\s+)?(?:recommend|advise|suggest)\s+(?:(?:that\s+)?(?:(?:(?:the|this|a)\s+)?patient|you|they|he|she)\s+(?:(?:should|must|ought\s+to|need(?:s)?\s+to)\s+)?(?:begin|continue|follow|receive|start|stop|take|undergo|use|avoid|seek|get|schedule|go|call)|(?:beginning|continuing|following|receiving|starting|stopping|taking|undergoing|using|avoiding|seeking|getting|scheduling))\b(?:\s+[^.!?;\n]{1,120})?/iu;
+const ASSERTED_NAMED_CONDITION =
+  /\b(?:the\s+)?(?:diagnos(?:is|tic\s+conclusion)|disease|(?:medical\s+)?condition)\s+(?:(?:clearly|definitely|likely|probably)\s+)?(?:is|would\s+be|appears?\s+(?:likely\s+)?to\s+be|seems?\s+to\s+be|looks\s+like)\s+(?:an?\s+)?([\p{L}\d][^.!?;,\n]{0,119})/iu;
 const ASSERTED_PATIENT_CONDITION =
-  /\b(?:(?:(?:the|this|a)\s+)?patient|you|they|he|she)\s+(?:clearly\s+|definitely\s+|likely\s+|probably\s+)?(?:has|have|appears?\s+to\s+have|seems?\s+to\s+have|is\s+suffering\s+from|are\s+suffering\s+from)\s+(?:an?\s+)?([^.!?;,\n]{1,80})/iu;
+  /\b(?:(?:(?:the|this|a)\s+)?patient|you|they|he|she)\s+(?:clearly\s+|definitely\s+|likely\s+|probably\s+)?(?:has|have|appears?\s+to\s+have|seems?\s+to\s+have|is\s+suffering\s+from|are\s+suffering\s+from|is\s+diagnosed\s+with|are\s+diagnosed\s+with)\s+(?:an?\s+)?([\p{L}\d][^.!?;,\n]{0,119})/iu;
 const ASSERTED_DEICTIC_CONDITION =
-  /\b(?:this|it)\s+(?:clearly\s+|definitely\s+|likely\s+|probably\s+)?(?:is|appears\s+to\s+be|seems\s+to\s+be|looks\s+like)\s+(?:an?\s+)?([^.!?;,\n]{1,80})/iu;
-const MEDICAL_CONDITION_TERM =
-  /\b(?:allergic\s+reaction|anaphylaxis|appendicitis|asthma|bronchitis|cancer|covid(?:-19)?|deep\s+vein\s+thrombosis|diabetes|disease|embolism|flu|fracture|heart\s+attack|heart\s+failure|infection|influenza|kidney\s+disease|liver\s+disease|meningitis|myocardial\s+infarction|pneumonia|pulmonary\s+embolism|sepsis|stroke|tumou?r)\b/iu;
-const PASSIVE_TREATMENT_RECOMMENDATION =
-  /\b(?:antibiotics?|medications?|medicines?|therapy|treatment)\s+(?:definitely\s+|probably\s+)?(?:should|must|needs?\s+to|would|could)\s+be\s+(?:immediately\s+|promptly\s+|urgently\s+)?(?:continued|given|administered|prescribed|started|stopped|used)\b|\b(?:urgent|emergency)\s+(?:evaluation|care|treatment|attention)\s+(?:is|would\s+be|appears\s+to\s+be)\s+(?:definitely\s+|probably\s+)?(?:needed|required|recommended)\b/iu;
+  /\b(?:this|that|it)\s+(?:clearly\s+|definitely\s+|probably\s+)?(?:is(?:\s+(?:likely|probably))?|appears?\s+(?:likely\s+)?to\s+be|appears?\s+(?:likely\s+)?consistent\s+with|seems?\s+to\s+be|looks\s+like|is\s+consistent\s+with|likely\s+(?:is|represents))\s+(?:an?\s+)?([\p{L}\d][^.!?;,\n]{0,119})/iu;
+const ASSERTED_IMAGE_CONDITION =
+  /\b(?:(?:this|that|the|these|those)\s+)?(?:(?:clinical|medical)\s+)?(?:image|scan|x-ray|radiograph|findings?)\s+(?:(?:clearly|definitely|likely|probably)\s+)?(?:confirms?|(?:is|are)\s+(?:diagnostic|indicative|suggestive|consistent)\s+(?:of|with)|appears?\s+(?:likely\s+)?consistent\s+with|likely\s+(?:shows|represents)|suggests?|indicates?)\s+(?:an?\s+)?([\p{L}\d][^.!?;,\n]{0,119})/iu;
+const PASSIVE_MEDICAL_ACTION =
+  /\b([^.!?;,\n]{1,80}?)\s+(?:definitely\s+|probably\s+)?(?:should|must|ought\s+to|needs?\s+to|would|could)\s+be\s+(?:immediately\s+|promptly\s+|urgently\s+)?(?:continued|given|administered|prescribed|started|stopped|taken|received|undergone|used|avoided)\b/iu;
+const TREATMENT_PLAN_ASSERTION =
+  /\b(?:the\s+)?(?:treatment|treatment\s+plan|recommendation)\s+(?:is|would\s+be|should\s+be|must\s+be|could\s+be)\s+(?:to\s+)?(?:immediately\s+|promptly\s+|urgently\s+)?(?:begin|continue|follow|receive|start|stop|take|undergo|use|avoid|administer|give|prescribe)\b/iu;
+const PATIENT_URGENCY_ASSERTION =
+  /\b(?:(?:(?:the|this|a)\s+)?patient|you|they|he|she|this|that|it)\s+(?:(?:clearly|definitely|likely|probably)\s+)?(?:needs?|requires?)\s+(?:immediate|urgent|emergency|prompt|same[- ]day)\s+[^.!?;\n]{1,120}|\b(?:(?:(?:the|this|a)\s+)?patient|you|they|he|she|this|that|it)\s+(?:(?:clearly|definitely|likely|probably)\s+)?(?:is|appears?\s+to\s+be|seems?\s+to\s+be)\s+(?:an?\s+)?(?:urgent|emergency|critical|life[- ]threatening)\b/iu;
+const GENERAL_URGENCY_ASSERTION =
+  /\b(?:requires?|needs?)\s+(?:immediate|urgent|emergency|prompt|same[- ]day)\s+[^.!?;\n]{1,120}|\b(?:can|may)\s+safely\s+wait\b|\b(?:cannot|can't|should\s+not|must\s+not)\s+wait\b|\b(?:does\s+not|doesn't)\s+require\s+(?:urgent|emergency)\s+[^.!?;\n]{1,80}|\b(?:immediate|urgent|emergency|prompt|same[- ]day)\s+[^.!?;,\n]{1,80}\s+(?:is|would\s+be|appears?\s+to\s+be)\s+(?:definitely\s+|probably\s+)?(?:needed|required|recommended)\b/iu;
 const ASSERTED_TRIAGE_OR_IMPERATIVE =
   /\b(?:requires?|needs?)\s+(?:immediate|urgent|emergency)\s+(?:care|attention|evaluation|treatment)\b|\b(?:can|may)\s+safely\s+wait\b|\b(?:does\s+not|doesn't)\s+require\s+(?:urgent|emergency)\s+care\b|^\s*(?:immediately\s+|promptly\s+|urgently\s+)?(?:(?:begin|continue|receive|start|stop|take|use)\s+(?:an?\s+|the\s+|this\s+)?(?:antibiotic(?:s)?|dose|inhaler|medication(?:s)?|medicine(?:s)?|therapy|treatment)|seek\s+(?:immediate\s+|prompt\s+|urgent\s+|emergency\s+)?(?:care|evaluation|treatment)|go\s+to\s+(?:an?\s+|the\s+)?(?:clinic|emergency\s+department|hospital)|call\s+(?:911|an?\s+clinician|the\s+doctor))\b/iu;
 const EXPLICIT_SAFE_CLINIC_BOUNDARY =
@@ -51,19 +66,19 @@ export function applyClinicAnswerSafety(mode: AssistantMode, question: string, a
   if (mode !== "clinic") {
     return answer;
   }
-  const answerWithoutExistingHandoff = clinicModelAnswerForHistory(mode, question, answer);
-  if (!clinicQuestionNeedsClinicianHandoff(question)) {
-    return answerWithoutExistingHandoff;
+  const result = evaluateClinicAnswer(question, answer);
+  if (!result.needsClinicianHandoff) {
+    return result.historyAnswer;
   }
-  if (!answerWithoutExistingHandoff) {
+  if (!result.historyAnswer) {
     return `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
   }
   const suffix = `\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
   const maxAnswerChars = MAX_ASSISTANT_DISPLAY_CHARS - suffix.length;
   const boundedAnswer =
-    answerWithoutExistingHandoff.length <= maxAnswerChars
-      ? answerWithoutExistingHandoff
-      : `${answerWithoutExistingHandoff.slice(0, maxAnswerChars - 3).trimEnd()}...`;
+    result.historyAnswer.length <= maxAnswerChars
+      ? result.historyAnswer
+      : `${result.historyAnswer.slice(0, maxAnswerChars - 3).trimEnd()}...`;
   return `${boundedAnswer}${suffix}`;
 }
 
@@ -71,12 +86,26 @@ export function clinicModelAnswerForHistory(mode: AssistantMode, question: strin
   if (mode !== "clinic") {
     return answer;
   }
+  return evaluateClinicAnswer(question, answer).historyAnswer;
+}
+
+function evaluateClinicAnswer(
+  question: string,
+  answer: string,
+): {
+  readonly historyAnswer: string;
+  readonly needsClinicianHandoff: boolean;
+} {
   const needsClinicianHandoff = clinicQuestionNeedsClinicianHandoff(question);
+  if (hasUnsafeClinicalAssertion(question, answer)) {
+    return {
+      historyAnswer: CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+      needsClinicianHandoff: true,
+    };
+  }
   const answerWithoutExistingHandoff = needsClinicianHandoff
     ? answer
-        .replace(/[^.!?\n]+(?:[.!?]+(?=\s|$)|(?=\n)|$)/gu, (sentence) =>
-          isEquivalentClinicianHandoff(sentence) ? "" : sentence,
-        )
+        .replace(ANSWER_SENTENCE, (sentence) => (isEquivalentClinicianHandoff(sentence) ? "" : sentence))
         .replaceAll(/[ \t]{2,}/gu, " ")
         .replaceAll(/[ \t]+\n/gu, "\n")
         .replaceAll(/\n[ \t]+/gu, "\n")
@@ -84,49 +113,105 @@ export function clinicModelAnswerForHistory(mode: AssistantMode, question: strin
         .trim()
     : answer.trim();
   if (!answerWithoutExistingHandoff) {
-    return CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE;
-  }
-  const sentences = answerWithoutExistingHandoff.match(/[^.!?\n]+(?:[.!?]+|(?=\n)|$)/gu) ?? [
-    answerWithoutExistingHandoff,
-  ];
-  if (sentences.some(isUnsafeClinicalAssertion)) {
-    return CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE;
+    return {
+      historyAnswer: CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+      needsClinicianHandoff,
+    };
   }
   if (
     needsClinicianHandoff &&
     !EXPLICIT_SAFE_CLINIC_BOUNDARY.test(answerWithoutExistingHandoff) &&
-    !answer.match(/[^.!?\n]+(?:[.!?]+(?=\s|$)|(?=\n)|$)/gu)?.some(isEquivalentClinicianHandoff)
+    !answer.match(ANSWER_SENTENCE)?.some(isEquivalentClinicianHandoff)
   ) {
-    return CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE;
+    return {
+      historyAnswer: CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+      needsClinicianHandoff: true,
+    };
   }
-  return answerWithoutExistingHandoff;
+  return {
+    historyAnswer: answerWithoutExistingHandoff,
+    needsClinicianHandoff,
+  };
 }
 
-function isUnsafeClinicalAssertion(sentence: string): boolean {
-  if (isEquivalentClinicianHandoff(sentence)) {
-    return false;
-  }
-  const hasSafeBoundary = EXPLICIT_SAFE_CLINIC_BOUNDARY.test(sentence);
-  const residual = hasSafeBoundary ? sentence.replace(EXPLICIT_SAFE_CLINIC_BOUNDARY, " ") : sentence;
-  if (
-    DIRECT_CLINICAL_RECOMMENDATION.test(residual) ||
-    ASSERTED_DIAGNOSIS_OR_URGENCY.test(residual) ||
-    hasAssertedMedicalCondition(residual) ||
-    PASSIVE_TREATMENT_RECOMMENDATION.test(residual) ||
-    ASSERTED_TRIAGE_OR_IMPERATIVE.test(residual)
-  ) {
-    return true;
+function hasUnsafeClinicalAssertion(question: string, answer: string): boolean {
+  const context = `${question}\n${answer}`;
+  let sawMedicalBoundary = false;
+  const sentences = answer.match(ANSWER_SENTENCE) ?? [answer];
+  for (const sentence of sentences) {
+    const hasSafeBoundary = EXPLICIT_SAFE_CLINIC_BOUNDARY.test(sentence);
+    const contrastiveTail =
+      hasSafeBoundary || sawMedicalBoundary ? sentence.match(CONTRASTIVE_TAIL)?.[1] : undefined;
+    if (contrastiveTail !== undefined && isUnsafeClinicalAssertion(contrastiveTail, context, true)) {
+      return true;
+    }
+    const residual = hasSafeBoundary ? sentence.replace(EXPLICIT_SAFE_CLINIC_BOUNDARY, " ") : sentence;
+    if (isUnsafeClinicalAssertion(residual, context, false)) {
+      return true;
+    }
+    sawMedicalBoundary ||= hasSafeBoundary;
   }
   return false;
 }
 
-function hasAssertedMedicalCondition(sentence: string): boolean {
+function isUnsafeClinicalAssertion(
+  sentence: string,
+  context: string,
+  followsMedicalBoundary: boolean,
+): boolean {
+  if (
+    PATIENT_DIRECTED_MEDICAL_ACTION.test(sentence) ||
+    RECOMMENDED_PATIENT_MEDICAL_ACTION.test(sentence) ||
+    TREATMENT_PLAN_ASSERTION.test(sentence) ||
+    PATIENT_URGENCY_ASSERTION.test(sentence) ||
+    GENERAL_URGENCY_ASSERTION.test(sentence) ||
+    ASSERTED_TRIAGE_OR_IMPERATIVE.test(sentence)
+  ) {
+    return true;
+  }
+  const passiveAction = sentence.match(PASSIVE_MEDICAL_ACTION);
+  if (
+    passiveAction !== null &&
+    (followsMedicalBoundary ||
+      CLINICAL_OR_IMAGE_CONTEXT.test(context) ||
+      !isSafeNonclinicalPredicate(passiveAction[1] ?? ""))
+  ) {
+    return true;
+  }
+  return hasAssertedMedicalCondition(sentence, context, followsMedicalBoundary);
+}
+
+function hasAssertedMedicalCondition(
+  sentence: string,
+  context: string,
+  followsMedicalBoundary: boolean,
+): boolean {
+  const namedCondition = sentence.match(ASSERTED_NAMED_CONDITION)?.[1];
+  if (
+    namedCondition !== undefined &&
+    !isSafeNonclinicalPredicate(namedCondition) &&
+    (followsMedicalBoundary || CLINICAL_OR_IMAGE_CONTEXT.test(context))
+  ) {
+    return true;
+  }
   const patientCondition = sentence.match(ASSERTED_PATIENT_CONDITION)?.[1];
-  if (patientCondition !== undefined && MEDICAL_CONDITION_TERM.test(patientCondition)) {
+  if (patientCondition !== undefined && !isSafeNonclinicalPredicate(patientCondition)) {
     return true;
   }
   const deicticCondition = sentence.match(ASSERTED_DEICTIC_CONDITION)?.[1];
-  return deicticCondition !== undefined && MEDICAL_CONDITION_TERM.test(deicticCondition);
+  if (
+    deicticCondition !== undefined &&
+    !isSafeNonclinicalPredicate(deicticCondition) &&
+    (followsMedicalBoundary || CLINICAL_OR_IMAGE_CONTEXT.test(context))
+  ) {
+    return true;
+  }
+  const imageCondition = sentence.match(ASSERTED_IMAGE_CONDITION)?.[1];
+  return imageCondition !== undefined && !isSafeNonclinicalPredicate(imageCondition);
+}
+
+function isSafeNonclinicalPredicate(value: string): boolean {
+  return SAFE_NONCLINICAL_PREDICATE.test(value);
 }
 
 function isEquivalentClinicianHandoff(sentence: string): boolean {

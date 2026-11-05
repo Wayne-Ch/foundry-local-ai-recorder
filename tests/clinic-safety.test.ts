@@ -9,6 +9,22 @@ import {
 import { MAX_ASSISTANT_DISPLAY_CHARS } from "../src/assistant/plain-text";
 
 describe("Clinic answer safety", () => {
+  const canonicalFailClosedAnswer = `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
+
+  function expectFailsClosed(
+    unsafe: string,
+    question = "Describe this clinical image's visible findings.",
+  ): void {
+    const visible = applyClinicAnswerSafety("clinic", question, unsafe);
+
+    expect(visible).toBe(canonicalFailClosedAnswer);
+    expect(visible.split(CLINICIAN_HANDOFF_SENTENCE)).toHaveLength(2);
+    expect(visible).not.toContain(unsafe);
+    expect(clinicModelAnswerForHistory("clinic", question, unsafe)).toBe(
+      CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+    );
+  }
+
   it.each([
     "Could this be a diagnosis?",
     "Can this image diagnose the patient?",
@@ -140,13 +156,10 @@ describe("Clinic answer safety", () => {
     "The patient needs urgent evaluation.",
     "Start antibiotics immediately.",
   ])("scans every Clinic answer even when the question classifier does not match: %s", (unsafe) => {
-    const question = "Describe the visible labels.";
+    const question = "Describe this clinical image's visible labels.";
 
     expect(clinicQuestionNeedsClinicianHandoff(question)).toBe(false);
-    expect(applyClinicAnswerSafety("clinic", question, unsafe)).toBe(CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE);
-    expect(clinicModelAnswerForHistory("clinic", question, unsafe)).toBe(
-      CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
-    );
+    expectFailsClosed(unsafe, question);
   });
 
   it("adds the clinician handoff when a disease question receives an unsafe diagnosis", () => {
@@ -165,6 +178,51 @@ describe("Clinic answer safety", () => {
     expect(applyClinicAnswerSafety("clinic", question, answer)).toBe(
       `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
     );
+  });
+
+  it.each([
+    "I cannot diagnose from this image, but this is leukemia.",
+    "I cannot recommend treatment, but the patient should start chemotherapy.",
+    "You should undergo surgery. Please consult your doctor.",
+  ])("closes the reported disclaimer or referral bypass: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
+    "The patient has glioblastoma.",
+    "You likely have sarcoidosis.",
+    "The disease is amyloidosis.",
+    "The medical condition appears to be moyamoya disease.",
+    "This clinical image appears consistent with mesothelioma.",
+    "This appears consistent with Erdheim-Chester disease.",
+    "It appears likely to be lymphangioleiomyomatosis.",
+    "These findings are consistent with histiocytosis.",
+    "That scan likely represents histiocytosis.",
+  ])("fails closed for unlisted patient-specific conditions: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
+    "You must receive plasmapheresis.",
+    "They should stop immunotherapy.",
+    "He needs to take blinatumomab.",
+    "She ought to avoid anticoagulation.",
+    "The patient should undergo transcatheter embolectomy.",
+    "I recommend that you start photopheresis.",
+    "Brachytherapy should be started promptly.",
+  ])("fails closed for unlisted second- or third-person medical actions: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
+    "I cannot diagnose from this image. However, this is leukemia.",
+    "I cannot diagnose this patient; nevertheless, that is sarcoidosis.",
+    "I cannot recommend treatment. Yet you should take vorinostat.",
+    "I cannot assess urgency, but the patient needs immediate decompression.",
+    "This cannot wait until tomorrow.",
+    "Same-day neurosurgical evaluation is required.",
+  ])("fails closed for contrastive diagnosis, treatment, or urgency tails: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
   });
 
   it.each([
@@ -189,8 +247,22 @@ describe("Clinic answer safety", () => {
     "This is a first-order decay equation.",
     "This is a local model cache example.",
     "Use separation of variables for this equation.",
+    "This image shows lungs, ribs, and the heart silhouette.",
+    "The lungs, ribs, and heart silhouette are visible in this image.",
+    "The heart lies between the lungs, and the ribs surround the chest.",
+    "A clinician should make diagnosis and treatment decisions.",
   ])("preserves bounded nonmedical educational statements: %s", (answer) => {
     expect(applyClinicAnswerSafety("clinic", "Explain the visible material.", answer)).toBe(answer);
+  });
+
+  it("preserves the canonical refusal and single handoff", () => {
+    const safe = `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
+
+    expect(applyClinicAnswerSafety("clinic", "What is the diagnosis and treatment?", safe)).toBe(safe);
+    expect(safe.split(CLINICIAN_HANDOFF_SENTENCE)).toHaveLength(2);
+    expect(clinicModelAnswerForHistory("clinic", "What is the diagnosis and treatment?", safe)).toBe(
+      CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+    );
   });
 
   it("preserves a safe refusal without storing the clinician handoff in chat history", () => {
