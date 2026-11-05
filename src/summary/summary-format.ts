@@ -3,6 +3,10 @@ export interface SummaryDisplayFormatResult {
   readonly formattingApplied: boolean;
 }
 
+export const SUMMARY_PRESENTATION_LINE_COUNT = 5;
+export const SUMMARY_PRESENTATION_BULLET_COUNT = 4;
+export const SUMMARY_PRESENTATION_MAX_WORDS = 180;
+
 interface TextRange {
   readonly start: number;
   readonly end: number;
@@ -84,6 +88,31 @@ export function formatSummaryPresentation(rawText: string): SummaryDisplayFormat
     text,
     formattingApplied: formatted.formattingApplied || text !== formatted.text,
   };
+}
+
+export function assertSummaryPresentationContract(text: string): void {
+  const lines = text.split("\n");
+  if (
+    lines.length !== SUMMARY_PRESENTATION_LINE_COUNT ||
+    lines.some((line) => line.trim().length === 0) ||
+    lines[0]?.startsWith("• ")
+  ) {
+    throw new Error("The local summary did not produce exactly one overview and four detail lines.");
+  }
+  if (!lines.slice(1).every((line) => line.startsWith("• "))) {
+    throw new Error("The local summary detail lines did not use the required bullet format.");
+  }
+  if (/^(?:line\s*1|overview|summary)\s*:/iu.test(lines[0] ?? "")) {
+    throw new Error("The local summary overview included a prohibited heading or label.");
+  }
+  const details = lines.slice(1).map((line) => line.replace(/^•\s+/u, ""));
+  if (hasDuplicateSummaryUnits(details)) {
+    throw new Error("The local summary repeated a detail fact.");
+  }
+  const words = text.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (words.length > SUMMARY_PRESENTATION_MAX_WORDS) {
+    throw new Error(`The local summary exceeded the ${SUMMARY_PRESENTATION_MAX_WORDS}-word limit.`);
+  }
 }
 
 function formatOutsideProtectedRegions(value: string): string {
@@ -1316,7 +1345,9 @@ function normalizeWhitespace(value: string): string {
   return lines.join("\n");
 }
 
-const SUMMARY_MAX_BULLET_LINES = 6;
+const SUMMARY_TARGET_BULLET_LINES = SUMMARY_PRESENTATION_BULLET_COUNT;
+const SUMMARY_TARGET_LINES = SUMMARY_PRESENTATION_LINE_COUNT;
+const SUMMARY_FALLBACK_MAX_BULLET_LINES = 6;
 const SUMMARY_VISUAL_LIST_MARKER = /^(?:•\s+|[-*]\s+(?=[\p{Lu}"'“‘`]))/u;
 const SUMMARY_VISUAL_LIST_WRAPPER = /^(?:•|[-*])\s+/u;
 const SUMMARY_NUMERIC_FACT_PREFIX = /^[+\-−]?\p{Nd}/u;
@@ -1333,6 +1364,31 @@ const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "sr",
   "st",
   "vs",
+]);
+const SUMMARY_DUPLICATE_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "as",
+  "at",
+  "by",
+  "for",
+  "from",
+  "in",
+  "is",
+  "of",
+  "on",
+  "only",
+  "over",
+  "specific",
+  "stated",
+  "that",
+  "the",
+  "this",
+  "to",
+  "value",
+  "which",
+  "with",
 ]);
 
 function structureSummaryContent(value: string): string {
@@ -1368,18 +1424,221 @@ function structureSummaryContent(value: string): string {
     }
   }
 
-  if (units.length < 2) {
+  const [originalOverview, ...originalDetails] = units;
+  let removedDuplicateDetails = false;
+  let expandedUnitsAreRestored = false;
+  let expandedUnits: readonly string[];
+  const restoredOriginalDetails = originalDetails.map(protectedContent.restore);
+  if (originalOverview !== undefined && hasDuplicateSummaryUnits(restoredOriginalDetails)) {
+    const wholeDetails = deduplicateSummaryUnits(restoredOriginalDetails);
+    const atomicDetails = deduplicateSummaryUnits(atomizeSummaryUnits(wholeDetails.units));
+    if (atomicDetails.units.length >= SUMMARY_TARGET_BULLET_LINES) {
+      expandedUnits = [protectedContent.restore(originalOverview), ...atomicDetails.units];
+      expandedUnitsAreRestored = true;
+      removedDuplicateDetails = wholeDetails.removed || atomicDetails.removed;
+    } else {
+      expandedUnits = expandSummaryUnits(units, SUMMARY_TARGET_LINES);
+    }
+  } else {
+    expandedUnits = expandSummaryUnits(units, SUMMARY_TARGET_LINES);
+  }
+  const usesExactFiveLineLayout = expandedUnits.length >= SUMMARY_TARGET_LINES;
+  const layoutUnits = usesExactFiveLineLayout ? expandedUnits : units;
+  if (layoutUnits.length < 2) {
     return value;
   }
 
-  const restored = units.map(protectedContent.restore);
+  const restored = expandedUnitsAreRestored ? layoutUnits : layoutUnits.map(protectedContent.restore);
   const [overview, ...details] = restored;
   if (overview === undefined || details.length === 0) {
     return value;
   }
-  const bullets = groupSummaryUnits(details, SUMMARY_MAX_BULLET_LINES);
+  const bulletLimit = usesExactFiveLineLayout
+    ? SUMMARY_TARGET_BULLET_LINES
+    : SUMMARY_FALLBACK_MAX_BULLET_LINES;
+  const bullets = groupSummaryUnits(details, bulletLimit);
+  if (usesExactFiveLineLayout && bullets.length !== SUMMARY_TARGET_BULLET_LINES) {
+    return value;
+  }
   const structured = [overview, ...bullets.map((bullet) => `• ${bullet}`)].join("\n");
-  return canonicalSummaryContent(structured) === canonicalSummaryContent(value) ? structured : value;
+  return removedDuplicateDetails || canonicalSummaryContent(structured) === canonicalSummaryContent(value)
+    ? structured
+    : value;
+}
+
+function atomizeSummaryUnits(units: readonly string[]): readonly string[] {
+  const pending = [...units];
+  const atomic: string[] = [];
+  while (pending.length > 0) {
+    const unit = pending.shift();
+    if (unit === undefined) {
+      continue;
+    }
+    const split = splitSummaryUnit(unit, "punctuation") ?? splitSummaryUnit(unit, "connector");
+    if (split === null) {
+      atomic.push(unit);
+    } else {
+      pending.unshift(split[0], split[1]);
+    }
+  }
+  return atomic;
+}
+
+function hasDuplicateSummaryUnits(units: readonly string[]): boolean {
+  return units.some((unit, index) =>
+    units.slice(0, index).some((candidate) => areDuplicateSummaryUnits(candidate, unit)),
+  );
+}
+
+function deduplicateSummaryUnits(units: readonly string[]): {
+  readonly units: readonly string[];
+  readonly removed: boolean;
+} {
+  const unique: string[] = [];
+  let removed = false;
+  for (const unit of units) {
+    if (unique.some((candidate) => areDuplicateSummaryUnits(candidate, unit))) {
+      removed = true;
+    } else {
+      unique.push(unit);
+    }
+  }
+  return { units: unique, removed };
+}
+
+function areDuplicateSummaryUnits(left: string, right: string): boolean {
+  const leftSignatures = summaryAssignmentSignatures(left);
+  const rightSignatures = summaryAssignmentSignatures(right);
+  const leftTokens = summaryDuplicateTokens(left);
+  const rightTokens = summaryDuplicateTokens(right);
+  const smallerSize = Math.min(leftTokens.size, rightTokens.size);
+  const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  const sharedRatio = smallerSize === 0 ? 0 : shared / smallerSize;
+  const sharesAssignment = leftSignatures.some((signature) => rightSignatures.includes(signature));
+  if (sharesAssignment && (smallerSize <= 4 || (shared >= 3 && sharedRatio >= 0.65))) {
+    return true;
+  }
+  const sharedNumeric = [...leftTokens].some(
+    (token) => /^\d+(?:\.\d+)?$/u.test(token) && rightTokens.has(token),
+  );
+  const sharedText = [...leftTokens].some(
+    (token) => !/^\d+(?:\.\d+)?$/u.test(token) && rightTokens.has(token),
+  );
+  const hasDisjointAssignments = leftSignatures.length > 0 && rightSignatures.length > 0 && !sharesAssignment;
+  if (
+    !hasDisjointAssignments &&
+    smallerSize >= 2 &&
+    sharedNumeric &&
+    sharedText &&
+    shared >= 2 &&
+    sharedRatio >= 0.5
+  ) {
+    return true;
+  }
+  return smallerSize >= 3 && shared >= 3 && sharedRatio >= 0.65;
+}
+
+function summaryAssignmentSignatures(value: string): readonly string[] {
+  return [
+    ...value.matchAll(
+      /([\p{L}][\p{L}\p{N}]*(?:\([^)]{1,20}\))?)\s*(?:=|equals|is)\s*([+\-−]?\d+(?:\.\d+)?)/giu,
+    ),
+  ].map((match) =>
+    `${match[1] ?? ""}=${match[2] ?? ""}`.toLowerCase().replaceAll(/\s+/gu, "").replaceAll("−", "-"),
+  );
+}
+
+function summaryDuplicateTokens(value: string): ReadonlySet<string> {
+  const tokens = value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  return new Set(
+    tokens
+      .map(stemSummaryDuplicateToken)
+      .filter((token) => token.length > 0 && !SUMMARY_DUPLICATE_STOPWORDS.has(token)),
+  );
+}
+
+function stemSummaryDuplicateToken(value: string): string {
+  if (value.length <= 5) {
+    return value;
+  }
+  return value.replace(/(?:ing|ed|es|s)$/u, "");
+}
+
+function expandSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
+  const expanded = [...units];
+  while (expanded.length < targetCount) {
+    const split = findSummaryUnitSplit(expanded);
+    if (split === null) {
+      break;
+    }
+    expanded.splice(split.index, 1, split.left, split.right);
+  }
+  return expanded;
+}
+
+function findSummaryUnitSplit(
+  units: readonly string[],
+): { readonly index: number; readonly left: string; readonly right: string } | null {
+  const detailIndexes = units
+    .map((_unit, index) => index)
+    .filter((index) => index > 0)
+    .sort((left, right) => (units[right]?.length ?? 0) - (units[left]?.length ?? 0));
+  const indexes = [...detailIndexes, 0];
+  for (const strategy of ["punctuation", "connector"] as const) {
+    for (const index of indexes) {
+      const unit = units[index];
+      if (unit === undefined) {
+        continue;
+      }
+      const parts = splitSummaryUnit(unit, strategy);
+      if (parts !== null) {
+        return { index, left: parts[0], right: parts[1] };
+      }
+    }
+  }
+  return null;
+}
+
+function splitSummaryUnit(
+  value: string,
+  strategy: "punctuation" | "connector",
+): readonly [string, string] | null {
+  const boundaries: number[] = [];
+  if (strategy === "punctuation") {
+    for (let index = 0; index < value.length; index += 1) {
+      if (value[index] === "," || value[index] === ";") {
+        boundaries.push(index + 1);
+      }
+    }
+  } else if (strategy === "connector") {
+    for (const match of value.matchAll(
+      /\s+(?=(?:after|and|because|but|caused\s+by|then|when|which|while|whereas|with)\b)/giu,
+    )) {
+      if (match.index !== undefined) {
+        boundaries.push(match.index);
+      }
+    }
+  }
+
+  const candidates = boundaries
+    .map((boundary) => {
+      const left = value.slice(0, boundary).trim();
+      const right = value.slice(boundary).trim();
+      return {
+        boundary,
+        left,
+        right,
+        distanceFromMiddle: Math.abs(value.length / 2 - boundary),
+      };
+    })
+    .filter(({ left, right }) => summaryUnitTokenCount(left) >= 3 && summaryUnitTokenCount(right) >= 3)
+    .sort((left, right) => left.distanceFromMiddle - right.distanceFromMiddle);
+  const best = candidates[0];
+  return best === undefined ? null : [best.left, best.right];
+}
+
+function summaryUnitTokenCount(value: string): number {
+  return value.split(/\s+/u).filter(Boolean).length;
 }
 
 function summaryLineContent(line: string): string {

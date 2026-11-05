@@ -9,7 +9,7 @@ import {
   type AudioStreamChunkResponse,
 } from "../src/audio/audio-types";
 import { resolveRecorderPaths } from "../src/foundry/paths";
-import { formatSummaryForDisplay } from "../src/summary/summary-format";
+import { assertSummaryPresentationContract, formatSummaryPresentation } from "../src/summary/summary-format";
 
 export const fixturePath = path.resolve("fixtures", "ode-lesson.wav");
 export const expectedWords = [
@@ -45,9 +45,10 @@ export function keywordRecall(transcript: string): {
 export function assertSummaryDisplayText(text: string): void {
   assert.ok(text.length > 20, "Summary must be nonempty and substantive.");
   assert.ok(text.length <= 2_500, "Summary must remain bounded.");
+  assertSummaryPresentationContract(text);
   assert.equal(hasRawMathDollarDelimiter(text), false, `Summary retained a raw math $ delimiter: ${text}`);
   assert.equal(
-    formatSummaryForDisplay(text).text,
+    formatSummaryPresentation(text).text,
     text,
     "Summary display text must be stable under a second formatting pass.",
   );

@@ -41,7 +41,13 @@ class FakeRuntime implements RecorderRuntime {
   constructor(
     readonly finalTranscript = "Whisper authoritative final transcript.",
     readonly transcriptionError: Error | null = null,
-    readonly summaryText = "Overview.\n\n- Key point.",
+    readonly summaryText = [
+      "Overview.",
+      "• First fact.",
+      "• Second fact.",
+      "• Third fact.",
+      "• Fourth fact.",
+    ].join("\n"),
     runtimeTargets: RuntimeTargets = targets,
   ) {
     this.readiness = runtimeReadiness(runtimeTargets);
@@ -365,7 +371,13 @@ describe("RecorderController", () => {
   });
 
   it("stores formatted summary text and preserves the exact raw Qwen response in trace evidence", async () => {
-    const raw = String.raw`Keep C:\times\reports and \cdot literal. The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`;
+    const raw = [
+      String.raw`Keep C:\times\reports and \cdot literal.`,
+      String.raw`The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`,
+      "The equation remains first order.",
+      "The behavior is exponential decay.",
+      "The initial condition determines the constant.",
+    ].join(" ");
     const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
     const controller = new RecorderController(runtime);
 
@@ -382,12 +394,31 @@ describe("RecorderController", () => {
       [
         String.raw`Keep C:\times\reports and \cdot literal.`,
         "• The solution is expressed as y(t) = c · e^(−2t), where c is the initial constant.",
+        "• The equation remains first order.",
+        "• The behavior is exponential decay.",
+        "• The initial condition determines the constant.",
       ].join("\n"),
     );
     expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
       detail: raw,
       summaryDisplayFormattingApplied: true,
     });
+  });
+
+  it("rejects an incomplete summary presentation instead of storing a partial completion", async () => {
+    const controller = new RecorderController(
+      new FakeRuntime("Whisper authoritative final transcript.", null, "Only one summary line."),
+    );
+    await controller.transcribeCapture({
+      format: AUDIO_FORMAT,
+      sampleRate: AUDIO_SAMPLE_RATE,
+      channels: AUDIO_CHANNELS,
+      durationMs: 1_000,
+      data: new ArrayBuffer(32_000),
+    });
+
+    await expect(controller.generateSummary()).rejects.toThrow("exactly one overview and four detail lines");
+    expect(controller.bootstrap().transcript.summary).toBeNull();
   });
 
   it("builds deterministic populated-summary UI evidence from the exact raw and formatted pair", () => {
@@ -399,7 +430,7 @@ describe("RecorderController", () => {
       text: POPULATED_SUMMARY_CAPTURE_FORMATTED,
       formattingApplied: true,
     });
-    expect(snapshot.transcript.finalText).toContain("Today we derived");
+    expect(snapshot.transcript.finalText).toContain("ordinary differential equation");
     expect(snapshot.transcript.summary?.text).toBe(POPULATED_SUMMARY_CAPTURE_FORMATTED);
     expect(snapshot.transcript.summary?.text).toContain("y′ = −2y");
     expect(snapshot.transcript.summary?.text).toContain("e^(−2t)");
@@ -413,7 +444,13 @@ describe("RecorderController", () => {
   });
 
   it("uses the same summary formatter after imported WAV transcription", async () => {
-    const raw = String.raw`It describes $ y' = -2y $ and $ y(t) = c \cdot e^{-2t}} $.`;
+    const raw = [
+      "It describes $ y' = -2y $.",
+      String.raw`The solution is $ y(t) = c \cdot e^{-2t}} $.`,
+      "The equation is first order.",
+      "The behavior is decay.",
+      "The constant is c.",
+    ].join(" ");
     const runtime = new FakeRuntime("Imported Whisper final.", null, raw);
     const controller = new RecorderController(runtime);
     const wav = encodePcm16Wav(new Uint8Array(32_000));
@@ -426,7 +463,15 @@ describe("RecorderController", () => {
 
     expect(stages).toEqual(["decoding_audio", "transcribing"]);
     expect(runtime.summaryInput).toBe("Imported Whisper final.");
-    expect(summary.snapshot.transcript.summary?.text).toBe("It describes y′ = −2y and y(t) = c · e^(−2t).");
+    expect(summary.snapshot.transcript.summary?.text).toBe(
+      [
+        "It describes y′ = −2y.",
+        "• The solution is y(t) = c · e^(−2t).",
+        "• The equation is first order.",
+        "• The behavior is decay.",
+        "• The constant is c.",
+      ].join("\n"),
+    );
   });
 
   it("invalidates the summary when the final transcript is corrected", async () => {
@@ -577,7 +622,7 @@ function modelReadiness(
       role,
       id,
       alias: id.split(":")[0] ?? id,
-      deviceType: "CPU",
+      deviceType: runtimeTargets[role].deviceType,
       executionProvider,
       fileSizeMb: 100,
     },
@@ -666,15 +711,17 @@ function transcription(
 function preflight(): RequestPreflightResult {
   return {
     promptTokens: 50,
-    outputReserveTokens: 260,
-    requiredTokens: 310,
+    outputReserveTokens: 512,
+    requiredTokens: 562,
     contextLimitTokens: 4_096,
     fits: true,
     deficitTokens: 0,
   };
 }
 
-function response(text = "Overview.\n\n- Key point."): Response {
+function response(
+  text = ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
+): Response {
   return {
     output: [{ type: "text", text }],
     finishReason: "stop",

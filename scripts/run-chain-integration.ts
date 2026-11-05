@@ -6,6 +6,11 @@ import {
   AUDIO_MAX_DURATION_MS,
   AUDIO_SAMPLE_RATE,
 } from "../src/audio/audio-types";
+import {
+  SUMMARY_DEVICE_TYPE,
+  SUMMARY_EXECUTION_PROVIDER,
+  SUMMARY_MODEL_ID,
+} from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
 import { formatSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import {
@@ -35,6 +40,9 @@ try {
   assert.equal(prepared.snapshot.readiness.externalEndpointUsed, false);
   assert.equal(prepared.snapshot.readiness.embeddedWebServiceRunning, false);
   assert.deepEqual(prepared.snapshot.readiness.embeddedWebServiceUrls, []);
+  assert.equal(prepared.snapshot.readiness.summary.model?.id, SUMMARY_MODEL_ID);
+  assert.equal(prepared.snapshot.readiness.summary.model?.deviceType, SUMMARY_DEVICE_TYPE);
+  assert.equal(prepared.snapshot.readiness.summary.model?.executionProvider, SUMMARY_EXECUTION_PROVIDER);
   const partials: string[] = [];
   const started = await controller.startLiveStream(
     {

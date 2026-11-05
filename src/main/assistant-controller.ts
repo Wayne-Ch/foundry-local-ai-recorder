@@ -12,11 +12,12 @@ import type {
   AssistantRequestContext,
   ImageAnalysisNote,
 } from "../assistant/assistant-types";
-import { applyClinicAnswerSafety } from "../assistant/clinic-safety";
+import { applyClinicAnswerSafety, clinicModelAnswerForHistory } from "../assistant/clinic-safety";
 import {
   type AssistantImageByteLifecycle,
   secureAssistantImageByteLifecycle,
 } from "../assistant/image-byte-lifecycle";
+import type { PreparedAssistantInferenceImage } from "../assistant/image-inference";
 import type { ValidatedImage } from "../assistant/image-security";
 import { formatAssistantPlainText } from "../assistant/plain-text";
 import type { AssistantRuntimeStatus } from "../foundry/foundry-runtime";
@@ -93,7 +94,8 @@ export class AssistantController {
   #imageBytes: {
     readonly imageId: string;
     readonly imageVersion: number;
-    readonly bytes: Uint8Array;
+    readonly sourceBytes: Uint8Array;
+    readonly inferenceBytes: Uint8Array;
   } | null = null;
   #transcriptContextFingerprint: string;
 
@@ -161,6 +163,7 @@ export class AssistantController {
   selectImage(
     image: ValidatedImage,
     thumbnailDataUrl: string,
+    inferenceImage: PreparedAssistantInferenceImage,
     pickerToken?: AssistantImagePickerToken,
   ): AssistantLaneSnapshot {
     if (!thumbnailDataUrl.startsWith("data:image/png;base64,")) {
@@ -170,9 +173,11 @@ export class AssistantController {
       this.assertImagePickerToken(pickerToken);
     }
     this.#queue.cancelImageDependent();
-    const ownedBytes = this.#imageByteLifecycle.copy(image.bytes, "selected-image");
+    const ownedSourceBytes = this.#imageByteLifecycle.copy(image.bytes, "selected-image");
+    let ownedInferenceBytes: Uint8Array | null = null;
     let committed = false;
     try {
+      ownedInferenceBytes = this.#imageByteLifecycle.copy(inferenceImage.bytes, "selected-inference-image");
       this.#disposeImageBytes();
       const selected = this.#state.selectImage({
         basename: image.basename,
@@ -185,12 +190,16 @@ export class AssistantController {
       this.#imageBytes = {
         imageId: selected.id,
         imageVersion: selected.version,
-        bytes: ownedBytes,
+        sourceBytes: ownedSourceBytes,
+        inferenceBytes: ownedInferenceBytes,
       };
       committed = true;
     } finally {
       if (!committed) {
-        this.#imageByteLifecycle.release(ownedBytes, "selected-image");
+        this.#imageByteLifecycle.release(ownedSourceBytes, "selected-image");
+        if (ownedInferenceBytes !== null) {
+          this.#imageByteLifecycle.release(ownedInferenceBytes, "selected-inference-image");
+        }
       }
     }
     return this.snapshot();
@@ -231,7 +240,7 @@ export class AssistantController {
             images: [
               {
                 kind: "data",
-                format: imageFormat(ownedImage.image.mimeType),
+                format: "png",
                 data: ownedImage.bytes,
               },
             ],
@@ -310,7 +319,7 @@ export class AssistantController {
                 images: [
                   {
                     kind: "data" as const,
-                    format: imageFormat(ownedImage.image.mimeType),
+                    format: "png" as const,
                     data: ownedImage.bytes,
                   },
                 ],
@@ -323,7 +332,12 @@ export class AssistantController {
         });
         const modelAnswer = formatAssistantPlainText(result.text);
         const answer = applyClinicAnswerSafety(operationToken.mode, normalizedQuestion, modelAnswer);
-        if (!signal.aborted && this.#state.applyChatAnswer(operationToken, answer, modelAnswer)) {
+        const historyAnswer = clinicModelAnswerForHistory(
+          operationToken.mode,
+          normalizedQuestion,
+          modelAnswer,
+        );
+        if (!signal.aborted && this.#state.applyChatAnswer(operationToken, answer, historyAnswer)) {
           this.#state.trace("chat-raw", result.text, "info", operationToken.requestId);
         } else if (this.#state.isGenerationCurrent(operationToken)) {
           this.#state.trace(
@@ -423,7 +437,8 @@ export class AssistantController {
 
   #disposeImageBytes(): void {
     if (this.#imageBytes !== null) {
-      this.#imageByteLifecycle.release(this.#imageBytes.bytes, "selected-image");
+      this.#imageByteLifecycle.release(this.#imageBytes.sourceBytes, "selected-image");
+      this.#imageByteLifecycle.release(this.#imageBytes.inferenceBytes, "selected-inference-image");
     }
     this.#imageBytes = null;
   }
@@ -448,7 +463,7 @@ export class AssistantController {
     }
     return {
       image,
-      bytes: this.#imageByteLifecycle.copy(owned.bytes, "assistant-operation"),
+      bytes: this.#imageByteLifecycle.copy(owned.inferenceBytes, "assistant-operation"),
     };
   }
 
@@ -651,17 +666,6 @@ function sectionHeading(section: ImageAnalysisSection): string {
 
 function imageAnalysisParseError(reason: string): Error {
   return new Error(`The local image model did not return the required structured note: ${reason}.`);
-}
-
-function imageFormat(mimeType: "image/png" | "image/jpeg" | "image/webp"): string {
-  switch (mimeType) {
-    case "image/png":
-      return "png";
-    case "image/jpeg":
-      return "jpeg";
-    case "image/webp":
-      return "webp";
-  }
 }
 
 function isImageQuestion(question: string): boolean {

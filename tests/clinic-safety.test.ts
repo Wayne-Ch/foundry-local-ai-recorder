@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyClinicAnswerSafety,
+  CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
   CLINICIAN_HANDOFF_SENTENCE,
+  clinicModelAnswerForHistory,
   clinicQuestionNeedsClinicianHandoff,
 } from "../src/assistant/clinic-safety";
 import { MAX_ASSISTANT_DISPLAY_CHARS } from "../src/assistant/plain-text";
@@ -63,6 +65,29 @@ describe("Clinic answer safety", () => {
     );
     expect(visible).not.toContain("Please consult");
     expect(visible.split(CLINICIAN_HANDOFF_SENTENCE)).toHaveLength(2);
+  });
+
+  it("replaces a direct treatment recommendation with the canonical educational boundary", () => {
+    const unsafe =
+      "The patient should start with the treatment that solves the equation. I would recommend this treatment.";
+    const question = "What treatment should a patient start?";
+
+    expect(applyClinicAnswerSafety("clinic", question, unsafe)).toBe(
+      `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
+    );
+    expect(clinicModelAnswerForHistory("clinic", question, unsafe)).toBe(
+      CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+    );
+  });
+
+  it("preserves a safe refusal without storing the clinician handoff in chat history", () => {
+    const safe = `I cannot recommend treatment from this image.\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
+    const question = "What treatment should they start?";
+
+    expect(applyClinicAnswerSafety("clinic", question, safe)).toBe(safe);
+    expect(clinicModelAnswerForHistory("clinic", question, safe)).toBe(
+      "I cannot recommend treatment from this image.",
+    );
   });
 
   it("moves a model-supplied handoff to the end without duplicating it", () => {

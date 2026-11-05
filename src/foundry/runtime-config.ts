@@ -1,3 +1,4 @@
+import { DeviceType } from "foundry-local-sdk";
 import {
   AUDIO_EXECUTION_PROVIDER,
   NEMOTRON_AUDIO_MODEL_ID,
@@ -6,14 +7,16 @@ import {
 import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "./optional-vision-chat-runtime";
 
 export const SUMMARY_MODEL_ID = QWEN_VISION_CHAT_CANDIDATE_MODEL_ID;
-export const SUMMARY_EXECUTION_PROVIDER = AUDIO_EXECUTION_PROVIDER;
-const CANONICAL_WEBGPU_EXECUTION_PROVIDER = "WebGPUExecutionProvider";
+export const SUMMARY_DEVICE_TYPE = DeviceType.GPU;
+export const SUMMARY_EXECUTION_PROVIDER = "WebGPUExecutionProvider";
+const CANONICAL_WEBGPU_EXECUTION_PROVIDER = SUMMARY_EXECUTION_PROVIDER;
 
 export type ModelRole = "whisper" | "nemotron" | "summary";
 
 export interface RuntimeTarget {
   readonly role: ModelRole;
   readonly modelId: string;
+  readonly deviceType: DeviceType;
   readonly executionProvider: string;
   readonly source: "built_in_default" | "environment_override";
   readonly stageValidated: boolean;
@@ -28,18 +31,21 @@ export interface RuntimeTargets {
 const targetDefinitions = {
   whisper: {
     modelId: WHISPER_AUDIO_MODEL_ID,
+    deviceType: DeviceType.CPU,
     executionProvider: AUDIO_EXECUTION_PROVIDER,
     modelVariable: "ENHANCED_AI_RECORDER_WHISPER_MODEL_ID",
     providerVariable: "ENHANCED_AI_RECORDER_WHISPER_EXECUTION_PROVIDER",
   },
   nemotron: {
     modelId: NEMOTRON_AUDIO_MODEL_ID,
+    deviceType: DeviceType.CPU,
     executionProvider: AUDIO_EXECUTION_PROVIDER,
     modelVariable: "ENHANCED_AI_RECORDER_NEMOTRON_MODEL_ID",
     providerVariable: "ENHANCED_AI_RECORDER_NEMOTRON_EXECUTION_PROVIDER",
   },
   summary: {
     modelId: SUMMARY_MODEL_ID,
+    deviceType: SUMMARY_DEVICE_TYPE,
     executionProvider: SUMMARY_EXECUTION_PROVIDER,
     modelVariable: "ENHANCED_AI_RECORDER_SUMMARY_MODEL_ID",
     providerVariable: "ENHANCED_AI_RECORDER_SUMMARY_EXECUTION_PROVIDER",
@@ -98,6 +104,7 @@ function resolveTarget(
   return {
     role,
     modelId: resolvedModelId,
+    deviceType: definition.deviceType,
     executionProvider: resolvedProvider,
     source: modelId ? "environment_override" : "built_in_default",
     stageValidated:

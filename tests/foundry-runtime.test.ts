@@ -29,7 +29,11 @@ import {
 import { TempAudioStore } from "../src/audio/temp-audio-store";
 import { FoundryRecorderRuntime, type FoundryRecorderRuntimeOptions } from "../src/foundry/foundry-runtime";
 import { QWEN_VISION_CHAT_CANDIDATE_MODEL_ID } from "../src/foundry/optional-vision-chat-runtime";
-import { SUMMARY_EXECUTION_PROVIDER, SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
+import {
+  SUMMARY_DEVICE_TYPE,
+  SUMMARY_EXECUTION_PROVIDER,
+  SUMMARY_MODEL_ID,
+} from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
 import { toSafeDiagnostic } from "../src/shared/safe-diagnostic";
 import { summaryUserPrompt } from "../src/summary/summary-prompt";
@@ -195,6 +199,48 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
+  it.each([
+    {
+      name: "CPU device",
+      deviceType: DeviceType.CPU,
+      executionProvider: SUMMARY_EXECUTION_PROVIDER,
+      expected: `uses ${DeviceType.CPU}; expected ${SUMMARY_DEVICE_TYPE}`,
+    },
+    {
+      name: "CPU provider",
+      deviceType: SUMMARY_DEVICE_TYPE,
+      executionProvider: AUDIO_EXECUTION_PROVIDER,
+      expected: `uses ${AUDIO_EXECUTION_PROVIDER}; expected ${SUMMARY_EXECUTION_PROVIDER}`,
+    },
+  ])(
+    "rejects the exact shared model id with an alternate $name and never loads it",
+    async ({ deviceType, executionProvider, expected }) => {
+      const root = await createTempRoot();
+      const models = new Map(createModels());
+      const incompatible = new FakeModel(
+        SUMMARY_MODEL_ID,
+        "qwen-vision",
+        "vision-language-chat",
+        executionProvider,
+        undefined,
+        {
+          deviceType,
+          inputModalities: '["text", "image"]',
+          outputModalities: "text",
+        },
+      );
+      models.set(SUMMARY_MODEL_ID, incompatible);
+      const runtime = createRuntime(root, [new FakeManager(models)]);
+
+      const failure = await captureFailure(runtime.prepare(false));
+
+      expect(errorMessages(failure)).toContainEqual(expect.stringContaining(expected));
+      expect(incompatible.loaded).toBe(false);
+      expect(runtime.readiness.summary).toMatchObject({ status: "error", loaded: false });
+      await runtime.shutdown().catch(() => undefined);
+    },
+  );
+
   it("prepares Whisper, Nemotron, and shared Qwen even when live captions are toggled off", async () => {
     const root = await createTempRoot();
     const models = createModels();
@@ -276,6 +322,26 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
+  it("returns a bounded length-finished summary for controller presentation validation", async () => {
+    const root = await createTempRoot();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async () =>
+            textResponse(
+              ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
+              "length",
+            ),
+        }),
+    });
+    await runtime.prepare(false);
+
+    await expect(runtime.summarize("Exact transcript.")).resolves.toMatchObject({
+      response: { finishReason: "length" },
+    });
+    await runtime.shutdown();
+  });
+
   it.each([
     {
       name: "catalog and cache lookup",
@@ -341,7 +407,15 @@ describe("FoundryRecorderRuntime", () => {
   it("preserves exact Whisper text through the controller and exact Qwen prompt input", async () => {
     const root = await createTempRoot();
     const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
-    const rawSummary = "\n  Summary with exact outer whitespace.  \n";
+    const rawSummary = [
+      "",
+      "  Summary with exact outer whitespace.  ",
+      "  • First fact.  ",
+      "  • Second fact.  ",
+      "  • Third fact.  ",
+      "  • Fourth fact.  ",
+      "",
+    ].join("\n");
     let summaryPrompt = "";
     const manager = new FakeManager(createModels());
     const runtime = createRuntime(root, [manager], {
@@ -372,7 +446,15 @@ describe("FoundryRecorderRuntime", () => {
       expect(final.snapshot.transcript.finalText).toBe(exact);
       expect(summary.summaryInput).toBe(exact);
       expect(summaryPrompt).toBe(summaryUserPrompt(exact));
-      expect(summary.snapshot.transcript.summary?.text).toBe("Summary with exact outer whitespace.");
+      expect(summary.snapshot.transcript.summary?.text).toBe(
+        [
+          "Summary with exact outer whitespace.",
+          "• First fact.",
+          "• Second fact.",
+          "• Third fact.",
+          "• Fourth fact.",
+        ].join("\n"),
+      );
       expect(summary.snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
         detail: rawSummary,
         summaryDisplayFormattingApplied: true,
@@ -1263,7 +1345,14 @@ describe("FoundryRecorderRuntime", () => {
       order.push("nemotron-session-dispose");
     });
     const whisperProcess = vi.fn(async () => speechResponse("Exact Whisper final."));
-    const qwenProcess = vi.fn(async () => textResponse("Exact Qwen summary."));
+    const exactQwenSummary = [
+      "Exact Qwen summary.",
+      "• First fact.",
+      "• Second fact.",
+      "• Third fact.",
+      "• Fourth fact.",
+    ].join("\n");
+    const qwenProcess = vi.fn(async () => textResponse(exactQwenSummary));
     const stream: StreamingResponse = {
       response: streamSettled.promise.then(() => speechResponse("stale live transcript")),
       [Symbol.asyncIterator]() {
@@ -1327,7 +1416,7 @@ describe("FoundryRecorderRuntime", () => {
 
     expect(final.result.transcript).toBe("Exact Whisper final.");
     expect(summary.summaryInput).toBe("Exact Whisper final.");
-    expect(summary.snapshot.transcript.summary?.text).toBe("Exact Qwen summary.");
+    expect(summary.snapshot.transcript.summary?.text).toBe(exactQwenSummary);
     expect(whisperProcess).toHaveBeenCalledOnce();
     expect(qwenProcess).toHaveBeenCalledOnce();
     expect(summary.snapshot.trace.find((entry) => entry.phase === "live-caption-warning")).toMatchObject({
@@ -1546,7 +1635,7 @@ describe("FoundryRecorderRuntime", () => {
     expect(manager.dispose).toHaveBeenCalledOnce();
   });
 
-  it("uses one manager and the exact CPU vision slot for text assistant turns", async () => {
+  it("uses one manager and the exact GPU vision slot for text assistant turns", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const manager = new FakeManager(models);
@@ -1575,8 +1664,8 @@ describe("FoundryRecorderRuntime", () => {
       source: "shared_summary_assistant_slot",
       task: "vision-language-chat",
       runtime: {
-        deviceType: DeviceType.CPU,
-        executionProvider: AUDIO_EXECUTION_PROVIDER,
+        deviceType: SUMMARY_DEVICE_TYPE,
+        executionProvider: SUMMARY_EXECUTION_PROVIDER,
       },
     });
     expect(manager.catalog.getModelVariant).toHaveBeenCalledWith(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
@@ -1614,8 +1703,8 @@ describe("FoundryRecorderRuntime", () => {
       modelId: QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
       source: "shared_summary_assistant_slot",
       runtime: {
-        deviceType: DeviceType.CPU,
-        executionProvider: AUDIO_EXECUTION_PROVIDER,
+        deviceType: SUMMARY_DEVICE_TYPE,
+        executionProvider: SUMMARY_EXECUTION_PROVIDER,
       },
     });
     expect(models.get(SUMMARY_MODEL_ID)?.loaded).toBe(true);
@@ -1630,7 +1719,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("keeps all core slots loaded when optional CPU vision inference fails", async () => {
+  it("keeps all core slots loaded when optional GPU vision inference fails", async () => {
     const root = await createTempRoot();
     const models = createModels();
     const manager = new FakeManager(models);
@@ -1780,7 +1869,7 @@ describe("FoundryRecorderRuntime", () => {
     });
     const visionModel = models.get(QWEN_VISION_CHAT_CANDIDATE_MODEL_ID);
     if (visionModel === undefined) {
-      throw new Error("Expected the optional CPU VLM.");
+      throw new Error("Expected the shared GPU VLM.");
     }
     const visionUnload = vi.spyOn(visionModel, "unload");
     const runtime = createRuntime(root, [manager], {
@@ -2089,10 +2178,10 @@ function createModels(order?: string[]): ReadonlyMap<string, FakeModel> {
         QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
         "qwen-vision",
         "vision-language-chat",
-        AUDIO_EXECUTION_PROVIDER,
+        SUMMARY_EXECUTION_PROVIDER,
         order,
         {
-          deviceType: DeviceType.CPU,
+          deviceType: SUMMARY_DEVICE_TYPE,
           inputModalities: '["text", "image"]',
           outputModalities: "text",
         },
@@ -2133,8 +2222,8 @@ function fakeChatSession(
     turnCount: 0,
     preflightRequest: async (): Promise<RequestPreflightResult> => ({
       promptTokens: 10,
-      outputReserveTokens: 260,
-      requiredTokens: 270,
+      outputReserveTokens: 512,
+      requiredTokens: 522,
       contextLimitTokens: 4_096,
       fits: true,
       deficitTokens: 0,
@@ -2156,10 +2245,10 @@ function speechResponse(text: string): Response {
   };
 }
 
-function textResponse(text: string): Response {
+function textResponse(text: string, finishReason: Response["finishReason"] = "stop"): Response {
   return {
     output: [{ type: "text", text }],
-    finishReason: "stop",
+    finishReason,
     usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
   };
 }

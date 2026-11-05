@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SUMMARY_MODEL_ID } from "../src/foundry/runtime-config";
 import { TranscriptStore } from "../src/transcript/transcript-store";
 
 describe("TranscriptStore", () => {
@@ -59,7 +60,7 @@ describe("TranscriptStore", () => {
       text: "Initial summary.",
       transcriptVersion: submitted.version,
       generatedAt: "2026-10-29T00:00:00.000Z",
-      modelId: "qwen3.5-0.8b-generic-cpu:3",
+      modelId: SUMMARY_MODEL_ID,
       durationMs: 1200,
       promptTokens: 50,
       completionTokens: 20,
@@ -82,7 +83,7 @@ describe("TranscriptStore", () => {
         text: "Stale summary.",
         transcriptVersion: submitted.version,
         generatedAt: "2026-10-29T00:00:00.000Z",
-        modelId: "qwen3.5-0.8b-generic-cpu:3",
+        modelId: SUMMARY_MODEL_ID,
         durationMs: 100,
         promptTokens: 10,
         completionTokens: 5,

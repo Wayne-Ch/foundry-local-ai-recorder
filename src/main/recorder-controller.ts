@@ -45,7 +45,7 @@ import type {
   TranscriptionResponse,
 } from "../shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
-import { formatSummaryPresentation } from "../summary/summary-format";
+import { assertSummaryPresentationContract, formatSummaryPresentation } from "../summary/summary-format";
 import { TranscriptStore } from "../transcript/transcript-store";
 import { noopRecorderOperationJournal, type RecorderOperationJournal } from "./operation-journal";
 
@@ -398,6 +398,7 @@ export class RecorderController {
       const result = await this.#runtime.summarize(submitted.text);
       this.#assertCurrent(generation);
       const displaySummary = formatSummaryPresentation(result.text);
+      assertSummaryPresentationContract(displaySummary.text);
       this.#traceEvent(
         "Foundry Local",
         "summary-raw",

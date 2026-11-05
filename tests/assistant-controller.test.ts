@@ -11,6 +11,7 @@ import type {
   AssistantImageByteLifecycle,
   AssistantImageBytePurpose,
 } from "../src/assistant/image-byte-lifecycle";
+import type { PreparedAssistantInferenceImage } from "../src/assistant/image-inference";
 import type { ValidatedImage } from "../src/assistant/image-security";
 import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
 import type { VisionChatTurnInput, VisionChatTurnResult } from "../src/foundry/optional-vision-chat-runtime";
@@ -309,7 +310,7 @@ describe("AssistantController", () => {
       getTranscript: () => transcript,
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
 
@@ -361,11 +362,11 @@ describe("AssistantController", () => {
       getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
     const chat = controller.startChat("session-1", "What is an ordinary differential equation?", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
 
-    controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+    controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement", inferenceImage([6, 5, 4]));
     expect(controller.snapshot().cleanupPending).toBe(false);
     release();
     await vi.waitFor(() =>
@@ -463,7 +464,7 @@ describe("AssistantController", () => {
       getTranscript: () => transcript,
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
 
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
@@ -504,7 +505,7 @@ describe("AssistantController", () => {
       getTranscript: () => transcript,
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
 
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
@@ -536,7 +537,7 @@ describe("AssistantController", () => {
         }),
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
 
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
@@ -573,10 +574,11 @@ describe("AssistantController", () => {
       "Select an image",
     );
 
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
     controller.startChat("session-1", "Explain the selected image in one sentence.", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(2));
     expect(runtime.inputs[1]?.images?.[0]).toMatchObject({ kind: "data", format: "png" });
+    expect(runtime.imagePayloads[0]).toEqual(new Uint8Array([7, 8, 9]));
   });
 
   it("owns an image copy after the caller releases its validated buffer", async () => {
@@ -588,16 +590,16 @@ describe("AssistantController", () => {
       runtime,
     });
     const validated = image();
-    controller.selectImage(validated, "data:image/png;base64,abc");
+    controller.selectImage(validated, "data:image/png;base64,abc", inferenceImage());
     validated.bytes.fill(0);
 
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(runtime.imagePayloads).toHaveLength(1));
 
-    expect(runtime.imagePayloads[0]).toEqual(new Uint8Array([1, 2, 3]));
+    expect(runtime.imagePayloads[0]).toEqual(new Uint8Array([7, 8, 9]));
   });
 
-  it("zeroes the selected copy exactly once without mutating its Buffer source", () => {
+  it("zeroes selected source and inference copies exactly once without mutating the Buffer source", () => {
     const source = Buffer.from([1, 2, 3]);
     const lifecycle = new TrackingImageByteLifecycle();
     const controller = new AssistantController({
@@ -605,24 +607,28 @@ describe("AssistantController", () => {
       runtime: new FakeRuntime("answer"),
       imageByteLifecycle: lifecycle,
     });
-    controller.selectImage({ ...image(), bytes: source }, "data:image/png;base64,abc");
+    controller.selectImage({ ...image(), bytes: source }, "data:image/png;base64,abc", inferenceImage());
     const selectedCopy = lifecycle.copies("selected-image")[0] as Uint8Array;
+    const selectedInferenceCopy = lifecycle.copies("selected-inference-image")[0] as Uint8Array;
 
     source.fill(9);
     expect(selectedCopy).toEqual(new Uint8Array([1, 2, 3]));
+    expect(selectedInferenceCopy).toEqual(new Uint8Array([7, 8, 9]));
 
     controller.removeImage();
     controller.shutdown();
 
     expect(selectedCopy).toEqual(new Uint8Array([0, 0, 0]));
+    expect(selectedInferenceCopy).toEqual(new Uint8Array([0, 0, 0]));
     expect(lifecycle.releaseCount(selectedCopy, "selected-image")).toBe(1);
+    expect(lifecycle.releaseCount(selectedInferenceCopy, "selected-inference-image")).toBe(1);
     expect(source).toEqual(Buffer.from([9, 9, 9]));
   });
 
   it("keeps the committed controller copy after picker cleanup zeroes Node Buffer inputs", async () => {
     const filePath = path.resolve("fixtures", "ode-slide.png");
     const fileBytes = await readFile(filePath);
-    const pngSignature = Uint8Array.from(fileBytes.subarray(0, 8));
+    const inferenceBytes = new Uint8Array([7, 8, 9]);
     let validatedBytes: Uint8Array | null = null;
     const runtime = new FakeRuntime(
       "Visible text/objects: ODE slide\nRelation to lesson: Equation\nUncertainty: None",
@@ -641,23 +647,31 @@ describe("AssistantController", () => {
           validatedBytes = image.bytes;
           return "data:image/png;base64,abc";
         },
+        createInferenceImage: async () => ({
+          ...inferenceImage(inferenceBytes),
+          width: 384,
+          height: 216,
+        }),
       },
       {
         assertCurrent: () => {},
-        commit: (image, thumbnailDataUrl) => controller.selectImage(image, thumbnailDataUrl),
+        commit: (image, thumbnailDataUrl, preparedInferenceImage) =>
+          controller.selectImage(image, thumbnailDataUrl, preparedInferenceImage),
       },
     );
 
     expect(Buffer.isBuffer(fileBytes)).toBe(true);
     expect(selected?.image?.basename).toBe("ode-slide.png");
+    expect(selected?.image?.thumbnailDataUrl).toBe("data:image/png;base64,abc");
     expect(fileBytes.every((value) => value === 0)).toBe(true);
     expect(validatedBytes).not.toBeNull();
     expect((validatedBytes as unknown as Uint8Array).every((value) => value === 0)).toBe(true);
+    expect(inferenceBytes).toEqual(new Uint8Array([0, 0, 0]));
 
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
 
-    expect(runtime.imagePayloads[0]?.subarray(0, 8)).toEqual(pngSignature);
+    expect(runtime.imagePayloads[0]).toEqual(new Uint8Array([7, 8, 9]));
   });
 
   it("reset clears visible optional state immediately while native cleanup drains", async () => {
@@ -673,7 +687,7 @@ describe("AssistantController", () => {
       getTranscript: () => snapshot({ finalText: "core final", version: 1 }),
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
     controller.startChat("session-1", "What is ODE?", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
 
@@ -732,7 +746,7 @@ describe("AssistantController", () => {
         runtime,
         imageByteLifecycle: lifecycle,
       });
-      controller.selectImage(image(), "data:image/png;base64,abc");
+      controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
       controller.startChat("session-1", "What is ODE?", () => {});
       await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
       controller.startChat("session-1", "Explain the selected image.", () => {});
@@ -740,7 +754,11 @@ describe("AssistantController", () => {
       expect(lifecycle.copies("assistant-operation")).toHaveLength(0);
 
       if (action === "replace") {
-        controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+        controller.selectImage(
+          image([9, 8, 7]),
+          "data:image/png;base64,replacement",
+          inferenceImage([6, 5, 4]),
+        );
       } else if (action === "remove") {
         controller.removeImage();
       } else {
@@ -772,13 +790,17 @@ describe("AssistantController", () => {
         runtime,
         imageByteLifecycle: lifecycle,
       });
-      controller.selectImage(image(), "data:image/png;base64,abc");
+      controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
       controller.startChat("session-1", "Explain the selected image.", () => {});
       await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
       const operationBytes = lifecycle.copies("assistant-operation")[0];
 
       if (action === "replace") {
-        controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+        controller.selectImage(
+          image([9, 8, 7]),
+          "data:image/png;base64,replacement",
+          inferenceImage([6, 5, 4]),
+        );
       } else {
         controller.removeImage();
       }
@@ -807,7 +829,7 @@ describe("AssistantController", () => {
         getTranscript: () => snapshot({ finalText: "lesson", version: 1 }),
         runtime,
       });
-      controller.selectImage(image(), "data:image/png;base64,abc");
+      controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
       const started = controller.startImageAnalysis("session-1", () => {});
       await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
       expect(controller.snapshot().pendingOperations).toEqual([
@@ -824,7 +846,11 @@ describe("AssistantController", () => {
           controller.cancel(started.requestId);
           break;
         case "replace":
-          controller.selectImage(image([9, 8, 7]), "data:image/png;base64,replacement");
+          controller.selectImage(
+            image([9, 8, 7]),
+            "data:image/png;base64,replacement",
+            inferenceImage([6, 5, 4]),
+          );
           break;
         case "remove":
           controller.removeImage();
@@ -859,12 +885,12 @@ describe("AssistantController", () => {
       runtime,
       imageByteLifecycle: lifecycle,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(runtime.inputs).toHaveLength(1));
 
     const operationCopy = lifecycle.copies("assistant-operation")[0];
-    expect(operationCopy).toEqual(new Uint8Array([1, 2, 3]));
+    expect(operationCopy).toEqual(new Uint8Array([7, 8, 9]));
     expect(lifecycle.isLive(operationCopy as Uint8Array)).toBe(true);
 
     release();
@@ -882,7 +908,7 @@ describe("AssistantController", () => {
       runtime,
       imageByteLifecycle: lifecycle,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
 
     controller.startChat("session-1", "Explain the selected image.", () => {});
     await vi.waitFor(() =>
@@ -916,7 +942,7 @@ describe("AssistantController", () => {
       getTranscript: () => transcript,
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
 
@@ -961,7 +987,7 @@ describe("AssistantController", () => {
       getTranscript: () => snapshot({ finalText: "shared lesson", version: 1 }),
       runtime,
     });
-    controller.selectImage(image(), "data:image/png;base64,abc");
+    controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() => expect(controller.snapshot().imageAnalysis).not.toBeNull());
     controller.startChat("session-1", "Explain the lesson.", () => {});
@@ -983,6 +1009,7 @@ describe("AssistantController", () => {
     controller.selectImage(
       { ...image([4, 5, 6]), basename: "clinic-xray.png" },
       "data:image/png;base64,clinic",
+      inferenceImage([4, 4, 4]),
     );
     controller.startImageAnalysis("session-1", () => {});
     await vi.waitFor(() =>
@@ -1090,7 +1117,7 @@ describe("AssistantController", () => {
     expect(() => parseImageAnalysisNote("A loose paragraph.")).toThrow("structured note");
   });
 
-  it("parses the exact CPU VLM section-and-bullets response", () => {
+  it("parses the captured structured VLM section-and-bullets response", () => {
     expect(parseImageAnalysisNote(EXACT_CPU_VLM_RESULT)).toEqual({
       visibleTextAndObjects: [
         "Equation: dy/dt = -2y",
@@ -1283,12 +1310,12 @@ class FakeRuntime implements AssistantRuntime {
       return {
         text: answer,
         model: {
-          modelId: "qwen3.5-0.8b-generic-cpu:3",
+          modelId: "qwen3.5-0.8b-generic-gpu:4",
           source: "shared_summary_assistant_slot",
           task: "vision-language-chat",
           runtime: {
-            deviceType: DeviceType.CPU,
-            executionProvider: "CPUExecutionProvider",
+            deviceType: DeviceType.GPU,
+            executionProvider: "WebGPUExecutionProvider",
           },
           inputModalities: ["text", "image"],
           outputModalities: ["text"],
@@ -1338,6 +1365,18 @@ function image(bytes: readonly number[] = [1, 2, 3]): ValidatedImage {
     width: 10,
     height: 10,
     bytes: new Uint8Array(bytes),
+  };
+}
+
+function inferenceImage(bytes: Uint8Array | readonly number[] = [7, 8, 9]): PreparedAssistantInferenceImage {
+  const ownedBytes = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+  return {
+    mimeType: "image/png",
+    format: "png",
+    sizeBytes: ownedBytes.byteLength,
+    width: 10,
+    height: 10,
+    bytes: ownedBytes,
   };
 }
 

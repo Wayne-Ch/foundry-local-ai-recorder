@@ -641,7 +641,7 @@ export class FoundryRecorderRuntime {
             doSample: false,
             temperature: 0,
             seed: 42,
-            maxOutputTokens: 260,
+            maxOutputTokens: 512,
           },
           toolChoice: "none",
           additionalOptions: {
@@ -661,7 +661,7 @@ export class FoundryRecorderRuntime {
           }
           const response = await session.processRequest(request);
           operation.assertCurrent();
-          if (response.finishReason !== "stop") {
+          if (response.finishReason !== "stop" && response.finishReason !== "length") {
             throw new Error(`Summary generation ended with ${response.finishReason}.`);
           }
           const text = extractDefaultText(response);
@@ -920,6 +920,7 @@ export class FoundryRecorderRuntime {
       if (
         current !== null &&
         current.id === target.modelId &&
+        deviceType(current) === target.deviceType &&
         executionProvider(current) === target.executionProvider &&
         (await current.isLoaded())
       ) {
@@ -1121,6 +1122,9 @@ export class FoundryRecorderRuntime {
     if (model.id !== target.modelId) {
       throw new Error(`Resolved ${model.id}; expected exact model ${target.modelId}.`);
     }
+    if (deviceType(model) !== target.deviceType) {
+      throw new Error(`${model.id} uses ${deviceType(model)}; expected ${target.deviceType}.`);
+    }
     if (executionProvider(model) !== target.executionProvider) {
       throw new Error(`${model.id} uses ${executionProvider(model)}; expected ${target.executionProvider}.`);
     }
@@ -1130,7 +1134,7 @@ export class FoundryRecorderRuntime {
     }
     if (role === "summary") {
       const compatibility = inspectVisionChatModel(model, target.modelId, {
-        deviceType: "CPU",
+        deviceType: target.deviceType,
         executionProvider: target.executionProvider,
       });
       if (!compatibility.compatible) {
@@ -1317,7 +1321,7 @@ export class FoundryRecorderRuntime {
       throw new Error("Prepare local models before using the shared summary and assistant model.");
     }
     const compatibility = inspectVisionChatModel(model, target.modelId, {
-      deviceType: "CPU",
+      deviceType: target.deviceType,
       executionProvider: target.executionProvider,
     });
     if (!compatibility.compatible) {
@@ -2004,12 +2008,16 @@ function executionProvider(model: IModel): string {
   );
 }
 
+function deviceType(model: IModel): string {
+  return model.info.runtime?.deviceType ?? model.info.deviceType;
+}
+
 function modelIdentity(role: ModelRole, model: IModel): ModelIdentity {
   return {
     role,
     id: model.id,
     alias: model.alias,
-    deviceType: model.info.runtime?.deviceType ?? model.info.deviceType,
+    deviceType: deviceType(model),
     executionProvider: executionProvider(model),
     fileSizeMb: model.info.fileSizeMb ?? null,
   };
@@ -2019,7 +2027,7 @@ function audioModelIdentity(model: IModel, streaming: boolean): AudioModelIdenti
   return {
     alias: model.alias,
     id: model.id,
-    deviceType: model.info.runtime?.deviceType ?? model.info.deviceType,
+    deviceType: deviceType(model),
     executionProvider: executionProvider(model),
     fileSizeMb: model.info.fileSizeMb ?? null,
     language: AUDIO_LANGUAGE,
@@ -2038,7 +2046,7 @@ function assistantModelIdentity(
     source,
     task: model.info.task ?? "",
     runtime: {
-      deviceType: model.info.runtime?.deviceType ?? model.info.deviceType,
+      deviceType: deviceType(model),
       executionProvider: executionProvider(model),
     },
     inputModalities,

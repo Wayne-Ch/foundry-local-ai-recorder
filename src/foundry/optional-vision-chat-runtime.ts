@@ -14,7 +14,7 @@ import {
 } from "../assistant/image-byte-lifecycle";
 
 export const VISION_LANGUAGE_CHAT_TASK = "vision-language-chat";
-export const QWEN_VISION_CHAT_CANDIDATE_MODEL_ID = "qwen3.5-0.8b-generic-cpu:3";
+export const QWEN_VISION_CHAT_CANDIDATE_MODEL_ID = "qwen3.5-0.8b-generic-gpu:4";
 
 export interface VisionChatRuntimeTarget {
   readonly deviceType: string;

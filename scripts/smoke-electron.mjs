@@ -7,6 +7,7 @@ const child = spawn(electronPath, electronArgs, {
   cwd: process.cwd(),
   env: { ...process.env, ENHANCED_AI_RECORDER_SMOKE_AND_EXIT: "1" },
   stdio: ["ignore", "pipe", "pipe"],
+  windowsHide: true,
 });
 const output = [];
 child.stdout.on("data", (chunk) => output.push(chunk.toString()));

@@ -5,6 +5,7 @@ import type {
   AssistantImageByteLifecycle,
   AssistantImageBytePurpose,
 } from "../src/assistant/image-byte-lifecycle";
+import type { PreparedAssistantInferenceImage } from "../src/assistant/image-inference";
 import type { ValidatedImage } from "../src/assistant/image-security";
 import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
 import {
@@ -36,7 +37,7 @@ describe("assistant cancellation cleanup", () => {
         }),
         imageByteLifecycle: lifecycle,
       });
-      controller.selectImage(image(), "data:image/png;base64,abc");
+      controller.selectImage(image(), "data:image/png;base64,abc", inferenceImage());
       controller.startChat("session-1", "Explain the selected image.", () => {});
       await runtime.started;
       const operationBytes = lifecycle.copies("assistant-operation")[0];
@@ -120,8 +121,8 @@ class ThrowingCancelRuntime implements AssistantRuntime {
         source: "shared_summary_assistant_slot",
         task: "vision-language-chat",
         runtime: {
-          deviceType: DeviceType.CPU,
-          executionProvider: "CPUExecutionProvider",
+          deviceType: DeviceType.GPU,
+          executionProvider: "WebGPUExecutionProvider",
         },
         inputModalities: ["text", "image"],
         outputModalities: ["text"],
@@ -238,6 +239,17 @@ function image(): ValidatedImage {
     width: 1,
     height: 1,
     bytes: new Uint8Array([1, 2, 3]),
+  };
+}
+
+function inferenceImage(): PreparedAssistantInferenceImage {
+  return {
+    mimeType: "image/png",
+    format: "png",
+    sizeBytes: 3,
+    width: 1,
+    height: 1,
+    bytes: new Uint8Array([7, 8, 9]),
   };
 }
 

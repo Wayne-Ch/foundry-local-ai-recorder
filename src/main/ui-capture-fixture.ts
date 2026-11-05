@@ -1,10 +1,10 @@
 import type { ModelReadiness, RecorderSnapshot } from "../shared/contracts";
 
 export const POPULATED_SUMMARY_CAPTURE_RAW =
-  "The lesson derives $ y' = -2y $. It uses $ e^{-2t}} $ for exponential decay. The initial condition determines c.";
+  "The lesson defines an ordinary differential equation as relating a function to its derivatives. It derives $ y' = -2y $. It separates the variables. It uses $ e^{-2t}} $ for exponential decay. The initial condition determines c.";
 
 export const POPULATED_SUMMARY_CAPTURE_FORMATTED =
-  "The lesson derives y′ = −2y.\n• It uses e^(−2t) for exponential decay.\n• The initial condition determines c.";
+  "The lesson defines an ordinary differential equation as relating a function to its derivatives.\n• It derives y′ = −2y.\n• It separates the variables.\n• It uses e^(−2t) for exponential decay.\n• The initial condition determines c.";
 
 export function createPopulatedSummaryCaptureSnapshot(base: RecorderSnapshot): RecorderSnapshot {
   return {
@@ -30,7 +30,7 @@ export function createPopulatedSummaryCaptureSnapshot(base: RecorderSnapshot): R
       liveSequence: -1,
       liveStreamId: null,
       finalText:
-        "Today we derived y' = -2y and solved the exponential decay model e^{-2t} from the initial condition.",
+        "An ordinary differential equation relates a function to its derivatives. The lesson derives y' = -2y, separates the variables, uses e^{-2t} for exponential decay, and determines c from the initial condition.",
       version: 1,
       submittedVersion: 1,
       summary: {
