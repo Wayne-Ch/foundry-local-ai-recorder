@@ -154,6 +154,10 @@ h2 span {
   background: linear-gradient(145deg, rgba(20, 39, 48, 0.86), rgba(11, 24, 32, 0.72));
 }
 
+.model-card > div {
+  min-width: 0;
+}
+
 .model-card-primary {
   border-color: rgba(103, 232, 213, 0.4);
   box-shadow: inset 0 0 28px rgba(37, 190, 166, 0.08);
