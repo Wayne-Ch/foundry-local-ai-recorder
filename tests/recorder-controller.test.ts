@@ -42,13 +42,12 @@ class FakeRuntime implements RecorderRuntime {
   constructor(
     readonly finalTranscript = "Whisper authoritative final transcript.",
     readonly transcriptionError: Error | null = null,
-    readonly summaryText = [
-      "Overview.",
-      "• First fact.",
-      "• Second fact.",
-      "• Third fact.",
-      "• Fourth fact.",
-    ].join("\n"),
+    readonly summaryText = summaryJson("Overview.", [
+      "First fact.",
+      "Second fact.",
+      "Third fact.",
+      "Fourth fact.",
+    ]),
     runtimeTargets: RuntimeTargets = targets,
   ) {
     this.readiness = runtimeReadiness(runtimeTargets);
@@ -372,13 +371,12 @@ describe("RecorderController", () => {
   });
 
   it("stores formatted summary text and preserves the exact raw Qwen response in trace evidence", async () => {
-    const raw = [
-      String.raw`Keep C:\times\reports and \cdot literal.`,
+    const raw = summaryJson(String.raw`Keep C:\times\reports and \cdot literal.`, [
       String.raw`The solution is expressed as $ y(t) = c \\cdot e^{-2t}} $, where $ c $ is the initial constant.`,
       "The equation remains first order.",
       "The behavior is exponential decay.",
       "The initial condition determines the constant.",
-    ].join(" ");
+    ]);
     const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
     const controller = new RecorderController(runtime);
 
@@ -410,42 +408,48 @@ describe("RecorderController", () => {
     {
       name: "malformed output",
       raw: "Only one summary line.",
-      expectedError: "exactly one overview and four detail lines",
+      expectedError: "invalid structured output",
       finishReason: "stop" as const,
     },
+    ...[1, 2, 3, 5].map((detailCount) => ({
+      name: `${detailCount}-detail output`,
+      raw: summaryJson(
+        "Project Atlas records explicit facts.",
+        Array.from({ length: detailCount }, (_value, index) => `Detail ${index + 1}.`),
+      ),
+      expectedError: "invalid structured output",
+      finishReason: "stop" as const,
+    })),
     {
       name: "canonically duplicated detail",
-      raw: [
-        "Project Atlas records explicit facts.",
-        "• The target remains 250 milliseconds.",
-        "• Maya Chen owns the follow-up.",
-        "• THE TARGET REMAINS 250 MILLISECONDS!",
-        "• The next review is November 12.",
-      ].join("\n"),
-      expectedError: "exactly one overview and four detail lines",
+      raw: summaryJson("Project Atlas records explicit facts.", [
+        "The target remains 250 milliseconds.",
+        "Maya Chen owns the follow-up.",
+        "THE TARGET REMAINS 250 MILLISECONDS!",
+        "The next review is November 12.",
+      ]),
+      expectedError: "repeated a detail fact",
       finishReason: "stop" as const,
     },
     {
       name: "incomplete final bullet",
-      raw: [
-        "Project Atlas records the cache observation.",
-        "• The target remains 250 milliseconds.",
-        "• Maya Chen owns the follow-up.",
-        "• The next review is November 12.",
-        "• The cache change was",
-      ].join("\n"),
+      raw: summaryJson("Project Atlas records the cache observation.", [
+        "The target remains 250 milliseconds.",
+        "Maya Chen owns the follow-up.",
+        "The next review is November 12.",
+        "The cache change was",
+      ]),
       expectedError: "incomplete line",
       finishReason: "stop" as const,
     },
     {
       name: "length-finished output",
-      raw: [
-        "Project Atlas records the cache observation.",
-        "• The target remains 250 milliseconds.",
-        "• Maya Chen owns the follow-up.",
-        "• The next review is November 12.",
-        "• The local model cache is enabled.",
-      ].join("\n"),
+      raw: summaryJson("Project Atlas records the cache observation.", [
+        "The target remains 250 milliseconds.",
+        "Maya Chen owns the follow-up.",
+        "The next review is November 12.",
+        "The local model cache is enabled.",
+      ]),
       expectedError: "ended with length",
       finishReason: "length" as const,
     },
@@ -495,13 +499,12 @@ describe("RecorderController", () => {
   });
 
   it("uses the same summary formatter after imported WAV transcription", async () => {
-    const raw = [
-      "It describes $ y' = -2y $.",
+    const raw = summaryJson("It describes $ y' = -2y $.", [
       String.raw`The solution is $ y(t) = c \cdot e^{-2t}} $.`,
       "The equation is first order.",
       "The behavior is decay.",
       "The constant is c.",
-    ].join(" ");
+    ]);
     const runtime = new FakeRuntime("Imported Whisper final.", null, raw);
     const controller = new RecorderController(runtime);
     const wav = encodePcm16Wav(new Uint8Array(32_000));
@@ -779,4 +782,8 @@ function response(
     finishReason,
     usage: { promptTokens: 50, completionTokens: 20, totalTokens: 70 },
   };
+}
+
+function summaryJson(overview: string, details: readonly string[]): string {
+  return JSON.stringify({ overview, details });
 }

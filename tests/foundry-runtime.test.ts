@@ -399,6 +399,248 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
+  it("orders Ask1, queued Ask2, and Summary by submission time", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const ask1Response = deferred<Response>();
+    const ask2Response = deferred<Response>();
+    const summaryResponse = deferred<Response>();
+    const ask1Started = deferred<void>();
+    const ask2Started = deferred<void>();
+    const summaryStarted = deferred<void>();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () => {
+        let label = "unknown";
+        return fakeChatSession({
+          processRequest: async (request) => {
+            const text = requestText(request);
+            if (text.includes("FINAL TRANSCRIPT:")) {
+              label = "summary";
+              order.push("summary-start");
+              summaryStarted.resolve();
+              return summaryResponse.promise;
+            }
+            if (text.includes("ASK_ONE")) {
+              label = "ask1";
+              order.push("ask1-start");
+              ask1Started.resolve();
+              return ask1Response.promise;
+            }
+            label = "ask2";
+            order.push("ask2-start");
+            ask2Started.resolve();
+            return ask2Response.promise;
+          },
+          dispose: () => order.push(`${label}-dispose`),
+        });
+      },
+    });
+    await runtime.prepare(false);
+
+    const ask1 = runtime.runAssistantTurn({ prompt: "ASK_ONE" }, { operationId: "ask-1" });
+    await ask1Started.promise;
+    const ask2 = runtime.runAssistantTurn({ prompt: "ASK_TWO" }, { operationId: "ask-2" });
+    const summary = runtime.summarize("Exact transcript.");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(["ask1-start"]);
+
+    ask1Response.resolve(textResponse("First answer."));
+    await expect(ask1).resolves.toMatchObject({ text: "First answer." });
+    await ask2Started.promise;
+    expect(order.indexOf("ask1-dispose")).toBeLessThan(order.indexOf("ask2-start"));
+    expect(order).not.toContain("summary-start");
+
+    ask2Response.resolve(textResponse("Second answer."));
+    await expect(ask2).resolves.toMatchObject({ text: "Second answer." });
+    await summaryStarted.promise;
+    expect(order.indexOf("ask2-dispose")).toBeLessThan(order.indexOf("summary-start"));
+
+    summaryResponse.resolve(
+      textResponse('{"overview":"Summary.","details":["One.","Two.","Three.","Four."]}'),
+    );
+    await expect(summary).resolves.toMatchObject({ response: { finishReason: "stop" } });
+    await runtime.shutdown();
+  });
+
+  it("removes a cancelled pending assistant ticket without overtaking later summary work", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const events: Array<{ readonly ticketId: string; readonly phase: string }> = [];
+    const ask1Response = deferred<Response>();
+    const ask1Started = deferred<void>();
+    const summaryStarted = deferred<void>();
+    const pendingController = new AbortController();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      onSharedQwenLifecycle: (event) => events.push(event),
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async (request) => {
+            const text = requestText(request);
+            if (text.includes("FINAL TRANSCRIPT:")) {
+              order.push("summary-start");
+              summaryStarted.resolve();
+              return textResponse('{"overview":"Summary.","details":["One.","Two.","Three.","Four."]}');
+            }
+            order.push(text.includes("ASK_ONE") ? "ask1-start" : "ask2-start");
+            if (text.includes("ASK_ONE")) {
+              ask1Started.resolve();
+              return ask1Response.promise;
+            }
+            return textResponse("Cancelled answer.");
+          },
+        }),
+    });
+    await runtime.prepare(false);
+
+    const ask1 = runtime.runAssistantTurn({ prompt: "ASK_ONE" }, { operationId: "ask-1" });
+    await ask1Started.promise;
+    const ask2 = runtime.runAssistantTurn(
+      { prompt: "ASK_TWO" },
+      { operationId: "ask-2", signal: pendingController.signal },
+    );
+    const summary = runtime.summarize("Exact transcript.");
+    pendingController.abort(new Error("Cancel pending Ask2."));
+    await expect(ask2).rejects.toMatchObject({ name: "AbortError" });
+
+    ask1Response.resolve(textResponse("First answer."));
+    await expect(ask1).resolves.toMatchObject({ text: "First answer." });
+    await summaryStarted.promise;
+    await expect(summary).resolves.toMatchObject({ response: { finishReason: "stop" } });
+
+    expect(order).toEqual(["ask1-start", "summary-start"]);
+    expect(events).toEqual(
+      expect.arrayContaining([expect.objectContaining({ ticketId: "ask-2", phase: "cancelled" })]),
+    );
+    await runtime.shutdown();
+  });
+
+  it("keeps later work blocked until an actively cancelled assistant session is disposed", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const askResponse = deferred<Response>();
+    const askStarted = deferred<void>();
+    const summaryStarted = deferred<void>();
+    const controller = new AbortController();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () => {
+        let assistant = false;
+        return fakeChatSession({
+          processRequest: async (request) => {
+            if (requestText(request).includes("FINAL TRANSCRIPT:")) {
+              order.push("summary-start");
+              summaryStarted.resolve();
+              return textResponse('{"overview":"Summary.","details":["One.","Two.","Three.","Four."]}');
+            }
+            assistant = true;
+            order.push("ask-start");
+            askStarted.resolve();
+            return askResponse.promise;
+          },
+          dispose: () => {
+            if (assistant) {
+              order.push("ask-dispose");
+            }
+          },
+        });
+      },
+    });
+    await runtime.prepare(false);
+
+    const ask = runtime.runAssistantTurn(
+      { prompt: "Hold until native cleanup." },
+      { operationId: "ask-active", signal: controller.signal },
+    );
+    await askStarted.promise;
+    const summary = runtime.summarize("Exact transcript.");
+    controller.abort(new Error("Cancel active Ask."));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(["ask-start"]);
+
+    askResponse.resolve(textResponse("Stale answer."));
+    await expect(ask).rejects.toMatchObject({ name: "AbortError" });
+    await summaryStarted.promise;
+    await expect(summary).resolves.toMatchObject({ response: { finishReason: "stop" } });
+    expect(order.indexOf("ask-dispose")).toBeLessThan(order.indexOf("summary-start"));
+    await runtime.shutdown();
+  });
+
+  it("runs multiple summaries in exact submission order", async () => {
+    const root = await createTempRoot();
+    const starts: string[] = [];
+    const firstResponse = deferred<Response>();
+    const secondResponse = deferred<Response>();
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<void>();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async (request) => {
+            const label = requestText(request).includes("FIRST") ? "first" : "second";
+            starts.push(label);
+            if (label === "first") {
+              firstStarted.resolve();
+              return firstResponse.promise;
+            }
+            secondStarted.resolve();
+            return secondResponse.promise;
+          },
+        }),
+    });
+    await runtime.prepare(false);
+
+    const first = runtime.summarize("FIRST transcript.");
+    await firstStarted.promise;
+    const second = runtime.summarize("SECOND transcript.");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(starts).toEqual(["first"]);
+
+    firstResponse.resolve(textResponse('{"overview":"First.","details":["One.","Two.","Three.","Four."]}'));
+    await expect(first).resolves.toMatchObject({ response: { finishReason: "stop" } });
+    await secondStarted.promise;
+    secondResponse.resolve(textResponse('{"overview":"Second.","details":["One.","Two.","Three.","Four."]}'));
+    await expect(second).resolves.toMatchObject({ response: { finishReason: "stop" } });
+    expect(starts).toEqual(["first", "second"]);
+    await runtime.shutdown();
+  });
+
+  it("serializes multiple summaries and cancels all queued tickets during reset", async () => {
+    const root = await createTempRoot();
+    const starts: string[] = [];
+    const firstResponse = deferred<Response>();
+    const firstStarted = deferred<void>();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () =>
+        fakeChatSession({
+          processRequest: async (request) => {
+            const text = requestText(request);
+            const label = text.includes("FIRST") ? "first" : "second";
+            starts.push(label);
+            if (label === "first") {
+              firstStarted.resolve();
+              return firstResponse.promise;
+            }
+            return textResponse('{"overview":"Second.","details":["One.","Two.","Three.","Four."]}');
+          },
+        }),
+    });
+    await runtime.prepare(false);
+
+    const first = runtime.summarize("FIRST transcript.");
+    await firstStarted.promise;
+    const second = runtime.summarize("SECOND transcript.");
+    const reset = runtime.reset();
+    firstResponse.resolve(textResponse('{"overview":"First.","details":["One.","Two.","Three.","Four."]}'));
+
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    await expect(second).rejects.toMatchObject({ name: "AbortError" });
+    await expect(reset).resolves.toBeUndefined();
+    expect(starts).toEqual(["first"]);
+    await runtime.shutdown();
+  });
+
   it.each([
     {
       name: "catalog and cache lookup",
@@ -464,15 +706,10 @@ describe("FoundryRecorderRuntime", () => {
   it("preserves exact Whisper text through the controller and exact Qwen prompt input", async () => {
     const root = await createTempRoot();
     const exact = "  First line.\r\nSecond  line — café 東京!\n\nSymbols: ∑, →, “quoted”.  ";
-    const rawSummary = [
-      "",
-      "  Summary with exact outer whitespace.  ",
-      "  • First fact.  ",
-      "  • Second fact.  ",
-      "  • Third fact.  ",
-      "  • Fourth fact.  ",
-      "",
-    ].join("\n");
+    const rawSummary = `\n  ${JSON.stringify({
+      overview: "  Summary with exact outer whitespace.  ",
+      details: ["  First fact.  ", "  Second fact.  ", "  Third fact.  ", "  Fourth fact.  "],
+    })}  \n`;
     let summaryPrompt = "";
     const manager = new FakeManager(createModels());
     const runtime = createRuntime(root, [manager], {
@@ -1409,7 +1646,14 @@ describe("FoundryRecorderRuntime", () => {
       "• Third fact.",
       "• Fourth fact.",
     ].join("\n");
-    const qwenProcess = vi.fn(async () => textResponse(exactQwenSummary));
+    const qwenProcess = vi.fn(async () =>
+      textResponse(
+        JSON.stringify({
+          overview: "Exact Qwen summary.",
+          details: ["First fact.", "Second fact.", "Third fact.", "Fourth fact."],
+        }),
+      ),
+    );
     const stream: StreamingResponse = {
       response: streamSettled.promise.then(() => speechResponse("stale live transcript")),
       [Symbol.asyncIterator]() {
@@ -1998,6 +2242,7 @@ interface RuntimeFactoryOptions {
   readonly settlementTimeoutMs?: number;
   readonly createAudioSession?: NonNullable<FoundryRecorderRuntimeOptions["createAudioSession"]>;
   readonly createChatSession?: NonNullable<FoundryRecorderRuntimeOptions["createChatSession"]>;
+  readonly onSharedQwenLifecycle?: NonNullable<FoundryRecorderRuntimeOptions["onSharedQwenLifecycle"]>;
 }
 
 function createRuntime(
@@ -2018,6 +2263,9 @@ function createRuntime(
     },
     createAudioSession: options.createAudioSession ?? (() => fakeAudioSession()),
     createChatSession: options.createChatSession ?? (() => fakeChatSession()),
+    ...(options.onSharedQwenLifecycle === undefined
+      ? {}
+      : { onSharedQwenLifecycle: options.onSharedQwenLifecycle }),
     ...(options.settlementTimeoutMs === undefined
       ? {}
       : { settlementTimeoutMs: options.settlementTimeoutMs }),

@@ -93,6 +93,62 @@ describe("Clinic answer safety", () => {
     );
   });
 
+  it.each([
+    "The diagnosis is pneumonia.",
+    "This is pneumonia.",
+    "It looks like appendicitis.",
+    "The image confirms pneumonia.",
+    "This is a medical emergency.",
+    "The treatment would be to start antibiotics.",
+    "The treatment is to immediately start antibiotics.",
+    "Treatment is to start supportive medication.",
+    "Start antibiotics immediately.",
+    "You should go to the emergency department now.",
+    "The patient needs urgent evaluation.",
+    "Urgent evaluation is required.",
+    "Antibiotics should be started immediately.",
+    "These findings are diagnostic of pneumonia.",
+    "This can safely wait until next week.",
+    "This does not require emergency care.",
+  ])("fails closed for asserted diagnosis, triage, or treatment wording: %s", (unsafe) => {
+    const question = "What is the diagnosis, is this urgent, and what treatment should they start?";
+
+    expect(applyClinicAnswerSafety("clinic", question, unsafe)).toBe(
+      `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
+    );
+    expect(clinicModelAnswerForHistory("clinic", question, unsafe)).toBe(
+      CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+    );
+  });
+
+  it("rejects an unsafe assertion even when the same answer also contains safe boundary wording", () => {
+    const answer =
+      "I cannot diagnose from this image, but the diagnosis is pneumonia. Please consult a clinician.";
+    const question = "Can this image diagnose the patient?";
+
+    expect(applyClinicAnswerSafety("clinic", question, answer)).toBe(
+      `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
+    );
+  });
+
+  it.each([
+    "I cannot diagnose, assess urgency, or recommend treatment from this image.",
+    "This is educational context only, not a diagnosis.",
+    "Visible structures can be described for education.",
+  ])("preserves explicit safe refusal or educational wording: %s", (safe) => {
+    const question = "What is the diagnosis and treatment?";
+    const visible = applyClinicAnswerSafety("clinic", question, safe);
+
+    expect(visible).toBe(`${safe}\n\n${CLINICIAN_HANDOFF_SENTENCE}`);
+    expect(visible).not.toContain("pneumonia");
+  });
+
+  it("preserves non-decision Clinic visible-structure education unchanged", () => {
+    const answer = "Visible text includes AP and upright labels; the right side marker is uncertain.";
+
+    expect(applyClinicAnswerSafety("clinic", "Describe the visible labels.", answer)).toBe(answer);
+  });
+
   it("preserves a safe refusal without storing the clinician handoff in chat history", () => {
     const safe = `I cannot recommend treatment from this image.\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
     const question = "What treatment should they start?";
@@ -116,7 +172,7 @@ describe("Clinic answer safety", () => {
     const answer = applyClinicAnswerSafety(
       "clinic",
       "Could this image diagnose the patient?",
-      "x".repeat(MAX_ASSISTANT_DISPLAY_CHARS),
+      `Educational context only. ${"x".repeat(MAX_ASSISTANT_DISPLAY_CHARS)}`,
     );
 
     expect(answer).toHaveLength(MAX_ASSISTANT_DISPLAY_CHARS);

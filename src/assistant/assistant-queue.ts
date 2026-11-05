@@ -22,11 +22,15 @@ interface QueueTask<T> {
   readonly resolve: (value: T) => void;
   readonly reject: (error: unknown) => void;
   readonly abortController: AbortController;
+  status: "queued" | "active";
+  resultSettled: boolean;
+  executionSettled: boolean;
 }
 
 export class AssistantOperationQueue {
   readonly #maxQueuedRequests: number;
   readonly #pending: QueueTask<unknown>[] = [];
+  readonly #tasks = new Map<string, QueueTask<unknown>>();
   #active: QueueTask<unknown> | null = null;
   #generation = 0;
 
@@ -73,11 +77,13 @@ export class AssistantOperationQueue {
   }
 
   get draining(): boolean {
-    return this.#active?.abortController.signal.aborted === true;
+    return [...this.#tasks.values()].some(
+      (task) => task.status === "active" && task.abortController.signal.aborted && !task.executionSettled,
+    );
   }
 
   get queuedRequests(): number {
-    return this.#pending.length;
+    return this.#pending.filter((task) => !task.abortController.signal.aborted).length;
   }
 
   get maxQueuedRequests(): number {
@@ -89,10 +95,7 @@ export class AssistantOperationQueue {
     token: AssistantOperationToken,
     run: (signal: AbortSignal, token: AssistantOperationToken) => Promise<T>,
   ): { readonly requestId: string; readonly result: Promise<T> } {
-    if (this.draining) {
-      throw new Error("Optional assistant cleanup is still draining.");
-    }
-    if (this.#pending.length >= this.#maxQueuedRequests) {
+    if (this.queuedRequests >= this.#maxQueuedRequests) {
       throw new Error(`The assistant queue is full (${this.#maxQueuedRequests} waiting requests).`);
     }
     const requestId = token.requestId;
@@ -112,86 +115,77 @@ export class AssistantOperationQueue {
       resolve: resolveTask,
       reject: rejectTask,
       abortController: new AbortController(),
+      status: "queued",
+      resultSettled: false,
+      executionSettled: false,
     };
     this.#pending.push(task as QueueTask<unknown>);
-    queueMicrotask(() => void this.#drain());
+    this.#tasks.set(task.id, task as QueueTask<unknown>);
+    let execution: Promise<T>;
+    try {
+      execution = Promise.resolve(task.run(task.abortController.signal, task.token));
+    } catch (error) {
+      execution = Promise.reject(error);
+    }
+    void this.#settle(task, execution);
     return { requestId, result };
   }
 
-  cancel(requestId: string): boolean {
-    if (this.#active?.id === requestId) {
-      this.#active.abortController.abort();
-      return true;
-    }
-    const index = this.#pending.findIndex((task) => task.id === requestId);
-    if (index < 0) {
+  markActive(requestId: string): boolean {
+    const task = this.#tasks.get(requestId);
+    if (task === undefined || task.abortController.signal.aborted || task.executionSettled) {
       return false;
     }
-    const [task] = this.#pending.splice(index, 1);
-    task?.abortController.abort();
-    task?.reject(new AssistantCancelledError());
+    const index = this.#pending.indexOf(task);
+    if (index >= 0) {
+      this.#pending.splice(index, 1);
+    }
+    task.status = "active";
+    this.#active = task;
     return true;
   }
 
+  cancel(requestId: string): boolean {
+    const task = this.#tasks.get(requestId);
+    return task === undefined ? false : this.#cancelTask(task, new AssistantCancelledError());
+  }
+
   cancelOwner(ownerSessionId: string): void {
-    if (this.#active?.ownerSessionId === ownerSessionId) {
-      this.#active.abortController.abort();
-    }
-    for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
-      const task = this.#pending[index];
-      if (task?.ownerSessionId !== ownerSessionId) {
-        continue;
+    for (const task of this.#tasks.values()) {
+      if (task.ownerSessionId === ownerSessionId) {
+        this.#cancelTask(task, new AssistantCancelledError("The renderer session ended."));
       }
-      this.#pending.splice(index, 1);
-      task.abortController.abort();
-      task.reject(new AssistantCancelledError("The renderer session ended."));
     }
   }
 
   cancelKind(kind: AssistantOperationKind): boolean {
     let cancelled = false;
-    if (this.#active?.token.kind === kind) {
-      this.#active.abortController.abort();
-      cancelled = true;
-    }
-    for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
-      const task = this.#pending[index];
-      if (task?.token.kind !== kind) {
-        continue;
+    for (const task of this.#tasks.values()) {
+      if (task.token.kind === kind) {
+        cancelled = this.#cancelTask(task, new AssistantCancelledError()) || cancelled;
       }
-      this.#pending.splice(index, 1);
-      task.abortController.abort();
-      task.reject(new AssistantCancelledError());
-      cancelled = true;
     }
     return cancelled;
   }
 
   cancelImageDependent(): boolean {
     let cancelled = false;
-    if (this.#active?.token.dependsOnImage === true) {
-      this.#active.abortController.abort();
-      cancelled = true;
-    }
-    for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
-      const task = this.#pending[index];
-      if (task?.token.dependsOnImage !== true) {
-        continue;
+    for (const task of this.#tasks.values()) {
+      if (task.token.dependsOnImage) {
+        cancelled =
+          this.#cancelTask(
+            task,
+            new AssistantCancelledError("The selected image or lesson context changed."),
+          ) || cancelled;
       }
-      this.#pending.splice(index, 1);
-      task.abortController.abort();
-      task.reject(new AssistantCancelledError("The selected image or lesson context changed."));
-      cancelled = true;
     }
     return cancelled;
   }
 
   cancelAll(message = "The assistant request was cancelled."): void {
     this.#generation += 1;
-    this.#active?.abortController.abort();
-    for (const task of this.#pending.splice(0)) {
-      task.abortController.abort();
-      task.reject(new AssistantCancelledError(message));
+    for (const task of this.#tasks.values()) {
+      this.#cancelTask(task, new AssistantCancelledError(message));
     }
   }
 
@@ -199,37 +193,66 @@ export class AssistantOperationQueue {
     this.cancelAll("The assistant state was reset.");
   }
 
-  async #drain(): Promise<void> {
-    if (this.#active !== null) {
-      return;
-    }
-    const next = this.#pending.shift();
-    if (next === undefined) {
-      return;
-    }
-    this.#active = next;
+  async #settle<T>(task: QueueTask<T>, execution: Promise<T>): Promise<void> {
     try {
-      if (next.generation !== this.#generation || next.abortController.signal.aborted) {
+      if (task.generation !== this.#generation || task.abortController.signal.aborted) {
         throw new AssistantCancelledError();
       }
-      const value = await next.run(next.abortController.signal, next.token);
-      if (next.generation !== this.#generation || next.abortController.signal.aborted) {
+      const value = await execution;
+      if (task.generation !== this.#generation || task.abortController.signal.aborted) {
         throw new AssistantCancelledError();
       }
-      next.resolve(value);
+      this.#resolveTask(task, value);
     } catch (error) {
-      next.reject(
-        next.abortController.signal.aborted &&
+      this.#rejectTask(
+        task,
+        task.abortController.signal.aborted &&
           !(error instanceof AssistantCancelledError) &&
           !(error instanceof AggregateError)
           ? new AssistantCancelledError()
           : error,
       );
     } finally {
-      if (this.#active === next) {
+      task.executionSettled = true;
+      const index = this.#pending.indexOf(task as QueueTask<unknown>);
+      if (index >= 0) {
+        this.#pending.splice(index, 1);
+      }
+      if (this.#active === task) {
         this.#active = null;
       }
-      queueMicrotask(() => void this.#drain());
+      this.#tasks.delete(task.id);
     }
+  }
+
+  #cancelTask(task: QueueTask<unknown>, error: AssistantCancelledError): boolean {
+    if (task.abortController.signal.aborted || task.executionSettled) {
+      return false;
+    }
+    task.abortController.abort(error);
+    if (task.status === "queued") {
+      const index = this.#pending.indexOf(task);
+      if (index >= 0) {
+        this.#pending.splice(index, 1);
+      }
+      this.#rejectTask(task, error);
+    }
+    return true;
+  }
+
+  #resolveTask<T>(task: QueueTask<T>, value: T): void {
+    if (task.resultSettled) {
+      return;
+    }
+    task.resultSettled = true;
+    task.resolve(value);
+  }
+
+  #rejectTask<T>(task: QueueTask<T>, error: unknown): void {
+    if (task.resultSettled) {
+      return;
+    }
+    task.resultSettled = true;
+    task.reject(error);
   }
 }

@@ -5,11 +5,12 @@ import type { AssistantOperationKind, AssistantOperationToken } from "../src/ass
 describe("assistant operation queue", () => {
   it("reports exact queued and active request identities", async () => {
     const queue = new AssistantOperationQueue(2);
-    let release = () => {};
+    let releaseFirst = () => {};
+    let releaseSecond = () => {};
     const firstToken = token("chat");
     const first = queue.enqueue("session-1", firstToken, async () => {
       await new Promise<void>((resolve) => {
-        release = resolve;
+        releaseFirst = resolve;
       });
       return "first";
     });
@@ -17,12 +18,17 @@ describe("assistant operation queue", () => {
     expect(queue.pendingOperations).toEqual([
       { requestId: firstToken.requestId, kind: "chat", status: "queued", phase: "queued" },
     ]);
-    await Promise.resolve();
+    expect(queue.markActive(firstToken.requestId)).toBe(true);
     const secondToken = token("image_analysis", {
       dependsOnImage: true,
       requiresImageBytes: true,
     });
-    const second = queue.enqueue("session-1", secondToken, async () => "second");
+    const second = queue.enqueue("session-1", secondToken, async () => {
+      await new Promise<void>((resolve) => {
+        releaseSecond = resolve;
+      });
+      return "second";
+    });
 
     expect(queue.pendingOperations).toEqual([
       {
@@ -38,8 +44,10 @@ describe("assistant operation queue", () => {
         phase: "queued",
       },
     ]);
-    release();
+    releaseFirst();
     await expect(first.result).resolves.toBe("first");
+    expect(queue.markActive(secondToken.requestId)).toBe(true);
+    releaseSecond();
     await expect(second.result).resolves.toBe("second");
     expect(queue.pendingOperations).toEqual([]);
   });
@@ -62,21 +70,33 @@ describe("assistant operation queue", () => {
     await expect(request.result).rejects.toBeInstanceOf(AssistantCancelledError);
   });
 
-  it("serializes requests and enforces a bounded waiting queue", async () => {
+  it("submits every task immediately while enforcing a bounded runtime waiting queue", async () => {
     const queue = new AssistantOperationQueue(1);
-    let release = () => {};
+    const submitted: string[] = [];
+    let releaseFirst = () => {};
+    let releaseSecond = () => {};
     const first = queue.enqueue("session-1", token("chat"), async () => {
+      submitted.push("first");
       await new Promise<void>((resolve) => {
-        release = resolve;
+        releaseFirst = resolve;
       });
       return "first";
     });
-    await Promise.resolve();
-    const second = queue.enqueue("session-1", token("chat"), async () => "second");
+    expect(queue.markActive(first.requestId)).toBe(true);
+    const second = queue.enqueue("session-1", token("chat"), async () => {
+      submitted.push("second");
+      await new Promise<void>((resolve) => {
+        releaseSecond = resolve;
+      });
+      return "second";
+    });
 
     expect(() => queue.enqueue("session-1", token("chat"), async () => "third")).toThrow("queue is full");
-    release();
+    expect(submitted).toEqual(["first", "second"]);
+    releaseFirst();
     await expect(first.result).resolves.toBe("first");
+    expect(queue.markActive(second.requestId)).toBe(true);
+    releaseSecond();
     await expect(second.result).resolves.toBe("second");
   });
 

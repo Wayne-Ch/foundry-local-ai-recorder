@@ -73,6 +73,8 @@ export interface VisionChatTurnInput {
   readonly images?: readonly VisionImageInput[];
 }
 
+export type VisionChatTurnInputSource = VisionChatTurnInput | (() => VisionChatTurnInput);
+
 export interface VisionChatTurnResult {
   readonly text: string;
   readonly model: PreparedAssistantModel;
@@ -87,6 +89,8 @@ export interface AssistantTurnAdapterOptions {
   readonly createImageItem?: (format: string, data: Uint8Array) => ImageItem;
   readonly imageByteLifecycle?: AssistantImageByteLifecycle;
   readonly onCleanupError?: (error: unknown) => void;
+  readonly onNativeRequestStart?: () => void;
+  readonly onNativeRequestSettled?: () => void;
   readonly assertCurrent?: () => void;
 }
 
@@ -220,7 +224,13 @@ export async function processAssistantTurn(
         `Assistant request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
       );
     }
-    const response = await session.processRequest(request);
+    options.onNativeRequestStart?.();
+    let response: Response;
+    try {
+      response = await session.processRequest(request);
+    } finally {
+      options.onNativeRequestSettled?.();
+    }
     throwIfAborted(options.signal);
     options.assertCurrent?.();
     if (response.finishReason !== "stop") {

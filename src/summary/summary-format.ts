@@ -1,4 +1,5 @@
-import { SUMMARY_MODEL_DETAIL_LIMIT } from "./summary-prompt";
+import { canonicalSummarySemanticText } from "./summary-canonical";
+import { SUMMARY_MODEL_DETAIL_COUNT } from "./summary-prompt";
 
 export interface SummaryDisplayFormatResult {
   readonly text: string;
@@ -100,7 +101,7 @@ export function formatSummaryPresentation(rawText: string): SummaryDisplayFormat
 export function decodeSummaryModelOutput(rawText: string): SummaryModelOutputDecodeResult {
   const trimmed = rawText.trim();
   if (!trimmed.startsWith("{")) {
-    return { text: rawText, decodingApplied: false };
+    throw new Error("The local summary model returned invalid structured output.");
   }
   let parsed: unknown;
   try {
@@ -122,14 +123,26 @@ export function decodeSummaryModelOutput(rawText: string): SummaryModelOutputDec
     typeof overview !== "string" ||
     !overview.trim() ||
     !Array.isArray(details) ||
-    details.length < 1 ||
-    details.length > SUMMARY_MODEL_DETAIL_LIMIT ||
+    details.length !== SUMMARY_MODEL_DETAIL_COUNT ||
     details.some((detail) => typeof detail !== "string" || !detail.trim())
   ) {
     throw new Error("The local summary model returned invalid structured output.");
   }
+  const units = [overview.trim(), ...details.map((detail) => (detail as string).trim())];
+  if (units.some((unit) => /^(?:[-*•]|\d+[.)])\s+/u.test(unit))) {
+    throw new Error("The local summary model returned invalid structured output.");
+  }
+  if (!/[.!?]$/u.test(units[0] ?? "")) {
+    throw new Error("The local summary overview was incomplete.");
+  }
+  if (units.some(hasIncompleteSummaryLine)) {
+    throw new Error("The local summary ended with an incomplete line.");
+  }
+  if (hasDuplicateSummaryUnits(units.slice(1))) {
+    throw new Error("The local summary repeated a detail fact.");
+  }
   return {
-    text: [overview.trim(), ...details.map((detail) => `• ${(detail as string).trim()}`)].join("\n"),
+    text: [units[0], ...units.slice(1).map((detail) => `• ${detail}`)].join("\n"),
     decodingApplied: true,
   };
 }
@@ -1525,7 +1538,7 @@ function structureSummaryContent(value: string): string {
   const structured = [overview, ...bullets.map((bullet) => `• ${bullet}`)].join("\n");
   return removedDuplicateDetails ||
     removedOverviewLabel ||
-    canonicalSummaryContent(structured) === canonicalSummaryContent(value)
+    canonicalSummarySemanticText(structured) === canonicalSummarySemanticText(value)
     ? structured
     : value;
 }
@@ -1602,8 +1615,8 @@ function expandRestoredSummaryUnits(units: readonly string[], targetCount: numbe
 }
 
 function areDuplicateSummaryUnits(left: string, right: string): boolean {
-  const leftCanonical = canonicalSummaryContent(left);
-  return leftCanonical.length > 0 && leftCanonical === canonicalSummaryContent(right);
+  const leftCanonical = canonicalSummarySemanticText(left);
+  return leftCanonical.length > 0 && leftCanonical === canonicalSummarySemanticText(right);
 }
 
 function expandSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
@@ -1860,21 +1873,6 @@ function joinSummaryGroup(units: readonly string[]): string {
     (combined, unit) => `${combined}${/[.!?;:,]$/u.test(combined) ? " " : "; "}${unit}`,
     first,
   );
-}
-
-function canonicalSummaryContent(value: string): string {
-  const normalized = value
-    .split("\n")
-    .map((line) => line.trim().replace(SUMMARY_VISUAL_LIST_MARKER, ""))
-    .filter(Boolean)
-    .join(" ")
-    .normalize("NFKC")
-    .toLowerCase();
-  const tokens = normalized.match(/\p{L}+|\p{N}+(?:\.\p{N}+)?/gu) ?? [];
-  if ((tokens[0] === "where" || tokens[0] === "which") && tokens[1] === "the") {
-    return tokens.slice(2).join(" ");
-  }
-  return (tokens[0] === "the" ? tokens.slice(1) : tokens).join(" ");
 }
 
 function hasIncompleteSummaryLine(line: string): boolean {

@@ -1,4 +1,4 @@
-export const SUMMARY_MODEL_DETAIL_LIMIT = 4;
+export const SUMMARY_MODEL_DETAIL_COUNT = 4;
 
 export const SUMMARY_JSON_SCHEMA = JSON.stringify({
   type: "object",
@@ -10,8 +10,8 @@ export const SUMMARY_JSON_SCHEMA = JSON.stringify({
     },
     details: {
       type: "array",
-      minItems: 1,
-      maxItems: SUMMARY_MODEL_DETAIL_LIMIT,
+      minItems: SUMMARY_MODEL_DETAIL_COUNT,
+      maxItems: SUMMARY_MODEL_DETAIL_COUNT,
       items: {
         type: "string",
         minLength: 1,
@@ -31,17 +31,125 @@ Preserve every stated equation, initial condition, resolved constant, number wit
 Keep the original equation and a later resolved value as separate facts. Do not substitute, simplify, or recompute them.
 Never combine separate transcript facts into a new equation, value, cause, or conclusion.
 For example, if the transcript separately states y(t) = c · e^(−2t) and c = 3, never write y(t) = 3e^(−2t).
-For measurement transcripts, select explicit measurement, change/cause, and action/date clauses as details.
+Never describe e^(−2t) as having a coefficient of 3 when the transcript states c = 3 separately.
+Do not reinterpret an "initial value" as y(0), t = 0, or an "initial condition" unless the transcript explicitly states that notation or phrase.
+Choose four complete transcript clauses in source order. Prefer subject/relationship, equation/action, general solution/behavior, and explicit value/owner/date clauses when present.
+For differential-equation transcripts, use one detail for the definition/relationship, one for the equation and method, one for the general solution and stated behavior, and one for the stated condition/value and resolved constant.
+Do not use two details for the same condition, value, equation, target, owner, cause, or date relationship.
+For measurement transcripts, select explicit measurement, change/cause, target, owner/action, and date clauses as details.
 The phrases "initial condition" and "final condition" are forbidden unless the transcript uses those exact phrases.
 Return one JSON object with exactly two keys: "overview" and "details".
-"overview" is one concise sentence grounded only in the transcript and names its explicit subject exactly.
-"details" is an array containing one to four non-overlapping transcript-stated detail strings.
-Use only as many detail strings as the transcript supports; never repeat or invent content to fill the array.
+"overview" is one concise subject-only sentence and must not absorb or restate the four detail facts.
+"details" is an array containing exactly four complete, nonempty, non-overlapping transcript-stated detail strings.
+If the FINAL TRANSCRIPT has exactly four complete sentences, copy those four sentences into "details" in the same order, changing only notation.
+If it has three sentences, split one sentence only at an explicitly stated independent clause so that no fact is repeated or inferred.
+Never repeat, manufacture, or split a fact merely to fill the array.
 Keep compound transcript clauses together when splitting them would create a false relationship.
 Do not include bullet markers, titles, headings, labels, Markdown, HTML, dollar signs, backslash commands, or LaTeX braces inside the strings.
 Use readable Unicode/plain math and keep the combined strings under 180 words.
 `.trim();
 
 export function summaryUserPrompt(transcript: string): string {
-  return `FINAL TRANSCRIPT:\n${transcript}\n\nWrite the summary now.`;
+  const sentences = splitTranscriptSentences(transcript);
+  const facts = sourceFactCandidates(sentences);
+  const overview = sourceOverview(transcript, facts);
+  const numberedFacts = facts.map((fact, index) => `[F${index + 1}] ${fact}`).join("\n");
+  const detailInstruction =
+    facts.length === SUMMARY_MODEL_DETAIL_COUNT
+      ? "Set details[0] to the exact text after [F1], details[1] to [F2], details[2] to [F3], and details[3] to [F4]. The overview does not replace any detail."
+      : "Select four different complete source facts in source order without repeating or combining them.";
+  return `FINAL TRANSCRIPT:\n${transcript}\n\nOVERVIEW TEXT (copy exactly):\n${overview}\n\nSOURCE FACTS (${facts.length}):\n${numberedFacts}\n\nSet "overview" to the exact OVERVIEW TEXT above.\nThe [F#] labels, the words "source fact", and any discussion of these instructions are forbidden in the output.\n${detailInstruction}\nWrite the JSON summary now.`;
+}
+
+function sourceOverview(transcript: string, facts: readonly string[]): string {
+  const namedSubject = transcript.match(/\b(?:Project|Team)\s+[\p{L}\p{N}-]+/u)?.[0];
+  if (namedSubject !== undefined) {
+    return `The transcript concerns ${namedSubject}.`;
+  }
+  if (/\bordinary differential equation\b/iu.test(transcript)) {
+    return "The transcript concerns an ordinary differential equation.";
+  }
+  return facts[0] ?? transcript.trim();
+}
+
+function sourceFactCandidates(sentences: readonly string[]): readonly string[] {
+  if (sentences.length !== SUMMARY_MODEL_DETAIL_COUNT - 1) {
+    return sentences;
+  }
+  for (const [index, sentence] of sentences.entries()) {
+    const split = splitCoordinatedFacts(sentence) ?? splitMeasurementFacts(sentence);
+    if (split !== null) {
+      return [...sentences.slice(0, index), ...split, ...sentences.slice(index + 1)];
+    }
+  }
+  return sentences;
+}
+
+function splitCoordinatedFacts(sentence: string): readonly [string, string] | null {
+  const match = sentence.match(/^(.*?),\s+and\s+((?:the|a|an|[\p{Lu}])\b.*)$/u);
+  const left = match?.[1]?.trim();
+  const right = match?.[2]?.trim();
+  if (left === undefined || right === undefined || wordCount(left) < 3 || wordCount(right) < 3) {
+    return null;
+  }
+  return [withTerminalPunctuation(left), withTerminalPunctuation(capitalizeFirst(right))];
+}
+
+function splitMeasurementFacts(sentence: string): readonly [string, string] | null {
+  const match = sentence.match(
+    /^(.*\bmeasured\b.*\bat\s+\d+(?:\.\d+)?\s+[\p{L}-]+)\s+at\s+(\d+(?:\.\d+)?\s+(?:degrees?\s+Celsius|°C))[.!?]?$/iu,
+  );
+  const measurement = match?.[1]?.trim();
+  const condition = match?.[2]?.trim();
+  if (measurement === undefined || condition === undefined) {
+    return null;
+  }
+  return [withTerminalPunctuation(measurement), withTerminalPunctuation(`The temperature was ${condition}`)];
+}
+
+function withTerminalPunctuation(value: string): string {
+  return /[.!?]$/u.test(value) ? value : `${value}.`;
+}
+
+function capitalizeFirst(value: string): string {
+  const [first, ...rest] = [...value];
+  return first === undefined ? value : `${first.toLocaleUpperCase()}${rest.join("")}`;
+}
+
+function wordCount(value: string): number {
+  return value.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+}
+
+function splitTranscriptSentences(transcript: string): readonly string[] {
+  const sentences: string[] = [];
+  let start = 0;
+  for (let index = 0; index < transcript.length; index += 1) {
+    if (!/[.!?]/u.test(transcript[index] ?? "")) {
+      continue;
+    }
+    if (/\d/u.test(transcript[index - 1] ?? "") && /\d/u.test(transcript[index + 1] ?? "")) {
+      continue;
+    }
+    let end = index + 1;
+    while (/["'”’)\]}]/u.test(transcript[end] ?? "")) {
+      end += 1;
+    }
+    const whitespace = transcript.slice(end).match(/^\s+/u)?.[0] ?? "";
+    const atEnd = end === transcript.length;
+    const next = transcript[end + whitespace.length];
+    if (!atEnd && (!whitespace || next === undefined || !/[\p{Lu}\p{N}]/u.test(next))) {
+      continue;
+    }
+    const sentence = transcript.slice(start, end).trim();
+    if (sentence) {
+      sentences.push(sentence);
+    }
+    start = end + whitespace.length;
+    index = start - 1;
+  }
+  const tail = transcript.slice(start).trim();
+  if (tail) {
+    sentences.push(tail);
+  }
+  return sentences.length === 0 ? [transcript.trim()] : sentences;
 }

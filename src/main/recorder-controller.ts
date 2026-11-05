@@ -48,7 +48,7 @@ import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnosti
 import {
   assertSummaryPresentationContract,
   decodeSummaryModelOutput,
-  formatSummaryPresentation,
+  formatSummaryForDisplay,
 } from "../summary/summary-format";
 import { TranscriptStore } from "../transcript/transcript-store";
 import { noopRecorderOperationJournal, type RecorderOperationJournal } from "./operation-journal";
@@ -406,7 +406,7 @@ export class RecorderController {
         throw new Error(`Summary generation ended with ${result.response.finishReason}.`);
       }
       const decodedSummary = decodeSummaryModelOutput(result.text);
-      const displaySummary = formatSummaryPresentation(decodedSummary.text);
+      const displaySummary = formatSummaryForDisplay(decodedSummary.text);
       this.#annotateSummaryFormatting(
         rawTrace,
         decodedSummary.decodingApplied || displaySummary.formattingApplied,

@@ -57,7 +57,7 @@ import {
   inspectVisionChatModel,
   type PreparedAssistantModel,
   processAssistantTurn,
-  type VisionChatTurnInput,
+  type VisionChatTurnInputSource,
   type VisionChatTurnResult,
 } from "./optional-vision-chat-runtime";
 import { type RecorderPaths, resolveRecorderPaths } from "./paths";
@@ -164,12 +164,14 @@ interface ActiveAssistantOperation {
 }
 
 interface SharedAssistantOperation {
+  readonly ticketId: string;
   readonly controller: AbortController;
   readonly settled: Promise<void>;
   readonly resolveSettled: () => void;
 }
 
 interface SharedQwenQueueEntry<T> {
+  readonly ticketId: string;
   readonly kind: "summary" | "assistant";
   readonly signal: AbortSignal;
   readonly run: () => Promise<T>;
@@ -212,6 +214,20 @@ export interface AssistantRuntimeStatus {
   readonly cleanupDiagnostic: SafeDiagnostic | null;
 }
 
+export interface SharedQwenLifecycleEvent {
+  readonly ticketId: string;
+  readonly kind: "summary" | "assistant";
+  readonly phase:
+    | "submitted"
+    | "activated"
+    | "native_request_started"
+    | "native_request_settled"
+    | "cancelled"
+    | "released";
+  readonly sequence: number;
+  readonly atMs: number;
+}
+
 export interface FoundryRecorderRuntimeOptions {
   readonly environment?: Readonly<Record<string, string | undefined>>;
   readonly resolvePaths?: () => Promise<RecorderPaths>;
@@ -221,6 +237,7 @@ export interface FoundryRecorderRuntimeOptions {
   readonly assertNativeRuntime?: () => void;
   readonly tempAudioStore?: TempAudioStore;
   readonly settlementTimeoutMs?: number;
+  readonly onSharedQwenLifecycle?: (event: SharedQwenLifecycleEvent) => void;
 }
 
 const DEFAULT_SETTLEMENT_TIMEOUT_MS = 10_000;
@@ -247,12 +264,14 @@ export class FoundryRecorderRuntime {
   readonly #activeOperations = new Set<ActiveNativeOperation>();
   readonly #sharedQwenQueue: SharedQwenQueueEntry<unknown>[] = [];
   #activeSharedQwenOperation: SharedQwenQueueEntry<unknown> | null = null;
-  #assistantSharedOperation: SharedAssistantOperation | null = null;
+  readonly #assistantSharedOperations = new Set<SharedAssistantOperation>();
   #activeAssistantOperation: ActiveAssistantOperation | null = null;
   #assistantCleanupPromise: Promise<void> | null = null;
   #assistantGeneration = 0;
   #assistantCleanupDiagnostic: SafeDiagnostic | null = null;
   readonly #settlementTimeoutMs: number;
+  readonly #onSharedQwenLifecycle: ((event: SharedQwenLifecycleEvent) => void) | undefined;
+  #sharedQwenLifecycleSequence = 0;
   #cleanupCompletion: Promise<void> | null = null;
   #lifecycleCleanup: LifecycleCleanupGeneration | null = null;
   #generation = 0;
@@ -273,6 +292,7 @@ export class FoundryRecorderRuntime {
       (options.createManager === undefined ? assertFoundryNativeRuntimeReady : () => {});
     this.#tempAudioStore = options.tempAudioStore ?? null;
     this.#settlementTimeoutMs = options.settlementTimeoutMs ?? DEFAULT_SETTLEMENT_TIMEOUT_MS;
+    this.#onSharedQwenLifecycle = options.onSharedQwenLifecycle;
     if (!Number.isFinite(this.#settlementTimeoutMs) || this.#settlementTimeoutMs <= 0) {
       throw new Error("Native settlement timeout must be a positive finite duration.");
     }
@@ -289,12 +309,11 @@ export class FoundryRecorderRuntime {
 
   get assistantStatus(): AssistantRuntimeStatus {
     const active = this.#activeAssistantOperation;
-    const shared = this.#assistantSharedOperation;
     return {
       active: active !== null && !active.controller.signal.aborted,
       draining:
         this.#assistantCleanupPromise !== null ||
-        shared?.controller.signal.aborted === true ||
+        [...this.#assistantSharedOperations].some((operation) => operation.controller.signal.aborted) ||
         active?.controller.signal.aborted === true,
       sharedModelId: this.#slots.summary.active?.id ?? null,
       cleanupDiagnostic: this.#assistantCleanupDiagnostic,
@@ -303,18 +322,20 @@ export class FoundryRecorderRuntime {
 
   cancelAssistantOperations(reason?: unknown): Promise<void> | null {
     this.#assistantGeneration += 1;
-    const shared = this.#assistantSharedOperation;
-    if (shared === null) {
+    const shared = [...this.#assistantSharedOperations];
+    if (shared.length === 0) {
       return null;
     }
-    if (!shared.controller.signal.aborted) {
-      try {
-        shared.controller.abort(reason);
-      } catch (error) {
-        this.#recordAssistantCleanupError(error);
+    for (const operation of shared) {
+      if (!operation.controller.signal.aborted) {
+        try {
+          operation.controller.abort(reason);
+        } catch (error) {
+          this.#recordAssistantCleanupError(error);
+        }
       }
     }
-    return shared.settled;
+    return Promise.all(shared.map((operation) => operation.settled)).then(() => undefined);
   }
 
   resetAssistant(): Promise<void> {
@@ -339,31 +360,24 @@ export class FoundryRecorderRuntime {
     return cleanup;
   }
 
-  async runAssistantTurn(
-    input: VisionChatTurnInput,
+  runAssistantTurn(
+    input: VisionChatTurnInputSource,
     options: {
       readonly signal?: AbortSignal;
       readonly requestOptions?: RequestOptions;
       readonly onProgress?: (phase: AssistantOperationPhase) => void;
+      readonly operationId?: string;
     } = {},
   ): Promise<VisionChatTurnResult> {
-    this.#assertAvailable();
-    if (this.#assistantCleanupPromise !== null) {
-      throw new Error("Optional assistant cleanup is still draining.");
+    try {
+      this.#assertAvailable();
+      if (this.#assistantCleanupPromise !== null) {
+        throw new Error("Optional assistant cleanup is still draining.");
+      }
+    } catch (error) {
+      return Promise.reject(error);
     }
     this.#assistantCleanupDiagnostic = null;
-    options.onProgress?.("initializing_runtime");
-    const manager = await this.#ensureValidatedManager();
-    this.#assertAvailable();
-    const existing = this.#assistantSharedOperation;
-    if (existing !== null) {
-      throw new Error(
-        existing.controller.signal.aborted
-          ? "Optional assistant cleanup is still draining."
-          : "Another optional assistant request is already active.",
-      );
-    }
-    const kind = (input.images?.length ?? 0) > 0 ? "vision" : "text";
     const controller = new AbortController();
     const unlinkSignal = forwardAbortSignal(options.signal, controller, (error) =>
       this.#recordAssistantCleanupError(error),
@@ -372,38 +386,48 @@ export class FoundryRecorderRuntime {
     const settled = new Promise<void>((resolve) => {
       resolveSettled = resolve;
     });
+    const ticketId = options.operationId?.trim() || randomUUID();
     const shared: SharedAssistantOperation = {
+      ticketId,
       controller,
       settled,
       resolveSettled,
     };
-    this.#assistantSharedOperation = shared;
-    try {
-      return await this.#enqueueSharedQwenOperation("assistant", controller.signal, () =>
-        this.#runAssistantOperation(kind, manager, controller.signal, async (operationSignal) => {
-          throwIfSignalAborted(operationSignal);
-          const prepared = this.#requirePreparedAssistantModel(manager);
-          options.onProgress?.("running_inference");
-          return processAssistantTurn(prepared.model, prepared.identity, input, {
-            signal: operationSignal,
-            ...(options.requestOptions === undefined ? {} : { requestOptions: options.requestOptions }),
-            createChatSession: this.#createChatSession,
-            onCleanupError: (error) => this.#recordAssistantCleanupError(error),
-            assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
-          });
-        }),
-      );
-    } finally {
+    this.#assistantSharedOperations.add(shared);
+    const result = this.#enqueueSharedQwenOperation("assistant", ticketId, controller.signal, async () => {
+      options.onProgress?.("initializing_runtime");
+      const manager = await this.#ensureValidatedManager();
+      this.#assertAvailable();
+      throwIfSignalAborted(controller.signal);
+      const resolvedInput = typeof input === "function" ? input() : input;
+      const kind = (resolvedInput.images?.length ?? 0) > 0 ? "vision" : "text";
+      return this.#runAssistantOperation(kind, manager, controller.signal, async (operationSignal) => {
+        throwIfSignalAborted(operationSignal);
+        const prepared = this.#requirePreparedAssistantModel(manager);
+        options.onProgress?.("running_inference");
+        return processAssistantTurn(prepared.model, prepared.identity, resolvedInput, {
+          signal: operationSignal,
+          ...(options.requestOptions === undefined ? {} : { requestOptions: options.requestOptions }),
+          createChatSession: this.#createChatSession,
+          onCleanupError: (error) => this.#recordAssistantCleanupError(error),
+          onNativeRequestStart: () =>
+            this.#emitSharedQwenLifecycle(ticketId, "assistant", "native_request_started"),
+          onNativeRequestSettled: () =>
+            this.#emitSharedQwenLifecycle(ticketId, "assistant", "native_request_settled"),
+          assertCurrent: () => this.#assertAssistantCurrent(manager.epoch),
+        });
+      });
+    });
+    return result.finally(() => {
       unlinkSignal();
-      if (this.#assistantSharedOperation === shared) {
-        this.#assistantSharedOperation = null;
-      }
+      this.#assistantSharedOperations.delete(shared);
       shared.resolveSettled();
-    }
+    });
   }
 
   #enqueueSharedQwenOperation<T>(
     kind: SharedQwenQueueEntry<T>["kind"],
+    ticketId: string,
     signal: AbortSignal,
     run: () => Promise<T>,
   ): Promise<T> {
@@ -417,6 +441,7 @@ export class FoundryRecorderRuntime {
       rejectEntry = reject;
     });
     const entry: SharedQwenQueueEntry<T> = {
+      ticketId,
       kind,
       signal,
       run,
@@ -429,6 +454,7 @@ export class FoundryRecorderRuntime {
     entry.abortListener = abortListener;
     signal.addEventListener("abort", abortListener, { once: true });
     this.#sharedQwenQueue.push(entry as SharedQwenQueueEntry<unknown>);
+    this.#emitSharedQwenLifecycle(ticketId, kind, "submitted");
     queueMicrotask(() => void this.#drainSharedQwenQueue());
     return result;
   }
@@ -443,6 +469,7 @@ export class FoundryRecorderRuntime {
     }
     entry.state = "settled";
     this.#detachSharedQwenAbortListener(entry);
+    this.#emitSharedQwenLifecycle(entry.ticketId, entry.kind, "cancelled");
     entry.reject(abortError(entry.signal.reason));
     queueMicrotask(() => void this.#drainSharedQwenQueue());
   }
@@ -458,12 +485,14 @@ export class FoundryRecorderRuntime {
     if (next.signal.aborted) {
       next.state = "settled";
       this.#detachSharedQwenAbortListener(next);
+      this.#emitSharedQwenLifecycle(next.ticketId, next.kind, "cancelled");
       next.reject(abortError(next.signal.reason));
       queueMicrotask(() => void this.#drainSharedQwenQueue());
       return;
     }
     next.state = "active";
     this.#activeSharedQwenOperation = next;
+    this.#emitSharedQwenLifecycle(next.ticketId, next.kind, "activated");
     try {
       const value = await next.run();
       throwIfSignalAborted(next.signal);
@@ -476,6 +505,7 @@ export class FoundryRecorderRuntime {
       if (this.#activeSharedQwenOperation === next) {
         this.#activeSharedQwenOperation = null;
       }
+      this.#emitSharedQwenLifecycle(next.ticketId, next.kind, "released");
       queueMicrotask(() => void this.#drainSharedQwenQueue());
     }
   }
@@ -486,6 +516,21 @@ export class FoundryRecorderRuntime {
       entry.signal.removeEventListener("abort", listener);
       entry.abortListener = null;
     }
+  }
+
+  #emitSharedQwenLifecycle(
+    ticketId: string,
+    kind: SharedQwenLifecycleEvent["kind"],
+    phase: SharedQwenLifecycleEvent["phase"],
+  ): void {
+    this.#sharedQwenLifecycleSequence += 1;
+    this.#onSharedQwenLifecycle?.({
+      ticketId,
+      kind,
+      phase,
+      sequence: this.#sharedQwenLifecycleSequence,
+      atMs: performance.now(),
+    });
   }
 
   initialize(onProgress?: (event: PrepareProgressEvent) => void): Promise<void> {
@@ -768,12 +813,10 @@ export class FoundryRecorderRuntime {
 
   async summarize(transcript: string): Promise<SummaryGenerationResult> {
     this.#assertAvailable();
-    await this.#ensureValidatedManager();
-    this.#assertAvailable();
-    const model = this.#requireModel("summary");
     const generation = this.#generation;
     return this.#runTrackedOperation("summary", generation, async (operation) => {
       const cancellation = new AbortController();
+      const ticketId = randomUUID();
       let request: Request | null = null;
       operation.setCancel(() => {
         if (!cancellation.signal.aborted) {
@@ -781,8 +824,11 @@ export class FoundryRecorderRuntime {
         }
         request?.cancel();
       });
-      return this.#enqueueSharedQwenOperation("summary", cancellation.signal, async () => {
+      return this.#enqueueSharedQwenOperation("summary", ticketId, cancellation.signal, async () => {
+        await this.#ensureValidatedManager();
+        this.#assertAvailable();
         operation.assertCurrent();
+        const model = this.#requireModel("summary");
         const session = this.#createChatSession(model);
         const summaryRequest = new Request()
           .addItem(Item.systemMessage(SUMMARY_SYSTEM_PROMPT))
@@ -812,7 +858,13 @@ export class FoundryRecorderRuntime {
                 `Summary request needs ${preflight.requiredTokens} tokens but the context limit is ${preflight.contextLimitTokens}.`,
               );
             }
-            const response = await session.processRequest(summaryRequest);
+            this.#emitSharedQwenLifecycle(ticketId, "summary", "native_request_started");
+            let response: Response;
+            try {
+              response = await session.processRequest(summaryRequest);
+            } finally {
+              this.#emitSharedQwenLifecycle(ticketId, "summary", "native_request_settled");
+            }
             operation.assertCurrent();
             if (response.finishReason !== "stop" && response.finishReason !== "length") {
               throw new Error(`Summary generation ended with ${response.finishReason}.`);
@@ -1497,18 +1549,12 @@ export class FoundryRecorderRuntime {
     if (cleanup !== null) {
       await cleanup;
     }
-    const shared = this.#assistantSharedOperation;
-    if (shared === null) {
-      return;
+    const settlement = this.cancelAssistantOperations(
+      new Error("Foundry Local manager cleanup cancelled assistant work."),
+    );
+    if (settlement !== null) {
+      await settlement;
     }
-    if (!shared.controller.signal.aborted) {
-      try {
-        shared.controller.abort(new Error("Foundry Local manager cleanup cancelled assistant work."));
-      } catch (error) {
-        this.#recordAssistantCleanupError(error);
-      }
-    }
-    await shared.settled;
   }
 
   #recordAssistantCleanupError(error: unknown): void {
@@ -1994,7 +2040,7 @@ export class FoundryRecorderRuntime {
       this.#hasUnsafeNativeResources() ||
       this.#activeSharedQwenOperation !== null ||
       this.#sharedQwenQueue.length > 0 ||
-      this.#assistantSharedOperation !== null ||
+      this.#assistantSharedOperations.size > 0 ||
       this.#activeAssistantOperation !== null ||
       this.#assistantCleanupPromise !== null
     );

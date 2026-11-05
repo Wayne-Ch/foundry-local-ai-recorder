@@ -14,7 +14,11 @@ import type {
 import type { PreparedAssistantInferenceImage } from "../src/assistant/image-inference";
 import type { ValidatedImage } from "../src/assistant/image-security";
 import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
-import type { VisionChatTurnInput, VisionChatTurnResult } from "../src/foundry/optional-vision-chat-runtime";
+import type {
+  VisionChatTurnInput,
+  VisionChatTurnInputSource,
+  VisionChatTurnResult,
+} from "../src/foundry/optional-vision-chat-runtime";
 import type { AssistantRuntime } from "../src/main/assistant-controller";
 import { AssistantController, parseImageAnalysisNote } from "../src/main/assistant-controller";
 import { pickAssistantImage } from "../src/main/assistant-image-picker";
@@ -704,8 +708,9 @@ describe("AssistantController", () => {
       cleanupPending: true,
     });
     expect(runtime.resetAssistant).toHaveBeenCalledOnce();
-    expect(() => controller.startChat("session-1", "Another question", () => {})).toThrow(
-      "cleanup is still draining",
+    controller.startChat("session-1", "Another question", () => {});
+    await vi.waitFor(() =>
+      expect(controller.snapshot().trace.some((entry) => entry.phase === "assistant-failure")).toBe(true),
     );
     release();
   });
@@ -1257,8 +1262,9 @@ class FakeRuntime implements AssistantRuntime {
   readonly inputs: VisionChatTurnInput[] = [];
   readonly requestOptions: Array<RequestOptions | undefined> = [];
   readonly imagePayloads: Uint8Array[] = [];
+  #tail: Promise<void> = Promise.resolve();
   readonly cancelAssistantOperations = vi.fn((_reason?: unknown): Promise<void> | null => {
-    if (!this.assistantStatus.active) {
+    if (!this.assistantStatus.active && !this.assistantStatus.draining) {
       return null;
     }
     this.assistantStatus = {
@@ -1266,7 +1272,13 @@ class FakeRuntime implements AssistantRuntime {
       active: false,
       draining: true,
     };
-    return Promise.resolve();
+    return this.#tail.finally(() => {
+      this.assistantStatus = {
+        ...this.assistantStatus,
+        active: false,
+        draining: false,
+      };
+    });
   });
   readonly resetAssistant = vi.fn(
     (): Promise<void> => this.cancelAssistantOperations(new Error("Reset")) ?? Promise.resolve(),
@@ -1278,70 +1290,104 @@ class FakeRuntime implements AssistantRuntime {
     readonly progressPhases: readonly AssistantOperationPhase[] = [],
   ) {}
 
-  async runAssistantTurn(
-    input: VisionChatTurnInput,
+  runAssistantTurn(
+    inputSource: VisionChatTurnInputSource,
     options?: {
       readonly signal?: AbortSignal;
       readonly requestOptions?: RequestOptions;
       readonly onProgress?: (phase: AssistantOperationPhase) => void;
+      readonly operationId?: string;
     },
   ): Promise<VisionChatTurnResult> {
-    this.assistantStatus = {
-      ...this.assistantStatus,
-      active: true,
-      draining: false,
-    };
-    const index = this.inputs.length;
-    this.inputs.push(input);
-    this.requestOptions.push(options?.requestOptions);
-    for (const phase of this.progressPhases) {
-      options?.onProgress?.(phase);
+    if (this.assistantStatus.draining) {
+      return Promise.reject(new Error("Optional assistant cleanup is still draining."));
     }
-    for (const image of input.images ?? []) {
-      if (image.kind === "data") {
-        this.imagePayloads.push(Uint8Array.from(image.data));
-      }
-    }
-    try {
-      await this.beforeAnswer(input, index);
-      const answer = Array.isArray(this.answer)
-        ? (this.answer[index] ?? this.answer.at(-1) ?? "")
-        : this.answer;
-      return {
-        text: answer,
-        model: {
-          modelId: "qwen3.5-0.8b-generic-gpu:4",
-          source: "shared_summary_assistant_slot",
-          task: "vision-language-chat",
-          runtime: {
-            deviceType: DeviceType.GPU,
-            executionProvider: "WebGPUExecutionProvider",
-          },
-          inputModalities: ["text", "image"],
-          outputModalities: ["text"],
-        },
-        preflight: {
-          promptTokens: 1,
-          outputReserveTokens: 1,
-          requiredTokens: 2,
-          contextLimitTokens: 4096,
-          fits: true,
-          deficitTokens: 0,
-        },
-        response: {
-          output: [{ type: "text", text: answer }],
-          finishReason: "stop",
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        },
-      };
-    } finally {
+    const execute = async (): Promise<VisionChatTurnResult> => {
+      throwIfAborted(options?.signal);
       this.assistantStatus = {
         ...this.assistantStatus,
-        active: false,
+        active: true,
         draining: false,
       };
-    }
+      const onAbort = (): void => {
+        this.assistantStatus = {
+          ...this.assistantStatus,
+          active: false,
+          draining: true,
+        };
+      };
+      options?.signal?.addEventListener("abort", onAbort, { once: true });
+      options?.onProgress?.("initializing_runtime");
+      const input = typeof inputSource === "function" ? inputSource() : inputSource;
+      const index = this.inputs.length;
+      this.inputs.push(input);
+      this.requestOptions.push(options?.requestOptions);
+      for (const phase of this.progressPhases) {
+        options?.onProgress?.(phase);
+      }
+      for (const image of input.images ?? []) {
+        if (image.kind === "data") {
+          this.imagePayloads.push(Uint8Array.from(image.data));
+        }
+      }
+      try {
+        await this.beforeAnswer(input, index);
+        throwIfAborted(options?.signal);
+        const answer = Array.isArray(this.answer)
+          ? (this.answer[index] ?? this.answer.at(-1) ?? "")
+          : this.answer;
+        return {
+          text: answer,
+          model: {
+            modelId: "qwen3.5-0.8b-generic-gpu:4",
+            source: "shared_summary_assistant_slot",
+            task: "vision-language-chat",
+            runtime: {
+              deviceType: DeviceType.GPU,
+              executionProvider: "WebGPUExecutionProvider",
+            },
+            inputModalities: ["text", "image"],
+            outputModalities: ["text"],
+          },
+          preflight: {
+            promptTokens: 1,
+            outputReserveTokens: 1,
+            requiredTokens: 2,
+            contextLimitTokens: 4096,
+            fits: true,
+            deficitTokens: 0,
+          },
+          response: {
+            output: [{ type: "text", text: answer }],
+            finishReason: "stop",
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          },
+        };
+      } finally {
+        options?.signal?.removeEventListener("abort", onAbort);
+        this.assistantStatus = {
+          ...this.assistantStatus,
+          active: false,
+          draining: false,
+        };
+      }
+    };
+    const result = this.#tail.then(execute, execute);
+    this.#tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("The assistant request was cancelled.");
+  error.name = "AbortError";
+  throw error;
 }
 
 function snapshot(overrides: Partial<TranscriptSnapshot>): TranscriptSnapshot {

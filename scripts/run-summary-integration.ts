@@ -5,7 +5,7 @@ import {
   SUMMARY_MODEL_ID,
 } from "../src/foundry/runtime-config";
 import { RecorderController } from "../src/main/recorder-controller";
-import { formatSummaryPresentation } from "../src/summary/summary-format";
+import { formatSummaryForDisplay } from "../src/summary/summary-format";
 import { assertSummaryDisplayText } from "./integration-utils";
 import { SUMMARY_FACT_CONTRACTS, summaryFactViolations } from "./summary-fact-contract";
 
@@ -35,7 +35,7 @@ try {
     assert.ok(summary !== null, "Controller must store the generated summary.");
     assert.equal(result.summaryInput, fixture.text);
     assertSummaryDisplayText(summary.text);
-    assert.equal(formatSummaryPresentation(summary.text).text, summary.text);
+    assert.equal(formatSummaryForDisplay(summary.text).text, summary.text);
     process.stdout.write(
       `SUMMARY_FACT_OBSERVATION ${JSON.stringify({ fixture: fixture.id, text: summary.text })}\n`,
     );

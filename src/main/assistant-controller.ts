@@ -21,7 +21,10 @@ import type { PreparedAssistantInferenceImage } from "../assistant/image-inferen
 import type { ValidatedImage } from "../assistant/image-security";
 import { formatAssistantPlainText } from "../assistant/plain-text";
 import type { AssistantRuntimeStatus } from "../foundry/foundry-runtime";
-import type { VisionChatTurnInput, VisionChatTurnResult } from "../foundry/optional-vision-chat-runtime";
+import type {
+  VisionChatTurnInputSource,
+  VisionChatTurnResult,
+} from "../foundry/optional-vision-chat-runtime";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
 import type { TranscriptSnapshot } from "../transcript/transcript-store";
 
@@ -50,11 +53,12 @@ const IMAGE_REQUEST_OPTIONS: RequestOptions = {
 export interface AssistantRuntime {
   readonly assistantStatus: AssistantRuntimeStatus;
   runAssistantTurn(
-    input: VisionChatTurnInput,
+    input: VisionChatTurnInputSource,
     options?: {
       readonly signal?: AbortSignal;
       readonly requestOptions?: RequestOptions;
       readonly onProgress?: (phase: AssistantOperationPhase) => void;
+      readonly operationId?: string;
     },
   ): Promise<VisionChatTurnResult>;
   cancelAssistantOperations(reason?: unknown): Promise<void> | null;
@@ -226,32 +230,35 @@ export class AssistantController {
     });
     this.#state.setOperationPhase(token, "queued");
     const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
-      if (this.#state.setOperationPhase(operationToken, "initializing_runtime")) {
-        onUpdate(this.snapshot());
-      }
-      const currentContext = buildImageAnalysisContext(this.#getTranscript());
-      this.#assertImageAnalysisOperationCurrent(operationToken, currentContext, signal);
-      const ownedImage = this.#copyOperationImage(operationToken);
+      const ownedImage = { bytes: null as Uint8Array | null };
       try {
         const result = await this.#runTurn(
-          {
-            prompt: imageAnalysisPrompt(operationToken.context),
-            systemPrompt: assistantSystemPrompt(operationToken.mode),
-            images: [
-              {
-                kind: "data",
-                format: "png",
-                data: ownedImage.bytes,
-              },
-            ],
+          () => {
+            const currentContext = buildImageAnalysisContext(this.#getTranscript());
+            this.#assertImageAnalysisOperationCurrent(operationToken, currentContext, signal);
+            const operationImage = this.#copyOperationImage(operationToken);
+            ownedImage.bytes = operationImage.bytes;
+            return {
+              prompt: imageAnalysisPrompt(operationToken.context),
+              systemPrompt: assistantSystemPrompt(operationToken.mode),
+              images: [
+                {
+                  kind: "data" as const,
+                  format: "png",
+                  data: operationImage.bytes,
+                },
+              ],
+            };
           },
           signal,
           IMAGE_REQUEST_OPTIONS,
           (phase) => {
+            this.#queue.markActive(operationToken.requestId);
             if (this.#state.setOperationPhase(operationToken, phase)) {
               onUpdate(this.snapshot());
             }
           },
+          operationToken.requestId,
         );
         const note = parseImageAnalysisNote(result.text);
         const completionContext = buildImageAnalysisContext(this.#getTranscript());
@@ -269,7 +276,9 @@ export class AssistantController {
           );
         }
       } finally {
-        this.#imageByteLifecycle.release(ownedImage.bytes, "assistant-operation");
+        if (ownedImage.bytes !== null) {
+          this.#imageByteLifecycle.release(ownedImage.bytes, "assistant-operation");
+        }
       }
     });
     this.#watch(queued.result, queued.requestId, onUpdate);
@@ -304,32 +313,41 @@ export class AssistantController {
     this.#state.setOperationPhase(token, "queued");
     const history = this.#state.chatHistoryFor(token);
     const queued = this.#queue.enqueue(ownerSessionId, token, async (signal, operationToken) => {
-      if (this.#state.setOperationPhase(operationToken, "initializing_runtime")) {
-        onUpdate(this.snapshot());
-      }
-      this.#assertChatOperationCurrent(operationToken, signal);
-      const ownedImage = operationToken.requiresImageBytes ? this.#copyOperationImage(operationToken) : null;
+      const ownedImage = { bytes: null as Uint8Array | null };
       try {
-        const input: VisionChatTurnInput = {
-          prompt: chatUserPrompt(normalizedQuestion, operationToken.context, history),
-          systemPrompt: assistantSystemPrompt(operationToken.mode),
-          ...(ownedImage === null
-            ? {}
-            : {
-                images: [
-                  {
-                    kind: "data" as const,
-                    format: "png" as const,
-                    data: ownedImage.bytes,
-                  },
-                ],
-              }),
-        };
-        const result = await this.#runTurn(input, signal, CHAT_REQUEST_OPTIONS, (phase) => {
-          if (this.#state.setOperationPhase(operationToken, phase)) {
-            onUpdate(this.snapshot());
-          }
-        });
+        const result = await this.#runTurn(
+          () => {
+            this.#assertChatOperationCurrent(operationToken, signal);
+            const operationImage = operationToken.requiresImageBytes
+              ? this.#copyOperationImage(operationToken)
+              : null;
+            ownedImage.bytes = operationImage?.bytes ?? null;
+            return {
+              prompt: chatUserPrompt(normalizedQuestion, operationToken.context, history),
+              systemPrompt: assistantSystemPrompt(operationToken.mode),
+              ...(operationImage === null
+                ? {}
+                : {
+                    images: [
+                      {
+                        kind: "data" as const,
+                        format: "png" as const,
+                        data: operationImage.bytes,
+                      },
+                    ],
+                  }),
+            };
+          },
+          signal,
+          CHAT_REQUEST_OPTIONS,
+          (phase) => {
+            this.#queue.markActive(operationToken.requestId);
+            if (this.#state.setOperationPhase(operationToken, phase)) {
+              onUpdate(this.snapshot());
+            }
+          },
+          operationToken.requestId,
+        );
         const modelAnswer = formatAssistantPlainText(result.text);
         const answer = applyClinicAnswerSafety(operationToken.mode, normalizedQuestion, modelAnswer);
         const historyAnswer = clinicModelAnswerForHistory(
@@ -348,7 +366,7 @@ export class AssistantController {
           );
         }
       } finally {
-        if (ownedImage !== null) {
+        if (ownedImage.bytes !== null) {
           this.#imageByteLifecycle.release(ownedImage.bytes, "assistant-operation");
         }
       }
@@ -404,12 +422,18 @@ export class AssistantController {
   }
 
   async #runTurn(
-    input: VisionChatTurnInput,
+    input: VisionChatTurnInputSource,
     signal: AbortSignal,
     requestOptions: RequestOptions,
     onProgress: (phase: AssistantOperationPhase) => void,
+    operationId: string,
   ): Promise<VisionChatTurnResult> {
-    return this.#runtime.runAssistantTurn(input, { signal, requestOptions, onProgress });
+    return this.#runtime.runAssistantTurn(input, {
+      signal,
+      requestOptions,
+      onProgress,
+      operationId,
+    });
   }
 
   #watch(result: Promise<void>, requestId: string, onUpdate: UpdateCallback): void {

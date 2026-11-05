@@ -51,7 +51,7 @@ describe("summary fact contracts", () => {
     );
   });
 
-  it("accepts separately worded ODE relationships that share broad claim categories", () => {
+  it("rejects separately worded ODE details that repeat the same factual relationships", () => {
     const ode = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "ode");
     if (ode === undefined) {
       throw new Error("ODE contract missing.");
@@ -67,10 +67,15 @@ describe("summary fact contracts", () => {
 
     expect(formatted.split("\n")).toHaveLength(5);
     expect(formatted).toBe(raw);
-    expect(summaryFactViolations(ode, formatted)).toEqual([]);
+    expect(summaryFactViolations(ode, formatted)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("repeats resolved-constant"),
+        expect.stringContaining("repeats initial-condition"),
+      ]),
+    );
   });
 
-  it("accepts separately worded Atlas relationships that share broad claim categories", () => {
+  it("rejects separately worded Atlas details that repeat the same target relationship", () => {
     const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
     if (atlas === undefined) {
       throw new Error("Atlas contract missing.");
@@ -85,7 +90,7 @@ describe("summary fact contracts", () => {
 
     const formatted = formatSummaryPresentation(raw).text;
     expect(formatted).toBe(raw);
-    expect(summaryFactViolations(atlas, formatted)).toEqual([]);
+    expect(summaryFactViolations(atlas, formatted)).toContain("bullet 4 repeats target from bullet 1");
   });
 
   it("distinguishes the Atlas target role from the Atlas result role at the same value", () => {
@@ -103,7 +108,7 @@ describe("summary fact contracts", () => {
     expect(summaryFactViolations(SUMMARY_ROLE_DISTINCTION_CONTRACT, formatted)).toEqual([]);
   });
 
-  it("rejects only canonically identical duplicate detail text", () => {
+  it("rejects canonically identical and semantically overlapping detail facts", () => {
     const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
     if (atlas === undefined) {
       throw new Error("Atlas contract missing.");
@@ -117,6 +122,7 @@ describe("summary fact contracts", () => {
     ].join("\n");
 
     expect(summaryFactViolations(atlas, summary)).toEqual([
+      "bullet 3 repeats target from bullet 1",
       "bullet 3 canonically duplicates a previous detail",
     ]);
     expect(
@@ -131,6 +137,109 @@ describe("summary fact contracts", () => {
         ].join("\n"),
       ),
     ).toContain("bullet 2 canonically duplicates a previous detail");
+  });
+
+  it("rejects an invented tail even when the same line contains a valid Atlas claim", () => {
+    const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
+    if (atlas === undefined) {
+      throw new Error("Atlas contract missing.");
+    }
+    const summary = [
+      "Project Atlas records explicit project facts.",
+      "• Cold start latency changed from 420 milliseconds to 280 milliseconds because aliens caused the delay.",
+      "• The local model cache is enabled.",
+      "• The target remains 250 milliseconds.",
+      "• Maya Chen owns the follow-up and the next review is November 12.",
+    ].join("\n");
+
+    expect(summaryFactViolations(atlas, summary)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/not traceable|untraceable content/u)]),
+    );
+    expect(summaryFactViolations(atlas, summary).join("\n")).toMatch(/aliens|delay/u);
+  });
+
+  it("rejects mixed valid and invalid clauses without requiring omitted transcript facts", () => {
+    const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
+    if (atlas === undefined) {
+      throw new Error("Atlas contract missing.");
+    }
+    const summary = [
+      "Project Atlas records explicit project facts.",
+      "• The target remains 250 milliseconds.",
+      "• Maya Chen owns the follow-up, but robots approved deployment.",
+      "• The next review is November 12.",
+      "• The local model cache is enabled.",
+    ].join("\n");
+
+    expect(summaryFactViolations(atlas, summary)).toEqual(
+      expect.arrayContaining([expect.stringContaining("not traceable")]),
+    );
+  });
+
+  it("rejects opposite ODE signs and relation operators as different facts", () => {
+    const ode = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "ode");
+    if (ode === undefined) {
+      throw new Error("ODE contract missing.");
+    }
+    const summaries = [
+      [
+        "The ordinary differential equation is stated.",
+        "• The equation is y′ = 2y.",
+        "• Separate the variables.",
+        "• The solution represents decay over time.",
+        "• The resolved constant is c = 3.",
+      ].join("\n"),
+      [
+        "The ordinary differential equation is stated.",
+        "• The equation is y′ > −2y.",
+        "• Separate the variables.",
+        "• The solution represents decay over time.",
+        "• The resolved constant is c = 3.",
+      ].join("\n"),
+    ];
+
+    for (const summary of summaries) {
+      expect(summaryFactViolations(ode, summary)).not.toEqual([]);
+      expect(summaryFactViolations(ode, summary).join("\n")).toMatch(
+        /forbidden claim|invalid derivative equation|invented numbers/u,
+      );
+    }
+  });
+
+  it("rejects recombining c = 3 into a coefficient on the exponential term", () => {
+    const ode = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "ode");
+    if (ode === undefined) {
+      throw new Error("ODE contract missing.");
+    }
+    const summary = [
+      "The ordinary differential equation relates a function to its derivatives.",
+      "• The equation is y′ = −2y.",
+      "• Separate the variables to obtain y(t) = c * e^(−2t).",
+      "• The initial condition y(0) = 3 results in c = 3.",
+      "• The decay term e^(−2t) has a coefficient of 3.",
+    ].join("\n");
+
+    expect(summaryFactViolations(ode, summary)).toEqual(
+      expect.arrayContaining([expect.stringContaining("coefficient")]),
+    );
+  });
+
+  it("rejects incorrect target/result roles at the same numeric value", () => {
+    const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
+    if (atlas === undefined) {
+      throw new Error("Atlas contract missing.");
+    }
+    const summary = [
+      "Project Atlas records explicit project facts.",
+      "• Project Atlas result is 250 milliseconds.",
+      "• Maya Chen owns the follow-up.",
+      "• The next review is November 12.",
+      "• The local model cache is enabled.",
+    ].join("\n");
+
+    expect(summaryFactViolations(atlas, summary)).toEqual(
+      expect.arrayContaining([expect.stringContaining("invalid target value relationship")]),
+    );
   });
 
   it.each([

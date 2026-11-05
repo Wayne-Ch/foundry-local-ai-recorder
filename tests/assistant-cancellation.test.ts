@@ -11,7 +11,7 @@ import type { AssistantRuntimeStatus } from "../src/foundry/foundry-runtime";
 import {
   processAssistantTurn,
   QWEN_VISION_CHAT_CANDIDATE_MODEL_ID,
-  type VisionChatTurnInput,
+  type VisionChatTurnInputSource,
   type VisionChatTurnResult,
 } from "../src/foundry/optional-vision-chat-runtime";
 import type { AssistantRuntime } from "../src/main/assistant-controller";
@@ -95,8 +95,13 @@ class ThrowingCancelRuntime implements AssistantRuntime {
   }
 
   async runAssistantTurn(
-    input: VisionChatTurnInput,
-    options: { readonly signal?: AbortSignal; readonly requestOptions?: RequestOptions } = {},
+    inputSource: VisionChatTurnInputSource,
+    options: {
+      readonly signal?: AbortSignal;
+      readonly requestOptions?: RequestOptions;
+      readonly onProgress?: (phase: "initializing_runtime" | "running_inference") => void;
+      readonly operationId?: string;
+    } = {},
   ): Promise<VisionChatTurnResult> {
     const controller = new AbortController();
     const forwardAbort = () => {
@@ -113,7 +118,10 @@ class ThrowingCancelRuntime implements AssistantRuntime {
     }
     this.#activeController = controller;
     this.assistantStatus = { ...this.assistantStatus, active: true, draining: false };
+    options.onProgress?.("initializing_runtime");
+    const input = typeof inputSource === "function" ? inputSource() : inputSource;
     const nativeResponse = deferred<Response>();
+    options.onProgress?.("running_inference");
     const turn = processAssistantTurn(
       {} as IModel,
       {
