@@ -150,6 +150,39 @@ describe("Clinic answer safety", () => {
   });
 
   it.each([
+    '"This is pneumonia."',
+    "(This is pneumonia.)",
+    "**This is pneumonia.**",
+    "I recommend antibiotics.",
+    "The diagnosis is pneumonia on this image.",
+  ])("closes every current reviewer bypass: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
+    '"This is xylomycosis."',
+    '"This is xylomycosis".',
+    "(I recommend zymoplasty.)",
+    "(I recommend zymoplasty).",
+    "**The patient has oryctosis.**",
+    "**The patient has oryctosis**.",
+    "*You should undergo peloroplasty.*",
+    "*You should undergo peloroplasty*.",
+    "_They must receive velymab._",
+    "`I advise cryoneurolysis.`",
+    "`I advise cryoneurolysis`.",
+  ])("normalizes wrappers before classifying diagnoses and treatments: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it("splits terminal punctuation before closing quotes, brackets, and Markdown", () => {
+    const unsafe =
+      'The image shows lungs, ribs, and the heart silhouette. "This is xylomycosis." (I recommend zymoplasty.) **They should undergo peloroplasty.**';
+
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
     "This is pneumonia.",
     "You have pneumonia.",
     "The patient has pneumonia.",
@@ -203,6 +236,15 @@ describe("Clinic answer safety", () => {
   });
 
   it.each([
+    "The diagnosis is xylomycosis on this image.",
+    "The condition appears consistent with oryctosis on the scan.",
+    "The disease is pelorosis on this x-ray.",
+    "The diagnostic conclusion likely is velymosis in the radiograph.",
+  ])("does not let image tokens exempt an explicit diagnosis: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
     "You must receive plasmapheresis.",
     "They should stop immunotherapy.",
     "He needs to take blinatumomab.",
@@ -215,6 +257,19 @@ describe("Clinic answer safety", () => {
   });
 
   it.each([
+    "You should undergo zymoplasty.",
+    "They must receive velymab.",
+    "He needs to take oryctine.",
+    "She ought to avoid pelorotherapy.",
+    "The patient has to start xylomedicine.",
+    "I recommend zymoplasty.",
+    "We suggest pelorotherapy.",
+    "Undergo cryoneurolysis.",
+  ])("fails closed across recommendation subjects and unknown actions: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
     "I cannot diagnose from this image. However, this is leukemia.",
     "I cannot diagnose this patient; nevertheless, that is sarcoidosis.",
     "I cannot recommend treatment. Yet you should take vorinostat.",
@@ -222,6 +277,18 @@ describe("Clinic answer safety", () => {
     "This cannot wait until tomorrow.",
     "Same-day neurosurgical evaluation is required.",
   ])("fails closed for contrastive diagnosis, treatment, or urgency tails: %s", (unsafe) => {
+    expectFailsClosed(unsafe);
+  });
+
+  it.each([
+    "I cannot diagnose from this image, but this is xylomycosis.",
+    "I cannot diagnose from this image. However, **this is oryctosis.**",
+    "I cannot recommend treatment. Yet `I recommend zymoplasty.`",
+    "I cannot assess urgency. Nevertheless, the patient needs same-day evaluation.",
+    "I cannot diagnose; start zymoplasty.",
+    "This is educational context only, not a diagnosis; this is xylomycosis.",
+    `Visible anatomy is educational. You should undergo peloroplasty. ${CLINICIAN_HANDOFF_SENTENCE}`,
+  ])("scans every contrastive tail and ignores an appended referral: %s", (unsafe) => {
     expectFailsClosed(unsafe);
   });
 
@@ -244,6 +311,37 @@ describe("Clinic answer safety", () => {
   });
 
   it.each([
+    "This is the trachea.",
+    "This is the left lung.",
+    "The image shows lungs, ribs, and the heart silhouette.",
+    "The diaphragm, mediastinum, clavicles, spine, airways, and lung fields are visible.",
+    "The AP marker shows the image orientation.",
+    "The PA marker is on the right side.",
+    "The heart lies between the lungs, and the ribs surround the chest.",
+    "This is an AP chest x-ray showing lungs, ribs, and the heart silhouette.",
+    "The image shows the trachea in the midline and the heart centered between the lungs.",
+  ])("preserves bounded anatomy and orientation descriptions: %s", (answer) => {
+    expect(applyClinicAnswerSafety("clinic", "Describe the visible image structures.", answer)).toBe(answer);
+  });
+
+  it.each([
+    "You should use separation of variables for this equation.",
+    "I recommend using the AP marker to orient the image.",
+    "They should graph the model.",
+    "He should check the software cache.",
+    "She should compare the derivative graph.",
+    "The patient should use the PA marker to orient the image.",
+    "I recommend checking the software provider latency.",
+    "I advise using the PA marker to orient the image.",
+    "We strongly suggest checking the model cache latency.",
+    "The patient ought to graph the exponential decay model.",
+  ])("preserves wholly educational or orientation recommendations: %s", (answer) => {
+    expect(applyClinicAnswerSafety("clinic", "Explain the visible educational material.", answer)).toBe(
+      answer,
+    );
+  });
+
+  it.each([
     "This is a first-order decay equation.",
     "This is a local model cache example.",
     "Use separation of variables for this equation.",
@@ -254,6 +352,58 @@ describe("Clinic answer safety", () => {
   ])("preserves bounded nonmedical educational statements: %s", (answer) => {
     expect(applyClinicAnswerSafety("clinic", "Explain the visible material.", answer)).toBe(answer);
   });
+
+  it.each([
+    "A clinician should make diagnosis, urgency, and treatment decisions.",
+    "A qualified physician must determine the diagnosis and treatment plan.",
+    "The diagnosis is for the treating clinician to determine.",
+    "Urgency is a matter for the treating physician.",
+    "Please consult the treating clinician for diagnosis and treatment decisions.",
+  ])("preserves clinician-decision boundaries: %s", (answer) => {
+    expect(applyClinicAnswerSafety("clinic", "Explain the visible material.", answer)).toBe(answer);
+  });
+
+  it("preserves a safe answer exactly while classifying normalized text", () => {
+    const answer = "  **This is the trachea.**\n";
+    const question = "Describe the visible image structures.";
+
+    expect(applyClinicAnswerSafety("clinic", question, answer)).toBe(answer);
+    expect(clinicModelAnswerForHistory("clinic", question, answer)).toBe(answer);
+  });
+
+  it("preserves a safe anatomy answer and appends the handoff for a decision question", () => {
+    const answer = "This is the trachea.";
+    const question = "What is the diagnosis?";
+
+    expect(applyClinicAnswerSafety("clinic", question, answer)).toBe(
+      `${answer}\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
+    );
+    expect(clinicModelAnswerForHistory("clinic", question, answer)).toBe(answer);
+  });
+
+  it("fails the whole mixed answer without retaining unsafe visible or history text", () => {
+    const unsafeCondition = "The patient has xylomycosis.";
+    const unsafeTreatment = "I recommend zymoplasty.";
+    const answer = `This is the trachea. ${unsafeCondition} The AP marker shows orientation. ${unsafeTreatment} ${CLINICIAN_HANDOFF_SENTENCE}`;
+    const question = "Describe this clinical image.";
+    const visible = applyClinicAnswerSafety("clinic", question, answer);
+    const history = clinicModelAnswerForHistory("clinic", question, answer);
+
+    expect(visible).toBe(canonicalFailClosedAnswer);
+    expect(visible.split(CLINICIAN_HANDOFF_SENTENCE)).toHaveLength(2);
+    expect(visible).not.toContain("xylomycosis");
+    expect(visible).not.toContain("zymoplasty");
+    expect(history).toBe(CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE);
+    expect(history).not.toContain("xylomycosis");
+    expect(history).not.toContain("zymoplasty");
+  });
+
+  it.each(["You should use the trachea.", "I recommend using the lungs.", "Use the diaphragm."])(
+    "does not mistake anatomy words for an educational or orientation action: %s",
+    (unsafe) => {
+      expectFailsClosed(unsafe);
+    },
+  );
 
   it("preserves the canonical refusal and single handoff", () => {
     const safe = `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
