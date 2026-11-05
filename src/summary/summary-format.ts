@@ -1,6 +1,13 @@
+import { SUMMARY_MODEL_DETAIL_LIMIT } from "./summary-prompt";
+
 export interface SummaryDisplayFormatResult {
   readonly text: string;
   readonly formattingApplied: boolean;
+}
+
+export interface SummaryModelOutputDecodeResult {
+  readonly text: string;
+  readonly decodingApplied: boolean;
 }
 
 export const SUMMARY_PRESENTATION_LINE_COUNT = 5;
@@ -90,6 +97,43 @@ export function formatSummaryPresentation(rawText: string): SummaryDisplayFormat
   };
 }
 
+export function decodeSummaryModelOutput(rawText: string): SummaryModelOutputDecodeResult {
+  const trimmed = rawText.trim();
+  if (!trimmed.startsWith("{")) {
+    return { text: rawText, decodingApplied: false };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (error) {
+    throw new Error("The local summary model returned invalid structured output.", { cause: error });
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("The local summary model returned invalid structured output.");
+  }
+  const candidate = parsed as Record<string, unknown>;
+  const keys = Object.keys(candidate);
+  const overview = candidate.overview;
+  const details = candidate.details;
+  if (
+    keys.length !== 2 ||
+    !keys.includes("overview") ||
+    !keys.includes("details") ||
+    typeof overview !== "string" ||
+    !overview.trim() ||
+    !Array.isArray(details) ||
+    details.length < 1 ||
+    details.length > SUMMARY_MODEL_DETAIL_LIMIT ||
+    details.some((detail) => typeof detail !== "string" || !detail.trim())
+  ) {
+    throw new Error("The local summary model returned invalid structured output.");
+  }
+  return {
+    text: [overview.trim(), ...details.map((detail) => `• ${(detail as string).trim()}`)].join("\n"),
+    decodingApplied: true,
+  };
+}
+
 export function assertSummaryPresentationContract(text: string): void {
   const lines = text.split("\n");
   if (
@@ -106,6 +150,9 @@ export function assertSummaryPresentationContract(text: string): void {
     throw new Error("The local summary overview included a prohibited heading or label.");
   }
   const details = lines.slice(1).map((line) => line.replace(/^•\s+/u, ""));
+  if (lines.some(hasIncompleteSummaryLine)) {
+    throw new Error("The local summary ended with an incomplete line.");
+  }
   if (hasDuplicateSummaryUnits(details)) {
     throw new Error("The local summary repeated a detail fact.");
   }
@@ -1352,6 +1399,7 @@ const SUMMARY_VISUAL_LIST_MARKER = /^(?:•\s+|[-*]\s+(?=[\p{Lu}"'“‘`]))/u;
 const SUMMARY_VISUAL_LIST_WRAPPER = /^(?:•|[-*])\s+/u;
 const SUMMARY_NUMERIC_FACT_PREFIX = /^[+\-−]?\p{Nd}/u;
 const SUMMARY_ORDERED_LIST_MARKER = /^(\d+)([.)])\s+\S/u;
+const SUMMARY_OVERVIEW_LABEL = /^(?:line\s*1|overview|summary)\s*:\s*/iu;
 const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "dr",
   "e.g",
@@ -1365,29 +1413,33 @@ const SUMMARY_SENTENCE_ABBREVIATIONS = new Set([
   "st",
   "vs",
 ]);
-const SUMMARY_DUPLICATE_STOPWORDS = new Set([
+const SUMMARY_INCOMPLETE_TRAILING_WORDS = new Set([
   "a",
   "an",
   "and",
+  "are",
   "as",
   "at",
+  "be",
+  "because",
+  "been",
+  "being",
+  "but",
   "by",
   "for",
   "from",
+  "had",
+  "has",
+  "have",
   "in",
   "is",
   "of",
   "on",
-  "only",
-  "over",
-  "specific",
-  "stated",
-  "that",
+  "or",
   "the",
-  "this",
   "to",
-  "value",
-  "which",
+  "was",
+  "were",
   "with",
 ]);
 
@@ -1432,27 +1484,37 @@ function structureSummaryContent(value: string): string {
   if (originalOverview !== undefined && hasDuplicateSummaryUnits(restoredOriginalDetails)) {
     const wholeDetails = deduplicateSummaryUnits(restoredOriginalDetails);
     const atomicDetails = deduplicateSummaryUnits(atomizeSummaryUnits(wholeDetails.units));
-    if (atomicDetails.units.length >= SUMMARY_TARGET_BULLET_LINES) {
-      expandedUnits = [protectedContent.restore(originalOverview), ...atomicDetails.units];
-      expandedUnitsAreRestored = true;
-      removedDuplicateDetails = wholeDetails.removed || atomicDetails.removed;
-    } else {
-      expandedUnits = expandSummaryUnits(units, SUMMARY_TARGET_LINES);
-    }
+    expandedUnits = expandSummaryUnits(
+      [protectedContent.restore(originalOverview), ...atomicDetails.units],
+      SUMMARY_TARGET_LINES,
+    );
+    expandedUnitsAreRestored = true;
+    removedDuplicateDetails = wholeDetails.removed || atomicDetails.removed;
   } else {
     expandedUnits = expandSummaryUnits(units, SUMMARY_TARGET_LINES);
   }
-  const usesExactFiveLineLayout = expandedUnits.length >= SUMMARY_TARGET_LINES;
-  const layoutUnits = usesExactFiveLineLayout ? expandedUnits : units;
+  const initialUsesExactFiveLineLayout = expandedUnits.length >= SUMMARY_TARGET_LINES;
+  const layoutUnits = initialUsesExactFiveLineLayout || removedDuplicateDetails ? expandedUnits : units;
   if (layoutUnits.length < 2) {
     return value;
   }
 
-  const restored = expandedUnitsAreRestored ? layoutUnits : layoutUnits.map(protectedContent.restore);
-  const [overview, ...details] = restored;
-  if (overview === undefined || details.length === 0) {
+  const initiallyRestored = expandedUnitsAreRestored
+    ? layoutUnits
+    : layoutUnits.map(protectedContent.restore);
+  const normalized = deduplicateExpandedSummaryUnits(initiallyRestored, SUMMARY_TARGET_LINES);
+  removedDuplicateDetails ||= normalized.removed;
+  const restored = normalized.units;
+  const [rawOverview, ...details] = restored;
+  if (rawOverview === undefined || details.length === 0) {
     return value;
   }
+  const overview = rawOverview.replace(SUMMARY_OVERVIEW_LABEL, "").trim();
+  if (!overview) {
+    return value;
+  }
+  const removedOverviewLabel = overview !== rawOverview;
+  const usesExactFiveLineLayout = restored.length >= SUMMARY_TARGET_LINES;
   const bulletLimit = usesExactFiveLineLayout
     ? SUMMARY_TARGET_BULLET_LINES
     : SUMMARY_FALLBACK_MAX_BULLET_LINES;
@@ -1461,7 +1523,9 @@ function structureSummaryContent(value: string): string {
     return value;
   }
   const structured = [overview, ...bullets.map((bullet) => `• ${bullet}`)].join("\n");
-  return removedDuplicateDetails || canonicalSummaryContent(structured) === canonicalSummaryContent(value)
+  return removedDuplicateDetails ||
+    removedOverviewLabel ||
+    canonicalSummaryContent(structured) === canonicalSummaryContent(value)
     ? structured
     : value;
 }
@@ -1506,62 +1570,40 @@ function deduplicateSummaryUnits(units: readonly string[]): {
   return { units: unique, removed };
 }
 
+function deduplicateExpandedSummaryUnits(
+  units: readonly string[],
+  targetCount: number,
+): { readonly units: readonly string[]; readonly removed: boolean } {
+  let current: readonly string[] = [...units];
+  let removed = false;
+  for (let attempt = 0; attempt < targetCount; attempt += 1) {
+    const [overview, ...details] = current;
+    if (overview === undefined) {
+      return { units: current, removed };
+    }
+    const uniqueDetails = deduplicateSummaryUnits(details);
+    removed ||= uniqueDetails.removed;
+    const deduplicated = [overview, ...uniqueDetails.units];
+    if (deduplicated.length >= targetCount) {
+      return { units: deduplicated, removed };
+    }
+    const expanded = expandRestoredSummaryUnits(deduplicated, targetCount);
+    if (expanded.length === deduplicated.length) {
+      return { units: deduplicated, removed };
+    }
+    current = expanded;
+  }
+  return { units: current, removed };
+}
+
+function expandRestoredSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
+  const protectedContent = maskSummaryStructureRegions(units.join("\n"));
+  return expandSummaryUnits(protectedContent.masked.split("\n"), targetCount).map(protectedContent.restore);
+}
+
 function areDuplicateSummaryUnits(left: string, right: string): boolean {
-  const leftSignatures = summaryAssignmentSignatures(left);
-  const rightSignatures = summaryAssignmentSignatures(right);
-  const leftTokens = summaryDuplicateTokens(left);
-  const rightTokens = summaryDuplicateTokens(right);
-  const smallerSize = Math.min(leftTokens.size, rightTokens.size);
-  const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-  const sharedRatio = smallerSize === 0 ? 0 : shared / smallerSize;
-  const sharesAssignment = leftSignatures.some((signature) => rightSignatures.includes(signature));
-  if (sharesAssignment && (smallerSize <= 4 || (shared >= 3 && sharedRatio >= 0.65))) {
-    return true;
-  }
-  const sharedNumeric = [...leftTokens].some(
-    (token) => /^\d+(?:\.\d+)?$/u.test(token) && rightTokens.has(token),
-  );
-  const sharedText = [...leftTokens].some(
-    (token) => !/^\d+(?:\.\d+)?$/u.test(token) && rightTokens.has(token),
-  );
-  const hasDisjointAssignments = leftSignatures.length > 0 && rightSignatures.length > 0 && !sharesAssignment;
-  if (
-    !hasDisjointAssignments &&
-    smallerSize >= 2 &&
-    sharedNumeric &&
-    sharedText &&
-    shared >= 2 &&
-    sharedRatio >= 0.5
-  ) {
-    return true;
-  }
-  return smallerSize >= 3 && shared >= 3 && sharedRatio >= 0.65;
-}
-
-function summaryAssignmentSignatures(value: string): readonly string[] {
-  return [
-    ...value.matchAll(
-      /([\p{L}][\p{L}\p{N}]*(?:\([^)]{1,20}\))?)\s*(?:=|equals|is)\s*([+\-−]?\d+(?:\.\d+)?)/giu,
-    ),
-  ].map((match) =>
-    `${match[1] ?? ""}=${match[2] ?? ""}`.toLowerCase().replaceAll(/\s+/gu, "").replaceAll("−", "-"),
-  );
-}
-
-function summaryDuplicateTokens(value: string): ReadonlySet<string> {
-  const tokens = value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  return new Set(
-    tokens
-      .map(stemSummaryDuplicateToken)
-      .filter((token) => token.length > 0 && !SUMMARY_DUPLICATE_STOPWORDS.has(token)),
-  );
-}
-
-function stemSummaryDuplicateToken(value: string): string {
-  if (value.length <= 5) {
-    return value;
-  }
-  return value.replace(/(?:ing|ed|es|s)$/u, "");
+  const leftCanonical = canonicalSummaryContent(left);
+  return leftCanonical.length > 0 && leftCanonical === canonicalSummaryContent(right);
 }
 
 function expandSummaryUnits(units: readonly string[], targetCount: number): readonly string[] {
@@ -1612,7 +1654,7 @@ function splitSummaryUnit(
     }
   } else if (strategy === "connector") {
     for (const match of value.matchAll(
-      /\s+(?=(?:after|and|because|but|caused\s+by|then|when|which|while|whereas|with)\b)/giu,
+      /\s+(?=(?:after|and|because|but|caused\s+by|is\s+solved\s+by|then|when|where|which|while|whereas|with)\b)/giu,
     )) {
       if (match.index !== undefined) {
         boundaries.push(match.index);
@@ -1803,18 +1845,43 @@ function groupSummaryUnits(units: readonly string[], maximumGroups: number): rea
   for (let remainingGroups = maximumGroups; remainingGroups > 0; remainingGroups -= 1) {
     const remainingUnits = units.length - cursor;
     const size = Math.ceil(remainingUnits / remainingGroups);
-    groups.push(units.slice(cursor, cursor + size).join(" "));
+    groups.push(joinSummaryGroup(units.slice(cursor, cursor + size)));
     cursor += size;
   }
   return groups;
 }
 
+function joinSummaryGroup(units: readonly string[]): string {
+  const [first, ...rest] = units;
+  if (first === undefined) {
+    return "";
+  }
+  return rest.reduce(
+    (combined, unit) => `${combined}${/[.!?;:,]$/u.test(combined) ? " " : "; "}${unit}`,
+    first,
+  );
+}
+
 function canonicalSummaryContent(value: string): string {
-  return value
+  const normalized = value
     .split("\n")
     .map((line) => line.trim().replace(SUMMARY_VISUAL_LIST_MARKER, ""))
     .filter(Boolean)
     .join(" ")
-    .replaceAll(/\s+/gu, " ")
-    .trim();
+    .normalize("NFKC")
+    .toLowerCase();
+  const tokens = normalized.match(/\p{L}+|\p{N}+(?:\.\p{N}+)?/gu) ?? [];
+  if ((tokens[0] === "where" || tokens[0] === "which") && tokens[1] === "the") {
+    return tokens.slice(2).join(" ");
+  }
+  return (tokens[0] === "the" ? tokens.slice(1) : tokens).join(" ");
+}
+
+function hasIncompleteSummaryLine(line: string): boolean {
+  const tokens =
+    summaryLineContent(line)
+      .toLowerCase()
+      .match(/\p{L}+|\p{N}+(?:\.\p{N}+)?/gu) ?? [];
+  const trailingWord = tokens.at(-1);
+  return trailingWord !== undefined && SUMMARY_INCOMPLETE_TRAILING_WORDS.has(trailingWord);
 }

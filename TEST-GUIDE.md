@@ -13,9 +13,6 @@ testing; use the included WAV fallback otherwise.
 Note: This guide was validated on Windows 11 x64 with Node.js 26.13.0, npm 11.20.0, and AMD
 Radeon 860M graphics with working WebGPU support. Other environments have not yet been validated.
 
-Note: The summary after concurrent recording and Ask AI use may repeat a detail or be unavailable;
-review it before presenting. The sequential summary flow remains the validated path.
-
 ## Clone the Enhanced branch and start
 
 Follow the
@@ -38,7 +35,7 @@ Use the included fixtures; no download or fixture generation is needed for this 
 
 ## Prepare the local models
 
-First preparation may download model and runtime assets. Keep the PC online and Enhanced
+First preparation may download model and GPU provider assets. Keep the PC online and Enhanced
 AI Recorder open until Whisper, Nemotron, and Shared Qwen report **READY**. Later test actions can
 run offline.
 

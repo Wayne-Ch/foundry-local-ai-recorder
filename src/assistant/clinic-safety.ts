@@ -21,7 +21,7 @@ const CLINICIAN_HANDOFF_DIRECTION =
 const DIRECT_CLINICIAN_REFERRAL =
   /\b(?:consult|ask|contact|see|speak\s+with|discuss\s+with|defer(?:red|s|ring)?\s+to)\b/iu;
 const DIRECT_CLINICAL_RECOMMENDATION =
-  /\b(?:(?:(?:the|this|a)\s+)?patient|they|he|she|you)\s+(?:should|must|ought\s+to|need(?:s)?\s+to)\s+(?:begin|follow|receive|start|take|undergo|use)\b|\b(?:i\s+(?:would\s+)?recommend|my\s+recommendation\s+is|start\s+with\s+the\s+treatment)\b/iu;
+  /\b(?:(?:(?:the|this|a)\s+)?patient|they|he|she|you)\s+(?:should|must|ought\s+to|need(?:s)?\s+to)\s+(?:begin|follow|receive|start|take|undergo|use)\b|\b(?:i\s+(?:would\s+)?recommend|my\s+recommendation\s+is|start\s+with\s+the\s+treatment|(?:the\s+)?treatment\s+is\s+to\s+(?:begin|follow|receive|start|take|undergo|use))\b/iu;
 const ASSERTED_DIAGNOSIS_OR_URGENCY =
   /\b(?:(?:(?:the|this|a)\s+)?patient\s+(?:has|likely\s+has|appears\s+to\s+have)|(?:this|it|the\s+patient)\s+(?:is|appears|looks)\s+(?:urgent|an?\s+emergency))\b/iu;
 

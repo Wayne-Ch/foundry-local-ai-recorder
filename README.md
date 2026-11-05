@@ -56,7 +56,7 @@ The included fixtures are ready to use:
   [fixture provenance record](fixtures/clinic-xray.provenance.md) for its source, license,
   transformation, checksum, and de-identification review.
 
-First preparation may download uncached model and runtime assets. Stay online and keep
+First preparation may download uncached model and GPU provider assets. Stay online and keep
 Enhanced AI Recorder open until all three model cards report **READY** and the status says
 **Enhanced AI Recorder offline ready · 3/3 models**. Later test actions can run offline.
 

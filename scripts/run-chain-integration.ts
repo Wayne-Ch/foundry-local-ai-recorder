@@ -79,7 +79,17 @@ try {
     durationMs,
     data: pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer,
   });
-  const summary = await controller.generateSummary();
+  const summary = await controller.generateSummary().catch((error: unknown) => {
+    const snapshot = controller.bootstrap();
+    console.error(
+      `CHAIN_SUMMARY_FAILED ${JSON.stringify({
+        error: error instanceof Error ? error.message : String(error),
+        whisperFinal: final.result.transcript,
+        rawSummary: snapshot.trace.findLast((entry) => entry.phase === "summary-raw")?.detail ?? null,
+      })}`,
+    );
+    throw error;
+  });
   const recall = keywordRecall(final.result.transcript);
   assert.ok(partials.length > 0);
   assert.ok(recall.recall >= 0.66, `Whisper keyword recall ${recall.recall}: ${final.result.transcript}`);

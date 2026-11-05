@@ -36,6 +36,7 @@ const targets = resolveRuntimeTargets({});
 class FakeRuntime implements RecorderRuntime {
   readonly readiness: RuntimeReadiness;
   summaryInput = "";
+  summaryFinishReason: Response["finishReason"] = "stop";
   lastCapture: ValidatedAudioCapture | null = null;
 
   constructor(
@@ -136,7 +137,7 @@ class FakeRuntime implements RecorderRuntime {
         fileSizeMb: 600,
       },
       preflight: preflight(),
-      response: response(this.summaryText),
+      response: response(this.summaryText, this.summaryFinishReason),
     };
   }
 
@@ -405,10 +406,53 @@ describe("RecorderController", () => {
     });
   });
 
-  it("rejects an incomplete summary presentation instead of storing a partial completion", async () => {
-    const controller = new RecorderController(
-      new FakeRuntime("Whisper authoritative final transcript.", null, "Only one summary line."),
-    );
+  it.each([
+    {
+      name: "malformed output",
+      raw: "Only one summary line.",
+      expectedError: "exactly one overview and four detail lines",
+      finishReason: "stop" as const,
+    },
+    {
+      name: "canonically duplicated detail",
+      raw: [
+        "Project Atlas records explicit facts.",
+        "• The target remains 250 milliseconds.",
+        "• Maya Chen owns the follow-up.",
+        "• THE TARGET REMAINS 250 MILLISECONDS!",
+        "• The next review is November 12.",
+      ].join("\n"),
+      expectedError: "exactly one overview and four detail lines",
+      finishReason: "stop" as const,
+    },
+    {
+      name: "incomplete final bullet",
+      raw: [
+        "Project Atlas records the cache observation.",
+        "• The target remains 250 milliseconds.",
+        "• Maya Chen owns the follow-up.",
+        "• The next review is November 12.",
+        "• The cache change was",
+      ].join("\n"),
+      expectedError: "incomplete line",
+      finishReason: "stop" as const,
+    },
+    {
+      name: "length-finished output",
+      raw: [
+        "Project Atlas records the cache observation.",
+        "• The target remains 250 milliseconds.",
+        "• Maya Chen owns the follow-up.",
+        "• The next review is November 12.",
+        "• The local model cache is enabled.",
+      ].join("\n"),
+      expectedError: "ended with length",
+      finishReason: "length" as const,
+    },
+  ])("traces raw $name but stores no summary", async ({ raw, expectedError, finishReason }) => {
+    const runtime = new FakeRuntime("Whisper authoritative final transcript.", null, raw);
+    runtime.summaryFinishReason = finishReason;
+    const controller = new RecorderController(runtime);
     await controller.transcribeCapture({
       format: AUDIO_FORMAT,
       sampleRate: AUDIO_SAMPLE_RATE,
@@ -417,8 +461,15 @@ describe("RecorderController", () => {
       data: new ArrayBuffer(32_000),
     });
 
-    await expect(controller.generateSummary()).rejects.toThrow("exactly one overview and four detail lines");
-    expect(controller.bootstrap().transcript.summary).toBeNull();
+    await expect(controller.generateSummary()).rejects.toThrow(expectedError);
+    const snapshot = controller.bootstrap();
+    expect(snapshot.transcript.summary).toBeNull();
+    expect(snapshot.trace.find((entry) => entry.phase === "summary-raw")).toMatchObject({
+      detail: raw,
+    });
+    expect(snapshot.trace.some((entry) => entry.phase === "summary-final" && entry.severity === "info")).toBe(
+      false,
+    );
   });
 
   it("builds deterministic populated-summary UI evidence from the exact raw and formatted pair", () => {
@@ -721,10 +772,11 @@ function preflight(): RequestPreflightResult {
 
 function response(
   text = ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
+  finishReason: Response["finishReason"] = "stop",
 ): Response {
   return {
     output: [{ type: "text", text }],
-    finishReason: "stop",
+    finishReason,
     usage: { promptTokens: 50, completionTokens: 20, totalTokens: 70 },
   };
 }

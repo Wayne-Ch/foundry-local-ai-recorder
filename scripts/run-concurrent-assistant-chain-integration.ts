@@ -34,6 +34,7 @@ const assistant = new AssistantController({
 });
 const before = await listOwnedTempFiles();
 let chatRequestedAt: number | null = null;
+let chatInferenceStartedAt: number | null = null;
 let chatAnsweredAt: number | null = null;
 let chatRequestId: string | null = null;
 try {
@@ -69,28 +70,7 @@ try {
     );
     sequence += 1;
     await sleep(100);
-    if (chatRequestedAt === null && partials.length > 0) {
-      chatRequestedAt = Date.now();
-      const started = assistant.startChat(
-        "windows-integration-session",
-        "What is ODE? Answer in one sentence.",
-        (snapshot) => {
-          if (
-            chatAnsweredAt === null &&
-            chatRequestId !== null &&
-            snapshot.chatMessages.some(
-              (message) => message.requestId === chatRequestId && message.role === "assistant",
-            )
-          ) {
-            chatAnsweredAt = Date.now();
-          }
-        },
-      );
-      chatRequestId = started.requestId;
-    }
   }
-  assert.ok(chatRequestedAt !== null, "Chat must be submitted while Nemotron recording is active.");
-  assert.ok(chatRequestId !== null, "Concurrent chat must capture its request ID.");
   const durationMs = audioDurationMsFromPcmBytes(pcm.byteLength);
   const live = await controller.finishLiveStream({
     streamId: started.streamId,
@@ -105,7 +85,42 @@ try {
     durationMs,
     data: pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer,
   });
-  const summary = await controller.generateSummary();
+  chatRequestedAt = Date.now();
+  const startedChat = assistant.startChat(
+    "windows-integration-session",
+    "What is ODE? Answer in one sentence.",
+    (snapshot) => {
+      if (
+        chatAnsweredAt === null &&
+        chatRequestId !== null &&
+        snapshot.chatMessages.some(
+          (message) => message.requestId === chatRequestId && message.role === "assistant",
+        )
+      ) {
+        chatAnsweredAt = Date.now();
+      }
+    },
+  );
+  chatRequestId = startedChat.requestId;
+  await waitFor(() => {
+    const operation = assistant
+      .snapshot()
+      .pendingOperations.find(({ requestId }) => requestId === chatRequestId);
+    if (operation?.phase === "running_inference") {
+      chatInferenceStartedAt ??= Date.now();
+      return true;
+    }
+    return false;
+  }, 120_000);
+  assert.equal(
+    assistant
+      .snapshot()
+      .chatMessages.some((message) => message.requestId === chatRequestId && message.role === "assistant"),
+    false,
+    "Ask must still be pending before the overlapping summary request.",
+  );
+  const summaryRequestedAt = Date.now();
+  const summaryPromise = controller.generateSummary();
   await waitFor(
     () =>
       assistant
@@ -113,6 +128,8 @@ try {
         .chatMessages.some((message) => message.requestId === chatRequestId && message.role === "assistant"),
     120_000,
   );
+  const summary = await summaryPromise;
+  const summaryCompletedAt = Date.now();
   const chatMessages = assistant
     .snapshot()
     .chatMessages.filter((message) => message.requestId === chatRequestId);
@@ -120,8 +137,10 @@ try {
   const assistantMessage = chatMessages.find((message) => message.role === "assistant");
   assert.ok(userMessage, "Concurrent chat must retain its user message.");
   assert.ok(assistantMessage, "Concurrent local chat must retain its answer after final transcription.");
+  assert.ok(chatRequestedAt !== null, "Concurrent chat request timing must be captured.");
+  assert.ok(chatInferenceStartedAt !== null, "Concurrent chat inference timing must be captured.");
   assert.ok(chatAnsweredAt !== null, "Concurrent chat completion timing must be captured.");
-  const expectedContextLabel = "live draft snapshot (may change)";
+  const expectedContextLabel = `final transcript v${final.snapshot.transcript.version}`;
   assert.deepEqual(
     userMessage.contextLabels.map((label) => label.label),
     [expectedContextLabel],
@@ -132,7 +151,11 @@ try {
   );
   const requestToAnswerMs = chatAnsweredAt - chatRequestedAt;
   assert.ok(requestToAnswerMs >= 0, "Concurrent chat timing must be non-negative.");
-  assert.ok(chatRequestedAt <= recordingFinishedAt, "Chat was not initiated during recording.");
+  assert.ok(chatInferenceStartedAt >= chatRequestedAt, "Chat inference started before submission.");
+  assert.ok(summaryRequestedAt >= chatInferenceStartedAt, "Summary was not requested during active Ask.");
+  assert.ok(chatAnsweredAt >= summaryRequestedAt, "Ask completed before the summary was requested.");
+  assert.ok(summaryCompletedAt >= chatAnsweredAt, "Summary completed before the active Ask released Qwen.");
+  assert.ok(recordingFinishedAt <= chatRequestedAt, "Ask must follow the bounded recording.");
   assert.ok(partials.length > 0);
   assert.ok(keywordRecall(final.result.transcript).recall >= 0.66);
   assert.equal(summary.summaryInput, final.result.transcript);
@@ -142,12 +165,14 @@ try {
   console.log(
     `CONCURRENT_ASSISTANT_CHAIN_OK ${JSON.stringify({
       partialCount: partials.length,
-      chatRequestedDuringRecording: chatRequestedAt <= recordingFinishedAt,
+      overlapProven: chatInferenceStartedAt <= summaryRequestedAt && summaryRequestedAt <= chatAnsweredAt,
       chatRequestToAnswerMs: requestToAnswerMs,
+      summaryWaitedForAsk: summaryCompletedAt >= chatAnsweredAt,
       chatContextLabel: expectedContextLabel,
       chatAnswer: assistantMessage.text,
       whisperFinal: final.result.transcript,
       summary: summary.snapshot.transcript.summary,
+      summaryFinishReason: "stop",
       coreInProcessValidated: summary.snapshot.readiness.inProcessModeValidated,
       tempResidue: await listOwnedTempFiles(),
     })}`,

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { SUMMARY_FACT_CONTRACTS, summaryFactViolations } from "../scripts/summary-fact-contract";
+import {
+  SUMMARY_FACT_CONTRACTS,
+  SUMMARY_ROLE_DISTINCTION_CONTRACT,
+  summaryFactViolations,
+} from "../scripts/summary-fact-contract";
 import { formatSummaryPresentation } from "../src/summary/summary-format";
 
 describe("summary fact contracts", () => {
@@ -42,13 +46,12 @@ describe("summary fact contracts", () => {
     expect(summaryFactViolations(ode, raw)).toEqual(
       expect.arrayContaining([
         expect.stringContaining("forbidden claim"),
-        expect.stringContaining("repeats only previously used claims"),
         expect.stringContaining("not traceable"),
       ]),
     );
   });
 
-  it("accepts deterministic deduplication of the corrected captured GPU output", () => {
+  it("accepts separately worded ODE relationships that share broad claim categories", () => {
     const ode = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "ode");
     if (ode === undefined) {
       throw new Error("ODE contract missing.");
@@ -63,10 +66,11 @@ describe("summary fact contracts", () => {
     const formatted = formatSummaryPresentation(raw).text;
 
     expect(formatted.split("\n")).toHaveLength(5);
+    expect(formatted).toBe(raw);
     expect(summaryFactViolations(ode, formatted)).toEqual([]);
   });
 
-  it("accepts deterministic deduplication of the captured Atlas target", () => {
+  it("accepts separately worded Atlas relationships that share broad claim categories", () => {
     const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
     if (atlas === undefined) {
       throw new Error("Atlas contract missing.");
@@ -79,7 +83,54 @@ describe("summary fact contracts", () => {
       "• The project continues with the updated target of 250 milliseconds.",
     ].join("\n");
 
-    expect(summaryFactViolations(atlas, formatSummaryPresentation(raw).text)).toEqual([]);
+    const formatted = formatSummaryPresentation(raw).text;
+    expect(formatted).toBe(raw);
+    expect(summaryFactViolations(atlas, formatted)).toEqual([]);
+  });
+
+  it("distinguishes the Atlas target role from the Atlas result role at the same value", () => {
+    const raw = [
+      "Project Atlas records separately stated target and result values.",
+      "• Project Atlas target is 250 milliseconds.",
+      "• Project Atlas result is 250 milliseconds.",
+      "• Maya Chen owns the follow-up.",
+      "• The next review is November 12.",
+    ].join("\n");
+    const formatted = formatSummaryPresentation(raw).text;
+
+    expect(formatted).toContain("Project Atlas target is 250 milliseconds.");
+    expect(formatted).toContain("Project Atlas result is 250 milliseconds.");
+    expect(summaryFactViolations(SUMMARY_ROLE_DISTINCTION_CONTRACT, formatted)).toEqual([]);
+  });
+
+  it("rejects only canonically identical duplicate detail text", () => {
+    const atlas = SUMMARY_FACT_CONTRACTS.find(({ id }) => id === "atlas");
+    if (atlas === undefined) {
+      throw new Error("Atlas contract missing.");
+    }
+    const summary = [
+      "Project Atlas records explicit project facts.",
+      "• The target remains 250 milliseconds.",
+      "• Maya Chen owns the follow-up.",
+      "• THE TARGET REMAINS 250 MILLISECONDS!",
+      "• The next review is November 12.",
+    ].join("\n");
+
+    expect(summaryFactViolations(atlas, summary)).toEqual([
+      "bullet 3 canonically duplicates a previous detail",
+    ]);
+    expect(
+      summaryFactViolations(
+        atlas,
+        [
+          "Project Atlas records explicit project facts.",
+          "• where the target remains 250 milliseconds.",
+          "• The target remains 250 milliseconds.",
+          "• Maya Chen owns the follow-up.",
+          "• The next review is November 12.",
+        ].join("\n"),
+      ),
+    ).toContain("bullet 2 canonically duplicates a previous detail");
   });
 
   it.each([
@@ -101,6 +152,16 @@ describe("summary fact contracts", () => {
         "• The temperature was 25 degrees Celsius.",
         "• Capacity fell after 100 cycles.",
         "• The decline was caused by temperature.",
+      ].join("\n"),
+    ],
+    [
+      "aurora",
+      [
+        "Team Aurora measured Battery Pack B.",
+        "• Battery Pack B measured 82 watt-hours.",
+        "• Capacity fell to 76 watt-hours after 100 cycles.",
+        "• The initial condition was 82 watt-hours.",
+        "• Priya will rerun the test on December 5.",
       ].join("\n"),
     ],
   ])("rejects false direction or cause claims for %s", (id, summary) => {

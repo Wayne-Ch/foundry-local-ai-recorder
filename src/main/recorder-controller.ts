@@ -45,7 +45,11 @@ import type {
   TranscriptionResponse,
 } from "../shared/contracts";
 import { formatSafeDiagnostic, toSafeDiagnostic } from "../shared/safe-diagnostic";
-import { assertSummaryPresentationContract, formatSummaryPresentation } from "../summary/summary-format";
+import {
+  assertSummaryPresentationContract,
+  decodeSummaryModelOutput,
+  formatSummaryPresentation,
+} from "../summary/summary-format";
 import { TranscriptStore } from "../transcript/transcript-store";
 import { noopRecorderOperationJournal, type RecorderOperationJournal } from "./operation-journal";
 
@@ -397,16 +401,17 @@ export class RecorderController {
     try {
       const result = await this.#runtime.summarize(submitted.text);
       this.#assertCurrent(generation);
-      const displaySummary = formatSummaryPresentation(result.text);
-      assertSummaryPresentationContract(displaySummary.text);
-      this.#traceEvent(
-        "Foundry Local",
-        "summary-raw",
-        result.text,
-        "info",
-        undefined,
-        displaySummary.formattingApplied,
+      const rawTrace = this.#traceEvent("Foundry Local", "summary-raw", result.text);
+      if (result.response.finishReason !== "stop") {
+        throw new Error(`Summary generation ended with ${result.response.finishReason}.`);
+      }
+      const decodedSummary = decodeSummaryModelOutput(result.text);
+      const displaySummary = formatSummaryPresentation(decodedSummary.text);
+      this.#annotateSummaryFormatting(
+        rawTrace,
+        decodedSummary.decodingApplied || displaySummary.formattingApplied,
       );
+      assertSummaryPresentationContract(displaySummary.text);
       this.#transcript.applySummary({
         text: displaySummary.text,
         transcriptVersion: submitted.version,
@@ -641,8 +646,8 @@ export class RecorderController {
     severity: TraceEntry["severity"] = "info",
     durationMs?: number,
     summaryDisplayFormattingApplied?: boolean,
-  ): void {
-    this.#trace.push({
+  ): TraceEntry {
+    const entry: TraceEntry = {
       at: new Date().toISOString(),
       responsibility,
       phase,
@@ -650,9 +655,21 @@ export class RecorderController {
       severity,
       ...(durationMs === undefined ? {} : { durationMs }),
       ...(summaryDisplayFormattingApplied === undefined ? {} : { summaryDisplayFormattingApplied }),
-    });
+    };
+    this.#trace.push(entry);
     if (this.#trace.length > TRACE_LIMIT) {
       this.#trace.splice(0, this.#trace.length - TRACE_LIMIT);
+    }
+    return entry;
+  }
+
+  #annotateSummaryFormatting(entry: TraceEntry, formattingApplied: boolean): void {
+    const index = this.#trace.indexOf(entry);
+    if (index >= 0) {
+      this.#trace[index] = {
+        ...entry,
+        summaryDisplayFormattingApplied: formattingApplied,
+      };
     }
   }
 

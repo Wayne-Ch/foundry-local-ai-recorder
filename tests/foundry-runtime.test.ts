@@ -322,7 +322,7 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("returns a bounded length-finished summary for controller presentation validation", async () => {
+  it("returns bounded length-finished text so the controller can trace and reject it", async () => {
     const root = await createTempRoot();
     const runtime = createRuntime(root, [new FakeManager(createModels())], {
       createChatSession: () =>
@@ -339,6 +339,63 @@ describe("FoundryRecorderRuntime", () => {
     await expect(runtime.summarize("Exact transcript.")).resolves.toMatchObject({
       response: { finishReason: "length" },
     });
+    await runtime.shutdown();
+  });
+
+  it("serializes assistant and summary inference through one FIFO until cleanup is complete", async () => {
+    const root = await createTempRoot();
+    const order: string[] = [];
+    const assistantResponse = deferred<Response>();
+    const assistantStarted = deferred<void>();
+    const summaryResponse = deferred<Response>();
+    const summaryStarted = deferred<void>();
+    const runtime = createRuntime(root, [new FakeManager(createModels())], {
+      createChatSession: () => {
+        let sessionKind: "assistant" | "summary" | null = null;
+        return fakeChatSession({
+          processRequest: async (request) => {
+            if (requestText(request).includes("FINAL TRANSCRIPT:")) {
+              sessionKind = "summary";
+              order.push("summary-start");
+              summaryStarted.resolve();
+              return summaryResponse.promise;
+            }
+            sessionKind = "assistant";
+            order.push("assistant-start");
+            assistantStarted.resolve();
+            return assistantResponse.promise;
+          },
+          dispose: () => {
+            order.push(`${sessionKind ?? "unknown"}-dispose`);
+          },
+        });
+      },
+    });
+    await runtime.prepare(false);
+
+    const assistant = runtime.runAssistantTurn({ prompt: "Hold the shared model." });
+    await assistantStarted.promise;
+    const summary = runtime.summarize("Exact transcript.");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(order).toEqual(["assistant-start"]);
+
+    assistantResponse.resolve(textResponse("Assistant answer."));
+    await expect(assistant).resolves.toMatchObject({ text: "Assistant answer." });
+    await summaryStarted.promise;
+
+    expect(order.indexOf("assistant-dispose")).toBeLessThan(order.indexOf("summary-start"));
+
+    summaryResponse.resolve(
+      textResponse(
+        ["Overview.", "• First fact.", "• Second fact.", "• Third fact.", "• Fourth fact."].join("\n"),
+      ),
+    );
+    await expect(summary).resolves.toMatchObject({
+      response: { finishReason: "stop" },
+    });
+    expect(order.indexOf("summary-dispose")).toBeGreaterThan(order.indexOf("summary-start"));
     await runtime.shutdown();
   });
 
@@ -1857,13 +1914,14 @@ describe("FoundryRecorderRuntime", () => {
     await runtime.shutdown();
   });
 
-  it("runs core summary while a cancelled assistant request never settles and defers shutdown once", async () => {
+  it("blocks new shared-Qwen work behind a cancelled assistant drain and bounds reset and shutdown", async () => {
     const root = await createTempRoot();
     const order: string[] = [];
     const models = createModels(order);
     const manager = new FakeManager(models, { order });
     const assistantResponse = deferred<Response>();
     const assistantStarted = deferred<void>();
+    const summaryStarted = vi.fn();
     const assistantDispose = vi.fn(() => {
       order.push("assistant-session-dispose");
     });
@@ -1879,11 +1937,8 @@ describe("FoundryRecorderRuntime", () => {
         let assistantSession = false;
         return fakeChatSession({
           processRequest: async (request) => {
-            const requestText = Array.from({ length: request.itemCount }, (_value, index) => {
-              const item = request.getItem(index);
-              return item.type === "message" && typeof item.content === "string" ? item.content : "";
-            }).join("\n");
-            if (requestText.includes("FINAL TRANSCRIPT:")) {
+            if (requestText(request).includes("FINAL TRANSCRIPT:")) {
+              summaryStarted();
               return textResponse("Core summary completed.");
             }
             assistantSession = true;
@@ -1906,10 +1961,11 @@ describe("FoundryRecorderRuntime", () => {
     const assistantDrain = runtime.resetAssistant();
     expect(runtime.assistantStatus).toMatchObject({ active: false, draining: true });
 
-    await expect(runtime.summarize("Exact core transcript.")).resolves.toMatchObject({
-      text: "Core summary completed.",
-      model: { id: SUMMARY_MODEL_ID },
-    });
+    const summary = runtime.summarize("Exact core transcript.");
+    void summary.catch(() => undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(summaryStarted).not.toHaveBeenCalled();
     await expect(runtime.runAssistantTurn({ prompt: "Replacement." })).rejects.toThrow(
       "cleanup is still draining",
     );
@@ -1920,6 +1976,8 @@ describe("FoundryRecorderRuntime", () => {
       "Foundry Local shutdown cleanup did not settle within 10 ms.",
     );
     expect(cleanupCompletion).not.toBeNull();
+    await expect(summary).rejects.toMatchObject({ name: "AbortError" });
+    expect(summaryStarted).not.toHaveBeenCalled();
     expect(manager.shutdown).not.toHaveBeenCalled();
     expect(manager.dispose).not.toHaveBeenCalled();
 
@@ -2251,6 +2309,13 @@ function textResponse(text: string, finishReason: Response["finishReason"] = "st
     finishReason,
     usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
   };
+}
+
+function requestText(request: Request): string {
+  return Array.from({ length: request.itemCount }, (_value, index) => {
+    const item = request.getItem(index);
+    return item.type === "message" && typeof item.content === "string" ? item.content : "";
+  }).join("\n");
 }
 
 function completedAudioStream(text: string): StreamingResponse {

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSummaryPresentationContract,
+  decodeSummaryModelOutput,
   formatSummaryForDisplay,
   formatSummaryPresentation,
 } from "../src/summary/summary-format";
-import { SUMMARY_SYSTEM_PROMPT } from "../src/summary/summary-prompt";
+import { SUMMARY_JSON_SCHEMA, SUMMARY_SYSTEM_PROMPT } from "../src/summary/summary-prompt";
 
 describe("formatSummaryForDisplay", () => {
   it("instructs Qwen to return readable plain text notation", () => {
@@ -13,10 +14,70 @@ describe("formatSummaryForDisplay", () => {
     expect(SUMMARY_SYSTEM_PROMPT).toContain("Preserve every stated equation");
     expect(SUMMARY_SYSTEM_PROMPT).toContain("resolved constant");
     expect(SUMMARY_SYSTEM_PROMPT).toContain("explicit cause/result");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Plan all five lines before writing");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("split its compound sentences or clauses");
-    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not write a title, heading, label");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain('exactly two keys: "overview" and "details"');
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("one to four non-overlapping");
+    expect(SUMMARY_SYSTEM_PROMPT).toContain(
+      'The phrases "initial condition" and "final condition" are forbidden',
+    );
+    expect(SUMMARY_SYSTEM_PROMPT).toContain("Do not include bullet markers, titles, headings, labels");
     expect(SUMMARY_SYSTEM_PROMPT).toContain("Use readable Unicode/plain math");
+    expect(JSON.parse(SUMMARY_JSON_SCHEMA)).toMatchObject({
+      properties: {
+        details: { minItems: 1, maxItems: 4 },
+      },
+      required: ["overview", "details"],
+      additionalProperties: false,
+    });
+  });
+
+  it("decodes guided JSON without changing model-provided fact strings", () => {
+    const raw = JSON.stringify({
+      overview: "Project Atlas records latency facts.",
+      details: ["Project Atlas target is 250 milliseconds.", "Project Atlas result is 250 milliseconds."],
+    });
+
+    expect(decodeSummaryModelOutput(raw)).toEqual({
+      text: [
+        "Project Atlas records latency facts.",
+        "• Project Atlas target is 250 milliseconds.",
+        "• Project Atlas result is 250 milliseconds.",
+      ].join("\n"),
+      decodingApplied: true,
+    });
+  });
+
+  it("rejects malformed guided JSON instead of treating it as display text", () => {
+    expect(() => decodeSummaryModelOutput('{"overview":"Only overview"}')).toThrow(
+      "invalid structured output",
+    );
+    expect(() =>
+      decodeSummaryModelOutput(
+        JSON.stringify({
+          overview: "Overview.",
+          details: ["One.", "Two.", "Three.", "Four.", "Five."],
+        }),
+      ),
+    ).toThrow("invalid structured output");
+  });
+
+  it("removes exact duplicates created only after structured overview expansion", () => {
+    const decoded = decodeSummaryModelOutput(
+      JSON.stringify({
+        overview:
+          "An ordinary differential equation relates a function to its derivatives, where the first order equation y prime equals negative 2y is solved by separating variables and integrating to find the solution y of t equals c times e to the negative 2t, with the initial value determining the constant c.",
+        details: [
+          "The first order equation y prime equals negative 2y is solved by separating variables and integrating to find the solution y of t equals c times e to the negative 2t, with the initial value determining the constant c.",
+        ],
+      }),
+    );
+    const formatted = formatSummaryPresentation(decoded.text).text;
+
+    expect(formatted.split("\n")).toHaveLength(5);
+    expect(() => assertSummaryPresentationContract(formatted)).not.toThrow();
+    expect(formatted.match(/with the initial value determining the constant c\./gu)).toHaveLength(1);
+    expect(formatted.match(/first order equation y prime equals negative 2y/gu)).toHaveLength(1);
+    expect(formatted).toContain("ordinary differential equation relates a function to its derivatives");
+    expect(formatted).toContain("and integrating to find the solution");
   });
 
   it.each([
@@ -128,9 +189,42 @@ describe("formatSummaryForDisplay", () => {
           ].join("\n"),
         ),
       ).toThrow("repeated a detail fact");
+      expect(() =>
+        assertSummaryPresentationContract(
+          [
+            "Project Atlas records explicit latency facts.",
+            "• where the target remains 250 milliseconds.",
+            "• The target remains 250 milliseconds.",
+            "• Maya Chen owns the follow-up.",
+            "• The next review is November 12.",
+          ].join("\n"),
+        ),
+      ).toThrow("repeated a detail fact");
+      expect(() =>
+        assertSummaryPresentationContract(
+          [
+            "Project Atlas records the cache observation.",
+            "• The target remains 250 milliseconds.",
+            "• Maya Chen owns the follow-up.",
+            "• The next review is November 12.",
+            "• The cache change was",
+          ].join("\n"),
+        ),
+      ).toThrow("incomplete line");
+      expect(() =>
+        assertSummaryPresentationContract(
+          [
+            "The equation remains grounded in the transcript.",
+            "• The target remains 250 milliseconds.",
+            "• Maya Chen owns the follow-up.",
+            "• The next review is November 12.",
+            "• The initial value of the derivative is -6.",
+          ].join("\n"),
+        ),
+      ).not.toThrow();
     });
 
-    it("deduplicates the captured GPU summary by splitting only model-provided compound content", () => {
+    it("preserves distinct ODE clauses instead of fuzzy-deduplicating overlapping words and values", () => {
       const raw = [
         "The first order equation y′ = −2y is solved by separation of variables to yield y(t) = c·e^(−2t).",
         "• The constant c is determined by the initial condition y(0) = 3, which results in c = 3.",
@@ -138,25 +232,15 @@ describe("formatSummaryForDisplay", () => {
         "• The initial condition y(0) = 3 is explicitly stated as the condition for determining c.",
         "• The equation y′ = −2y is the governing differential relation for the system.",
       ].join("\n");
-      const expected = [
-        "The first order equation y′ = −2y is solved by separation of variables to yield y(t) = c·e^(−2t).",
-        "• The constant c is determined by the initial condition y(0) = 3,",
-        "• which results in c = 3.",
-        "• The solution represents exponential decay over time",
-        "• The equation y′ = −2y is the governing differential relation for the system.",
-      ].join("\n");
 
       expect(formatSummaryPresentation(raw)).toEqual({
-        text: expected,
-        formattingApplied: true,
+        text: raw,
+        formattingApplied: false,
       });
-      expect(formatSummaryPresentation(expected).text).toBe(expected);
-      for (const line of expected.split("\n").slice(1)) {
-        expect(raw).toContain(line.replace(/^•\s+/u, ""));
-      }
+      expect(() => assertSummaryPresentationContract(raw)).not.toThrow();
     });
 
-    it("deduplicates the captured Atlas target while preserving owner, date, and cache facts", () => {
+    it("preserves distinct Atlas target, ownership, review, cache, and role wording", () => {
       const raw = [
         "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache.",
         "• The target latency remains at 250 milliseconds.",
@@ -164,15 +248,71 @@ describe("formatSummaryForDisplay", () => {
         "• The team enabled the local model cache to achieve the new latency reduction.",
         "• The project continues with the updated target of 250 milliseconds.",
       ].join("\n");
+
+      expect(formatSummaryPresentation(raw).text).toBe(raw);
+      expect(() => assertSummaryPresentationContract(raw)).not.toThrow();
+    });
+
+    it("merges more than four distinct details without dropping role, subject, predicate, or value", () => {
+      const raw = [
+        "The projects reported separate planning, measurement, and ownership facts.",
+        "• Project Atlas target is 250 milliseconds.",
+        "• Project Atlas result is 250 milliseconds.",
+        "• Project Aurora target is 250 milliseconds.",
+        "• Maya Chen owns the Atlas follow-up.",
+        "• Priya owns the Aurora follow-up.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw).text;
+
+      expect(formatted.split("\n")).toHaveLength(5);
+      expect(contentWords(formatted)).toEqual(contentWords(raw));
+      expect(formatted).toContain("Project Atlas target is 250 milliseconds.");
+      expect(formatted).toContain("Project Atlas result is 250 milliseconds.");
+      expect(formatted).toContain("Project Aurora target is 250 milliseconds.");
+      expect(formatted).toContain("Maya Chen owns the Atlas follow-up.");
+      expect(formatted).toContain("Priya owns the Aurora follow-up.");
+      expect(() => assertSummaryPresentationContract(formatted)).not.toThrow();
+      expect(formatSummaryPresentation(formatted).text).toBe(formatted);
+    });
+
+    it("deduplicates only canonically identical detail text", () => {
+      const raw = [
+        "Project Atlas records explicit latency facts.",
+        "• Project Atlas target is 250 milliseconds.",
+        "• PROJECT ATLAS TARGET IS 250 MILLISECONDS!",
+        "• Maya Chen owns the follow-up and the next review is November 12.",
+        "• The local model cache is enabled.",
+      ].join("\n");
+      const formatted = formatSummaryPresentation(raw).text;
+
+      expect(formatted.split("\n")).toHaveLength(5);
+      expect(formatted.match(/project atlas target is 250 milliseconds/giu)).toHaveLength(1);
+      expect(formatted).toContain("Maya Chen owns the follow-up");
+      expect(formatted).toContain("the next review is November 12.");
+      expect(formatted).toContain("The local model cache is enabled.");
+      expect(() => assertSummaryPresentationContract(formatted)).not.toThrow();
+    });
+
+    it("does not reintroduce exact duplicates when a raw response has too few distinct details", () => {
+      const raw = [
+        "Line 1: The transcript describes a first-order ordinary differential equation where the solution is y(t) = c·e^(-2t).",
+        "• The equation is y' = -2y.",
+        "• The solution is y(t) = c·e^(-2t).",
+        "• The initial value determines the constant c.",
+        "• The initial value determines the constant c.",
+        "• The initial value determines the constant c.",
+      ].join("\n");
       const expected = [
-        "Project Atlas reduced cold start latency from 420 milliseconds to 280 milliseconds after the team enabled the local model cache.",
-        "• The target latency remains at 250 milliseconds.",
-        "• Maya Chen owns the follow-up",
-        "• and the next review is scheduled for November 12.",
-        "• The team enabled the local model cache to achieve the new latency reduction.",
+        "The transcript describes a first-order ordinary differential equation",
+        "• where the solution is y(t) = c·e^(−2t).",
+        "• The equation is y′ = −2y.",
+        "• The initial value determines the constant c.",
       ].join("\n");
 
       expect(formatSummaryPresentation(raw).text).toBe(expected);
+      expect(() => assertSummaryPresentationContract(expected)).toThrow(
+        "exactly one overview and four detail lines",
+      );
       expect(formatSummaryPresentation(expected).text).toBe(expected);
     });
 

@@ -80,6 +80,19 @@ describe("Clinic answer safety", () => {
     );
   });
 
+  it("replaces a model recommendation phrased as the treatment being to start something", () => {
+    const unsafe =
+      "The equation describes exponential decay. Therefore, the treatment is to start with the solution y(t) = 3e^(-2t).";
+    const question = "What treatment should a patient start?";
+
+    expect(applyClinicAnswerSafety("clinic", question, unsafe)).toBe(
+      `${CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE}\n\n${CLINICIAN_HANDOFF_SENTENCE}`,
+    );
+    expect(clinicModelAnswerForHistory("clinic", question, unsafe)).toBe(
+      CLINIC_EDUCATIONAL_BOUNDARY_SENTENCE,
+    );
+  });
+
   it("preserves a safe refusal without storing the clinician handoff in chat history", () => {
     const safe = `I cannot recommend treatment from this image.\n\n${CLINICIAN_HANDOFF_SENTENCE}`;
     const question = "What treatment should they start?";

@@ -4,7 +4,7 @@ export interface SummaryClaim {
 }
 
 export interface SummaryFactContract {
-  readonly id: "ode" | "atlas" | "aurora";
+  readonly id: string;
   readonly text: string;
   readonly claims: readonly SummaryClaim[];
   readonly forbidden: readonly RegExp[];
@@ -33,7 +33,10 @@ export const SUMMARY_FACT_CONTRACTS = [
         id: "initial-condition",
         pattern: /(?:y\s*\(\s*0\s*\)\s*=\s*3|y of 0 equals 3|initial condition[^.\n]*3)/iu,
       },
-      { id: "resolved-constant", pattern: /\bc\s*(?:=|equals|is)\s*3\b/iu },
+      {
+        id: "resolved-constant",
+        pattern: /\bc\s*(?:=|equals|is(?:\s+determined\s+to\s+be)?)\s*3\b/iu,
+      },
     ],
     forbidden: [
       /\b(?:Euler|homework|citation)\b/iu,
@@ -81,9 +84,29 @@ export const SUMMARY_FACT_CONTRACTS = [
     forbidden: [
       /\b(?:Maya Chen|Project Atlas|thermal runaway)\b/iu,
       /(?:decline[\s\S]{0,100}(?:low-rate|temperature)|(?:low-rate|temperature)[\s\S]{0,100}caus)/iu,
+      /\b(?:initial|final) condition\b/iu,
     ],
   },
 ] as const satisfies readonly SummaryFactContract[];
+
+export const SUMMARY_ROLE_DISTINCTION_CONTRACT = {
+  id: "atlas-role-distinction",
+  text: "Project Atlas target is 250 milliseconds. Project Atlas result is 250 milliseconds. Maya Chen owns the follow-up. The next review is November 12.",
+  claims: [
+    { id: "subject", pattern: /\bProject Atlas\b/u },
+    {
+      id: "target",
+      pattern: /\bProject Atlas\b[^.\n]*\btarget\b[^.\n]*250\s*(?:milliseconds|ms)/iu,
+    },
+    {
+      id: "result",
+      pattern: /\bProject Atlas\b[^.\n]*\bresult\b[^.\n]*250\s*(?:milliseconds|ms)/iu,
+    },
+    { id: "owner", pattern: /\bMaya Chen\b[^.\n]*\bowns?\b[^.\n]*\bfollow-up\b/iu },
+    { id: "review", pattern: /\bNovember\s+12\b/iu },
+  ],
+  forbidden: [/\b(?:Project Aurora|Priya|420|280)\b/iu],
+} as const satisfies SummaryFactContract;
 
 export function summaryFactViolations(contract: SummaryFactContract, summary: string): readonly string[] {
   const violations: string[] = [];
@@ -105,7 +128,7 @@ export function summaryFactViolations(contract: SummaryFactContract, summary: st
     .split("\n")
     .map((line) => line.replace(/^•\s+/u, "").trim())
     .filter(Boolean);
-  const bulletClaims = new Set<string>();
+  const bulletFacts = new Set<string>();
   for (const [index, line] of lines.entries()) {
     const matched = contract.claims.filter(({ pattern }) => pattern.test(line)).map(({ id }) => id);
     if (matched.length === 0) {
@@ -115,15 +138,22 @@ export function summaryFactViolations(contract: SummaryFactContract, summary: st
     if (index === 0) {
       continue;
     }
-    const newClaims = matched.filter((claim) => !bulletClaims.has(claim));
-    if (newClaims.length === 0) {
-      violations.push(`bullet ${index} repeats only previously used claims`);
+    const canonicalFact = canonicalFactText(line);
+    if (bulletFacts.has(canonicalFact)) {
+      violations.push(`bullet ${index} canonically duplicates a previous detail`);
     }
-    for (const claim of newClaims) {
-      bulletClaims.add(claim);
-    }
+    bulletFacts.add(canonicalFact);
   }
   return violations;
+}
+
+function canonicalFactText(value: string): string {
+  const normalized = value.normalize("NFKC").toLowerCase();
+  const tokens = normalized.match(/\p{L}+|\p{N}+(?:\.\p{N}+)?/gu) ?? [];
+  if ((tokens[0] === "where" || tokens[0] === "which") && tokens[1] === "the") {
+    return tokens.slice(2).join(" ");
+  }
+  return (tokens[0] === "the" ? tokens.slice(1) : tokens).join(" ");
 }
 
 function numericTokens(value: string): readonly string[] {

@@ -20,7 +20,17 @@ try {
   const results = [];
   for (const fixture of SUMMARY_FACT_CONTRACTS) {
     controller.editTranscript(fixture.text);
-    const result = await controller.generateSummary();
+    const result = await controller.generateSummary().catch((error: unknown) => {
+      const snapshot = controller.bootstrap();
+      console.error(
+        `SUMMARY_FACT_GATE_FAILED ${JSON.stringify({
+          fixture: fixture.id,
+          error: error instanceof Error ? error.message : String(error),
+          rawText: snapshot.trace.findLast((entry) => entry.phase === "summary-raw")?.detail ?? null,
+        })}`,
+      );
+      throw error;
+    });
     const summary = result.snapshot.transcript.summary;
     assert.ok(summary !== null, "Controller must store the generated summary.");
     assert.equal(result.summaryInput, fixture.text);
@@ -41,6 +51,7 @@ try {
       durationMs: summary.durationMs,
       promptTokens: summary.promptTokens,
       completionTokens: summary.completionTokens,
+      finishReason: "stop",
       rawText: rawTrace.detail,
       displayText: summary.text,
       formattingApplied: rawTrace.summaryDisplayFormattingApplied,
